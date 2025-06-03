@@ -5,9 +5,11 @@ setup(
     packages=find_packages(exclude=["dagster_betterjobs_tests"]),
     install_requires=[
         "dagster",
+        "dagster-webserver",
         "dagster-cloud",
         "dagster-duckdb",
         "dagster-postgres",
+        "dagster-snowflake",
         "dagster-openai",
         "dagster-gcp",
         "dagster-gcp-pandas",

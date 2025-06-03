@@ -8,8 +8,6 @@ from dagster_betterjobs.assets.workday_company_urls import workday_company_urls,
 from dagster_betterjobs.assets.master_company_urls import master_company_urls
 from dagster_betterjobs.assets.adhoc_company_urls import adhoc_company_urls
 
-from dagster_betterjobs.assets.db_setup import initialize_db
-
 from dagster_betterjobs.assets.bamboohr_jobs_discovery import bamboohr_company_jobs_discovery
 from dagster_betterjobs.assets.greenhouse_jobs_discovery import greenhouse_company_jobs_discovery
 from dagster_betterjobs.assets.smartrecruiters_jobs_discovery import smartrecruiters_company_jobs_discovery
@@ -37,7 +35,6 @@ __all__ = [
     "retry_failed_smartrecruiters_company_urls",
     "master_company_urls",
     "adhoc_company_urls",
-    "initialize_db",
     "scrape_jobs",
     "job_search_results",
     "bamboohr_company_jobs_discovery",
