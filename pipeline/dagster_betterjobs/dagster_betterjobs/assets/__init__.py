@@ -15,7 +15,7 @@ from dagster_betterjobs.assets.workday_jobs_discovery import workday_company_job
 from dagster_betterjobs.assets.icims_jobs_discovery import icims_company_jobs_discovery
 from dagster_betterjobs.assets.job_search import search_jobs
 
-from dagster_betterjobs.assets.supabase_transport import bamboohr_jobs_to_supabase, greenhouse_jobs_to_supabase, workday_jobs_to_supabase, smartrecruiters_jobs_to_supabase
+# from dagster_betterjobs.assets.supabase_transport import bamboohr_jobs_to_supabase, greenhouse_jobs_to_supabase, workday_jobs_to_supabase, smartrecruiters_jobs_to_supabase
 
 __all__ = [
     "retry_failed_company_urls",
@@ -43,8 +43,8 @@ __all__ = [
     "workday_company_jobs_discovery",
     "icims_company_jobs_discovery",
     "search_jobs",
-    "bamboohr_jobs_to_supabase",
-    "greenhouse_jobs_to_supabase",
-    "workday_jobs_to_supabase",
-    "smartrecruiters_jobs_to_supabase"
+    # "bamboohr_jobs_to_supabase",
+    # "greenhouse_jobs_to_supabase",
+    # "workday_jobs_to_supabase",
+    # "smartrecruiters_jobs_to_supabase"
 ]

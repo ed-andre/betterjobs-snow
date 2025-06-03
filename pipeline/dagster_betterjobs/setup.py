@@ -10,6 +10,7 @@ setup(
         "dagster-duckdb",
         "dagster-postgres",
         "dagster-snowflake",
+        "dagster-snowflake-pandas",
         "dagster-openai",
         "dagster-gcp",
         "dagster-gcp-pandas",

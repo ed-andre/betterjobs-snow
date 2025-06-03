@@ -2,8 +2,8 @@ from dagster import schedule, RunRequest
 from .jobs import (
     full_jobs_discovery_and_search_job,
     full_jobs_discovery_except_icims_job,
-    supabase_transport_job,
-    discovery_and_transport_job
+    # supabase_transport_job,
+    # discovery_and_transport_job
 )
 from .assets.bamboohr_jobs_discovery import alpha_partitions
 from datetime import datetime
@@ -77,17 +77,17 @@ def full_jobs_discovery_and_search_schedule(context):
         )
 
 # Schedule for running all job discovery assets (except for ICMS) plus Supabase transport
-@schedule(
-    cron_schedule="0 12 * * *",  # Run daily at noon
-    execution_timezone="US/Eastern",
-    job=discovery_and_transport_job,
-)
-def full_jobs_discovery_and_supabase_schedule(context):
-    """Schedule that runs job discovery (except iCIMS) followed by Supabase transport daily at noon."""
-    for partition_key in alpha_partitions.get_partition_keys():
-        run_key = f"discovery_and_transport_{partition_key}_{context.scheduled_execution_time.strftime('%Y-%m-%d')}"
-        yield RunRequest(
-            run_key=run_key,
-            partition_key=partition_key,
-            tags={"partition": partition_key}
-        )
+# @schedule(
+#     cron_schedule="0 12 * * *",  # Run daily at noon
+#     execution_timezone="US/Eastern",
+#     job=discovery_and_transport_job,
+# )
+# def full_jobs_discovery_and_supabase_schedule(context):
+#     """Schedule that runs job discovery (except iCIMS) followed by Supabase transport daily at noon."""
+#     for partition_key in alpha_partitions.get_partition_keys():
+#         run_key = f"discovery_and_transport_{partition_key}_{context.scheduled_execution_time.strftime('%Y-%m-%d')}"
+#         yield RunRequest(
+#             run_key=run_key,
+#             partition_key=partition_key,
+#             tags={"partition": partition_key}
+#         )
