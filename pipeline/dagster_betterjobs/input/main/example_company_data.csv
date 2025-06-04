@@ -1,0 +1,6 @@
+company_name,company_industry,platform,ats_url,career_url,url_verified
+"Acme Corporation","Technology","workday","https://acme.workday.com","https://acme.com/careers",true
+"Tech Solutions Inc","Software","greenhouse","https://greenhouse.io/acme","https://techsolutions.com/jobs",true
+"Global Manufacturing","Manufacturing","bamboohr","https://bamboohr.com/global","https://globalmanufacturing.com/careers",false
+"Finance Partners","Financial Services","smartrecruiters","https://smartrecruiters.com/finance","https://financepartners.com/jobs",true
+"Healthcare Innovations","Healthcare","lever","https://lever.co/healthcare","https://healthcareinnovations.com/careers",false
