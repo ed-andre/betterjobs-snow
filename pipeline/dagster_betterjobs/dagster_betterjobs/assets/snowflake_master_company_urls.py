@@ -48,9 +48,12 @@ def setup_snowflake_stage_and_table(conn, stage_name: str, s3_uri: str, table_na
 
         # Create S3 stage if it doesn't exist
         if s3_uri:
+            # Ensure S3 URI ends with / for proper path handling
+            s3_uri_clean = s3_uri.rstrip('/') + '/'
+
             stage_sql = f"""
             CREATE STAGE IF NOT EXISTS {stage_name}
-            URL = '{s3_uri}'
+            URL = '{s3_uri_clean}'
             STORAGE_INTEGRATION = betterjobs_s3_integration
             FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY = '"')
             """
@@ -302,25 +305,24 @@ def process_s3_csv_files(
             file_size = file_info[1]  # File size
             file_modified = file_info[2]  # Last modified
 
-            context.log.info(f"Examining S3 file: {file_name} (size: {file_size}, modified: {file_modified})")
-
             if not file_name.lower().endswith('.csv'):
                 context.log.info(f"Skipping non-CSV file: {file_name}")
                 continue
 
-            # Extract just the filename from the full S3 path for COPY operation
-            if file_name.startswith('s3://'):
-                # file_name is a full S3 path like 's3://bucket/path/file.csv'
-                actual_filename = file_name.split('/')[-1]  # Get just 'file.csv'
-                s3_path_for_copy = file_name.replace('s3://', '').replace(f"{s3_uri.replace('s3://', '').rstrip('/')}/", '')
+            # Handle file path properly for stage reference
+            # The stage path should be relative to the stage URL
+            if '/' in file_name:
+                # If the file name contains path separators, use just the filename
+                actual_filename = file_name.split('/')[-1]
+                stage_file_path = actual_filename
             else:
-                # file_name is just the filename
+                # If it's just a filename, use as-is
                 actual_filename = file_name
-                s3_path_for_copy = file_name
+                stage_file_path = file_name
 
-            context.log.info(f"Extracted filename: {actual_filename}, S3 path for COPY: {s3_path_for_copy}")
+            context.log.info(f"Will use stage file path: '{stage_file_path}' for file: '{actual_filename}'")
 
-            # Generate a hash based on file attributes (since we can't read the file directly)
+            # Generate a hash based on file attributes
             file_hash = hashlib.sha256(f"{file_name}_{file_size}_{file_modified}".encode()).hexdigest()
 
             # Check if file needs processing
@@ -330,49 +332,112 @@ def process_s3_csv_files(
                 existing = processed_files[s3_file_path]
                 if existing['hash'] == file_hash:
                     needs_processing = False
-                    context.log.info(f"Skipping already processed S3 file: {file_name} (hash matches)")
+                    context.log.info(f"Skipping already processed S3 file: {file_name}")
                 else:
-                    context.log.info(f"S3 file {file_name} hash changed, reprocessing (old: {existing['hash'][:8]}..., new: {file_hash[:8]}...)")
+                    context.log.info(f"S3 file {file_name} hash changed, reprocessing")
             else:
-                context.log.info(f"S3 file {file_name} not in processing log, will process")
+                context.log.info(f"Processing new S3 file: {file_name}")
 
             if needs_processing:
                 try:
-                    context.log.info(f"Starting to process S3 file: {file_name}")
+                    # First, let's examine the file structure to understand the columns
+                    try:
+                        cursor.execute(f"SELECT $1, $2, $3 FROM @{stage_name}/{stage_file_path} LIMIT 2")
+                        sample_rows = cursor.fetchall()
+                    except Exception as examine_error:
+                        context.log.warning(f"Could not examine file structure for {file_name}: {str(examine_error)}")
+                        # Try without subdirectory
+                        try:
+                            cursor.execute(f"SELECT $1, $2, $3 FROM @{stage_name}/{actual_filename} LIMIT 2")
+                            sample_rows = cursor.fetchall()
+                            stage_file_path = actual_filename  # Update to working path
+                        except Exception as examine_error2:
+                            context.log.error(f"Failed to examine file {file_name} with both paths: {str(examine_error2)}")
+                            continue
 
-                    # Create a temporary table for this file
+                    # Skip processing if the file looks problematic
+                    if not sample_rows:
+                        context.log.warning(f"No data found in S3 file {file_name}, skipping")
+                        continue
+
+                    # Create a temporary table that matches the actual CSV structure
+                    # CSV format: company_id,company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
                     temp_table = f"{table_name}_temp_s3"
                     cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
-                    context.log.info(f"Dropped existing temp table: {temp_table}")
 
-                    # Copy data from S3 file to temporary table using stage's file format
-                    # Note: file_name from LIST already includes the full path
-                    copy_sql = f"""
-                    CREATE OR REPLACE TABLE {temp_table} AS
-                    SELECT
-                        $1 as company_name,
-                        $2 as company_industry,
-                        $3 as platform,
-                        $4 as ats_url,
-                        $5 as career_url,
-                        CASE WHEN $6 IN ('true', 'True', '1', 'yes', 'Yes') THEN TRUE ELSE FALSE END as url_verified,
-                        '{actual_filename}' as source_file,
-                        '{file_hash}' as file_hash
-                    FROM @{stage_name}/{s3_path_for_copy}
+                    # Create temp table with proper column structure matching CSV
+                    create_temp_sql = f"""
+                    CREATE OR REPLACE TABLE {temp_table} (
+                        company_id STRING,
+                        company_name STRING,
+                        company_industry STRING,
+                        platform STRING,
+                        ats_url STRING,
+                        career_url STRING,
+                        url_verified STRING,
+                        date_added STRING,
+                        last_updated STRING,
+                        source_file STRING,
+                        file_hash STRING
+                    )
                     """
-                    context.log.info(f"Executing COPY SQL for {file_name}")
-                    cursor.execute(copy_sql)
-                    context.log.info(f"COPY operation completed for {file_name}")
+                    cursor.execute(create_temp_sql)
+                    context.log.info(f"Created temp table: {temp_table}")
 
-                    # Get record count
+                    # Use COPY command that properly maps CSV columns to temp table columns
+                    # CSV columns: company_id,company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
+                    copy_sql = f"""
+                    COPY INTO {temp_table} (
+                        company_id, company_name, company_industry, platform,
+                        ats_url, career_url, url_verified, date_added, last_updated,
+                        source_file, file_hash
+                    )
+                    FROM (
+                        SELECT
+                            $1 as company_id,
+                            $2 as company_name,
+                            $3 as company_industry,
+                            $4 as platform,
+                            $5 as ats_url,
+                            $6 as career_url,
+                            $7 as url_verified,
+                            $8 as date_added,
+                            $9 as last_updated,
+                            '{actual_filename}' as source_file,
+                            '{file_hash}' as file_hash
+                        FROM @{stage_name}/{stage_file_path}
+                    )
+                    FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY = '"' ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE)
+                    ON_ERROR = 'CONTINUE'
+                    """
+
+                    cursor.execute(copy_sql)
+
+                    # Check for COPY errors
+                    cursor.execute("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))")
+                    copy_results = cursor.fetchall()
+
+                    # Get record count and validate data
                     cursor.execute(f"SELECT COUNT(*) FROM {temp_table}")
                     record_count = cursor.fetchone()[0]
-                    context.log.info(f"Temp table {temp_table} has {record_count} records")
 
                     if record_count > 0:
+                        # Validate the data structure before proceeding
+                        cursor.execute(f"SELECT company_id, company_name, company_industry, platform FROM {temp_table} LIMIT 5")
+                        validation_rows = cursor.fetchall()
+
+                        # Check if company_name looks reasonable (not empty, not just numbers)
+                        cursor.execute(f"SELECT COUNT(*) FROM {temp_table} WHERE company_name IS NOT NULL AND LENGTH(TRIM(company_name)) > 0")
+                        valid_company_names = cursor.fetchone()[0]
+
+                        if valid_company_names == 0:
+                            context.log.error(f"No valid company names found in {file_name}, skipping insertion")
+                            cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+                            continue
+
                         context.log.info(f"Inserting {record_count} records from {file_name} into main table")
 
-                        # Insert into main table with generated company IDs and timestamps
+                        # Insert into main table, using existing company_id from CSV
                         insert_sql = f"""
                         INSERT INTO {table_name} (
                             company_id, company_name, company_industry, platform,
@@ -380,19 +445,26 @@ def process_s3_csv_files(
                             date_added, last_updated, source_file, file_hash
                         )
                         SELECT
-                            SUBSTR(SHA2(LOWER(TRIM(company_name)), 256), 1, 8) as company_id,
-                            company_name,
-                            company_industry,
-                            platform,
-                            ats_url,
-                            career_url,
-                            url_verified,
-                            CURRENT_TIMESTAMP() as date_added,
-                            CURRENT_TIMESTAMP() as last_updated,
+                            TRIM(company_id) as company_id,
+                            TRIM(company_name) as company_name,
+                            TRIM(company_industry) as company_industry,
+                            TRIM(platform) as platform,
+                            NULLIF(TRIM(ats_url), '') as ats_url,
+                            NULLIF(TRIM(career_url), '') as career_url,
+                            CASE
+                                WHEN UPPER(TRIM(url_verified)) IN ('TRUE', '1', 'YES', 'Y') THEN TRUE
+                                ELSE FALSE
+                            END as url_verified,
+                            TRY_TO_TIMESTAMP(date_added) as date_added,
+                            TRY_TO_TIMESTAMP(last_updated) as last_updated,
                             source_file,
                             file_hash
                         FROM {temp_table}
                         WHERE company_name IS NOT NULL
+                        AND LENGTH(TRIM(company_name)) > 0
+                        AND company_name NOT LIKE '%company_name%'  -- Skip header rows that might have slipped through
+                        AND company_id IS NOT NULL
+                        AND LENGTH(TRIM(company_id)) > 0
                         """
                         cursor.execute(insert_sql)
                         context.log.info(f"Successfully inserted records from {file_name}")
@@ -402,35 +474,25 @@ def process_s3_csv_files(
                             'file_path': s3_file_path,
                             'file_hash': file_hash,
                             'file_size': file_size,
-                            'file_modified_time': datetime.now(),  # Use current time since S3 LIST returns ETag, not timestamp
+                            'file_modified_time': datetime.now(),
                             'record_count': record_count,
                             'source_type': 's3'
                         })
 
                         context.log.info(f"Processed S3 file: {file_name} ({record_count} records)")
                     else:
-                        context.log.warning(f"S3 file {file_name} resulted in 0 records - may be empty or have parsing issues")
-                        # Let's check if the file exists and what's in it
-                        try:
-                            cursor.execute(f"SELECT * FROM @{stage_name}/{s3_path_for_copy} LIMIT 5")
-                            sample_rows = cursor.fetchall()
-                            context.log.info(f"Sample rows from {file_name}: {sample_rows}")
-                        except Exception as sample_e:
-                            context.log.warning(f"Could not sample rows from {file_name}: {str(sample_e)}")
+                        context.log.warning(f"S3 file {file_name} resulted in 0 records")
 
                     # Clean up temp table
                     cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
-                    context.log.info(f"Cleaned up temp table: {temp_table}")
 
                 except Exception as e:
                     context.log.error(f"Error processing S3 file {file_name}: {str(e)}")
-                    context.log.error(f"Full error details: {type(e).__name__}: {str(e)}")
-                    # Try to get more details about the error
+                    # Clean up on error
                     try:
-                        cursor.execute(f"SELECT * FROM @{stage_name} LIMIT 1")
-                        context.log.info("Stage access test successful")
-                    except Exception as stage_e:
-                        context.log.error(f"Stage access test failed: {str(stage_e)}")
+                        cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+                    except:
+                        pass
 
         conn.commit()
 
@@ -527,37 +589,44 @@ def snowflake_master_company_urls(
 
     all_file_metadata = []
 
-    # Process S3 files if enabled and stage is ready
+    # STEP 1: Process S3 files FIRST (if enabled and configured)
     if config.enable_s3_processing and s3_uri and s3_stage_ready:
+        context.log.info("=== STEP 1: Processing S3 files ===")
         try:
             s3_metadata = process_s3_csv_files(conn, s3_uri, stage_name, table_name, context)
             all_file_metadata.extend(s3_metadata)
             stats["s3_files"] = len(s3_metadata)
-            context.log.info(f"Successfully processed {len(s3_metadata)} S3 files")
+            context.log.info(f"✓ Successfully processed {len(s3_metadata)} S3 files")
         except Exception as e:
-            context.log.error(f"Error processing S3 files: {str(e)}")
+            context.log.error(f"✗ Error processing S3 files: {str(e)}")
             stats["errors"] += 1
     elif config.enable_s3_processing and s3_uri and not s3_stage_ready:
         context.log.warning("S3 processing was enabled but stage setup failed - skipping S3 processing")
     elif config.enable_s3_processing and not s3_uri:
         context.log.info("S3 processing enabled but S3_URI not configured - skipping S3 processing")
+    else:
+        context.log.info("S3 processing disabled")
 
-    # Process local files if enabled
+    # STEP 2: Process local files SECOND (if enabled and configured)
     local_dfs = []
     if config.enable_local_processing and local_folder:
+        context.log.info("=== STEP 2: Processing local files ===")
         try:
             local_dfs, local_metadata = process_local_csv_files(conn, local_folder, table_name, context)
             all_file_metadata.extend(local_metadata)
             stats["local_files"] = len(local_metadata)
-            context.log.info(f"Successfully processed {len(local_metadata)} local files")
+            context.log.info(f"✓ Successfully processed {len(local_metadata)} local files")
         except Exception as e:
-            context.log.error(f"Error processing local files: {str(e)}")
+            context.log.error(f"✗ Error processing local files: {str(e)}")
             stats["errors"] += 1
     elif config.enable_local_processing and not local_folder:
         context.log.info("Local processing enabled but MAIN_INPUT_FOLDER not configured - skipping local processing")
+    else:
+        context.log.info("Local processing disabled")
 
-    # Process local dataframes if any
+    # STEP 3: Process local dataframes if any were collected
     if local_dfs:
+        context.log.info("=== STEP 3: Loading local data to Snowflake ===")
         # Combine all local dataframes
         combined_df = pd.concat(local_dfs, ignore_index=True)
 
@@ -567,8 +636,9 @@ def snowflake_master_company_urls(
             if col not in combined_df.columns:
                 combined_df[col] = None
 
-        # Generate company IDs
-        combined_df["company_id"] = combined_df["company_name"].apply(generate_company_id)
+        # Generate company IDs if not present in local files
+        if 'company_id' not in combined_df.columns:
+            combined_df["company_id"] = combined_df["company_name"].apply(generate_company_id)
 
         # Add timestamps - only if not already present from CSV
         current_time = datetime.now()
@@ -617,17 +687,20 @@ def snowflake_master_company_urls(
 
             if success:
                 stats["records_added"] += len(combined_df)
-                context.log.info(f"Successfully bulk-inserted {len(combined_df)} records from local files using write_pandas")
+                context.log.info(f"✓ Successfully bulk-inserted {len(combined_df)} records from local files using write_pandas")
             else:
-                context.log.error(f"Failed to bulk-insert records: {output}")
+                context.log.error(f"✗ Failed to bulk-insert records: {output}")
                 stats["errors"] += 1
 
         except Exception as e:
-            context.log.error(f"Error writing local data to Snowflake: {str(e)}")
+            context.log.error(f"✗ Error writing local data to Snowflake: {str(e)}")
             stats["errors"] += 1
+    else:
+        context.log.info("No local files to process")
 
-    # Update processing log for all processed files
+    # STEP 4: Update processing log for all processed files
     if all_file_metadata:
+        context.log.info("=== STEP 4: Updating processing log ===")
         cursor = conn.cursor()
         try:
             for file_meta in all_file_metadata:
@@ -673,15 +746,16 @@ def snowflake_master_company_urls(
                 ))
             conn.commit()
             stats["files_processed"] = len(all_file_metadata)
-            context.log.info(f"Updated processing log for {len(all_file_metadata)} files")
+            context.log.info(f"✓ Updated processing log for {len(all_file_metadata)} files")
         except Exception as e:
-            context.log.error(f"Error updating processing log: {str(e)}")
+            context.log.error(f"✗ Error updating processing log: {str(e)}")
             stats["errors"] += 1
         finally:
             cursor.close()
 
-    # Deduplicate data if enabled
+    # STEP 5: Deduplicate data if enabled
     if config.deduplicate_on_load:
+        context.log.info("=== STEP 5: Deduplicating data ===")
         cursor = conn.cursor()
         try:
             cursor.execute("USE DATABASE BETTERJOBS_DB")
@@ -719,9 +793,9 @@ def snowflake_master_company_urls(
             cursor.execute(f"ALTER TABLE {table_name}_deduped RENAME TO {table_name}")
 
             conn.commit()
-            context.log.info("Deduplication completed successfully")
+            context.log.info("✓ Deduplication completed successfully")
         except Exception as e:
-            context.log.error(f"Error during deduplication: {str(e)}")
+            context.log.error(f"✗ Error during deduplication: {str(e)}")
             stats["errors"] += 1
         finally:
             cursor.close()
