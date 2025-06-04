@@ -1,6 +1,6 @@
-# BetterJobs
+# BetterJobs-Snow
 
-BetterJobs is a comprehensive job search platform that retrieves job postings directly from company career portals across various Applicant Tracking Systems (ATS) such as Workday, Greenhouse, and more. This approach allows users to discover job opportunities as soon as they are posted, rather than waiting for them to appear on aggregator sites like LinkedIn or Indeed.
+BetterJobs-Snow is a comprehensive job market analytics project that retrieves job postings directly from company career portals across various Applicant Tracking Systems (ATS) such as Workday, Greenhouse, BambooHR, and more. The goal of this project is to analyze the job market for trends, hiring patterns, and industry insights.
 
 ## ⚠️ Disclaimer
 
@@ -14,34 +14,34 @@ BetterJobs is a comprehensive job search platform that retrieves job postings di
 
 ## Project Architecture
 
-The project consists of three main components:
-
-1. **Pipeline**: A Dagster data pipeline for retrieving, processing, and storing job data
-2. **Frontend**: A React application for searching and browsing job listings (in the `site` directory)
-
-For frontend-specific setup and information, see the [Frontend README](site/README.md).
+The project consists of a Dagster data pipeline implementing a medallion architecture (Bronze, Silver, Gold) for retrieving, processing, and storing job data in Snowflake for analytics and reporting.
 
 ### Data Flow Architecture
 
 ```
-Job Sources (Workday, Greenhouse, etc.)
+CSV Data Sources (Company URLs with verified ATS links)
          ↓
-   URL Discovery Jobs
+   CSV Ingestion (Bronze Layer)
          ↓
     Job Discovery Jobs
          ↓
- BigQuery/Supabase Storage
+   Data Transformation (Silver/Gold Layers)
          ↓
-    Frontend (React)
+   Snowflake Storage
          ↓
-      End User
+Analytics & Reporting
+         ↓
+  Business Intelligence
 ```
 
 ### Pipeline Components
-- **URL Discovery**: Finds career site URLs for companies using various strategies
-- **Job discovery**: Extracts job listings from company sites, varies by ATS platform
-- **Data Processing**: Normalizes job data and performs content enrichment
-- **Data Storage**: Stores job and company data in BigQuery and Supabase
+- **CSV Ingestion**: Processes CSV files containing company information with verified ATS URLs from S3 and local sources
+- **Adhoc Processing**: Sensor-based ingestion for additional CSV files as needed
+- **Job Discovery**: Extracts job listings from company sites, varies by ATS platform
+- **Data Transformation**: Medallion architecture layers for data quality and enrichment (Bronze → Silver → Gold)
+- **Data Storage**: Stores job and company data in Snowflake for analytics
+
+**Note**: The initial CSV files with verified ATS URLs were generated from a previous version of this project that included automated URL discovery and extraction processes.
 
 ### Dagster Pipeline Visualization
 
@@ -49,46 +49,39 @@ The following diagram shows the structure of our Dagster pipeline assets, includ
 
 ![Dagster Pipeline Structure](dagsterpipeline.png)
 
-### Frontend Components
-- **Search**: Advanced job search with filters
-- **Company Browser**: View companies and their job listings
-- **Job Detail View**: View complete job listings with formatted descriptions
+### Analytics & Reporting
+- **Job Market Trends**: Track hiring patterns across industries and companies
+- **Company Analysis**: Monitor job posting frequency and patterns by company
+- **ATS Platform Insights**: Compare job posting volumes across different platforms
+- **Geographic Distribution**: Analyze job opportunities by location
+- **Skills & Requirements**: Extract insights from job descriptions and requirements
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js (v18+)
 - Python (v3.10+)
 - Docker (optional, for containerized deployment)
 - Dagster
 - Access to the following external services:
-  - Google Cloud Platform (BigQuery)
-  - Supabase
+  - Snowflake
   - Google AI Gemini API
   - OpenAI API (optional)
 
 ### External Service Setup
 
-#### 1. Google Cloud Platform
-- Create a GCP project
-- Enable BigQuery API
-- Create a service account with BigQuery permissions
-- Generate and download a service account key (JSON)
-- Encode the JSON key as base64 for environment variables
+#### 1. Snowflake
+- Create a Snowflake account and warehouse
+- Create a database (e.g., `BETTERJOBS_DB`)
+- Create schemas for raw data (`RAW`) and processed data (`PROCESSED`)
+- Create a user with appropriate permissions
+- Note your account identifier, warehouse, and database details
 
-```bash
-# Example: Convert service account JSON to base64
-cat service-account.json | base64 -w 0 > credentials.b64
-```
+**For detailed Snowflake setup instructions, see: [SNOWFLAKE_SETUP.md](pipeline/docs/setup/SNOWFLAKE_SETUP.md)**
 
-#### 2. Supabase
-- Create a Supabase project
-- Set up the jobs table in supabase via the prisma migration in the frontend project under site/
-- Note: Supabase is only needed if using the frontend.
-- Get your Supabase URL and API keys
+**For S3-Snowflake integration setup, see: [S3_SNOWFLAKE_SETUP.md](pipeline/docs/setup/S3_SNOWFLAKE_SETUP.md)**
 
-#### 3. Gemini API
+#### 2. Gemini API
 - Set up Google AI Studio account
 - Generate an API key for Gemini
 
@@ -97,25 +90,19 @@ cat service-account.json | base64 -w 0 > credentials.b64
 Create a `.env` file in the project root with the following variables:
 
 ```
-# GCP/BigQuery
-GCP_PROJECT_ID=your_gcp_project_id
-GCP_DATASET_ID=your_bigquery_dataset
-GCP_LOCATION=us
-GCP_CREDENTIALS=base64_encoded_service_account_key
-
-# Supabase
-SUPABASE_HOST=your_supabase_host.supabase.co
-SUPABASE_USER=postgres
-SUPABASE_PASSWORD=your_db_password
-SUPABASE_DB=postgres
+# Snowflake
+SNOWFLAKE_ACCOUNT=your_account_identifier
+SNOWFLAKE_USER=your_username
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_DATABASE=BETTERJOBS_DB
+SNOWFLAKE_RAW_SCHEMA=RAW
+SNOWFLAKE_PROCESSED_SCHEMA=PROCESSED
+SNOWFLAKE_WAREHOUSE=your_warehouse
+SNOWFLAKE_ROLE=your_role
 
 # AI APIs
 GEMINI_API_KEY=your_gemini_api_key
 OPENAI_API_KEY=your_openai_api_key
-
-# Frontend (site/.env)
-SUPABASE_URL=your_supabase_url
-SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
 ### Installation
@@ -134,34 +121,19 @@ pip install -e .
 
 The `setup.py` file includes all necessary dependencies including:
 - Dagster and related packages
-- DuckDB and Postgres connectors
-- Google Cloud dependencies
+- Snowflake connector
 - Web discovery tools (BeautifulSoup, lxml)
 - Gemini AI integration
 
-3. Set up the frontend
-```bash
-cd ../../site
-npm install
-```
+### Running the Pipeline
 
-### Running the Application
-
-1. Start the Dagster pipeline
+Start the Dagster pipeline:
 ```bash
 cd pipeline/dagster_betterjobs
 dagster dev
 ```
 
 The Dagster UI will be available at `http://localhost:3000` where you can run jobs, materialize assets, and monitor the pipeline.
-
-2. Start the frontend
-```bash
-cd ../../site
-npm run dev
-```
-
-The frontend will be available at `http://localhost:5173`.
 
 ## Pipeline Jobs
 
@@ -232,10 +204,10 @@ This approach is useful for initial setup or when adding many new companies.
 
 For quickly adding or updating specific companies:
 
-1. Materialize the master_company_urls asset:
+1. Materialize the snowflake_master_company_urls asset:
 ```bash
 cd pipeline/dagster_betterjobs
-python -m dagster asset materialize -a master_company_urls
+python -m dagster asset materialize -a snowflake_master_company_urls
 ```
 
 2. Add company entries to `pipeline/dagster_betterjobs/input/adhoc_companies.csv` with the following format:
@@ -287,13 +259,78 @@ def jobs_every_four_hours_schedule():
 - To conserve resources, focus on platforms with high job turnover
 - Some ATS platforms have rate limits - avoid running jobs too frequently
 
+## Data Analytics & Reporting
+
+### Snowflake Tables
+
+The pipeline creates and maintains several key tables in Snowflake:
+
+- **master_company_urls**: Company information and career site URLs
+- **workday_jobs**: Job listings from Workday platforms
+- **greenhouse_jobs**: Job listings from Greenhouse platforms
+- **bamboohr_jobs**: Job listings from BambooHR platforms
+- **smartrecruiters_jobs**: Job listings from SmartRecruiters platforms
+
+### Sample Analytics Queries
+
+**Job Posting Trends by Platform:**
+```sql
+SELECT
+    platform,
+    DATE_TRUNC('week', date_posted) as week,
+    COUNT(*) as jobs_posted
+FROM (
+    SELECT 'workday' as platform, date_posted FROM workday_jobs WHERE is_active = TRUE
+    UNION ALL
+    SELECT 'greenhouse' as platform, date_posted FROM greenhouse_jobs WHERE is_active = TRUE
+    UNION ALL
+    SELECT 'bamboohr' as platform, date_posted FROM bamboohr_jobs WHERE is_active = TRUE
+)
+GROUP BY platform, week
+ORDER BY week DESC;
+```
+
+**Top Companies by Job Volume:**
+```sql
+SELECT
+    c.company_name,
+    c.company_industry,
+    COUNT(*) as total_jobs
+FROM master_company_urls c
+JOIN workday_jobs j ON c.company_id = j.company_id
+WHERE j.is_active = TRUE
+GROUP BY c.company_name, c.company_industry
+ORDER BY total_jobs DESC
+LIMIT 20;
+```
+
+### Business Intelligence Integration
+
+The Snowflake data warehouse can be connected to various BI tools:
+
+- **Tableau**: Connect directly to Snowflake for interactive dashboards
+- **Power BI**: Use Snowflake connector for real-time reporting
+- **Looker**: Create data models and exploration interfaces
+- **Databricks**: For advanced analytics and machine learning
+- **dbt**: For data transformation and modeling
+
 ## Features
 
-- **Early Job Discovery**: Find jobs as soon as they're posted
-- **Direct Links**: Apply directly through company career sites
-- **Comprehensive Search**: Filter by title, company, location, and more
-- **Statistics**: View trends in job postings across platforms
-- **Company Tracking**: Monitor job listings from specific companies
+- **Real-time Job Discovery**: Find jobs as soon as they're posted to company sites
+- **Multi-platform Coverage**: Support for major ATS platforms (Workday, Greenhouse, BambooHR, etc.)
+- **Comprehensive Analytics**: Track job market trends, company hiring patterns, and industry insights
+- **Scalable Architecture**: Handle large volumes of job data with Snowflake's cloud data platform
+- **Automated Processing**: Schedule regular job discovery and data updates
+- **Data Quality**: Built-in validation and deduplication of job listings
+
+## Migration Notes
+
+This project has been migrated from BigQuery to Snowflake to provide:
+- Better performance for analytics workloads
+- More cost-effective data storage and compute
+- Enhanced support for semi-structured data
+- Improved integration with modern BI tools
+- Better separation of compute and storage
 
 ## Contributing
 
@@ -305,4 +342,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-Built as a personal project for exploring job market data and modern web technologies.
+Built as a personal project for exploring job market data and modern data engineering technologies.

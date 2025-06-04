@@ -6,7 +6,8 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from google.cloud import bigquery
+import snowflake.connector
+from snowflake.connector.pandas_tools import write_pandas
 from dagster import (
     asset, AssetExecutionContext, Config, get_dagster_logger,
     MetadataValue, AssetMaterialization, StaticPartitionsDefinition,
@@ -39,29 +40,27 @@ class WorkdayJobsDiscoveryConfig(Config):
 
 @asset(
     group_name="job_discovery",
-    kinds={"API", "bigquery", "python"},
-    required_resource_keys={"bigquery"},
-    deps=["master_company_urls"],
+    kinds={"API", "snowflake", "python"},
+    required_resource_keys={"snowflake"},
+    deps=["snowflake_master_company_urls"],
     partitions_def=alpha_partitions
 )
 def workday_company_jobs_discovery(context: AssetExecutionContext, config: WorkdayJobsDiscoveryConfig) -> Dict:
     """
     Discovers and stores job listings from Workday career sites.
-
-    Processes companies partitioned by first letter of company name,
-    retrieves all current job listings, and stores them in BigQuery.
+    Processes companies partitioned by first letter of company name.
     """
-    # Initialize BigQuery client and get dataset
-    client = context.resources.bigquery
-    dataset_name = os.getenv("GCP_DATASET_ID")
+    # Initialize Snowflake connection
+    conn = context.resources.snowflake.get_connection()
+    database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
+    schema_name = os.getenv("SNOWFLAKE_RAW_SCHEMA", "RAW")
     partition_key = context.partition_key
 
     # Set job freshness cutoff date
     cutoff_date = datetime.now() - timedelta(days=config.days_to_look_back)
     cutoff_str = cutoff_date.strftime("%Y-%m-%d")
 
-    context.log.info(f"Processing company name partition {partition_key}")
-    context.log.info(f"Only processing jobs posted after {cutoff_str}")
+    context.log.info(f"Processing partition {partition_key} - jobs posted after {cutoff_str}")
 
     # Resolve checkpoint directory path
     cwd = Path(os.getcwd())
@@ -76,19 +75,17 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
     checkpoint_file = checkpoint_dir / f"workday_jobs_discovery_{partition_key}_checkpoint.csv"
     failed_companies_file = checkpoint_dir / f"workday_jobs_discovery_{partition_key}_failed.csv"
 
-    context.log.info(f"Using checkpoint file: {checkpoint_file}")
-
     # Build query for companies in current partition
     if partition_key == "0-9":
-        letter_filter = "AND REGEXP_CONTAINS(company_name, '^[0-9]')"
+        letter_filter = "AND SUBSTRING(company_name, 1, 1) BETWEEN '0' AND '9'"
     elif partition_key == "other":
-        letter_filter = "AND NOT REGEXP_CONTAINS(company_name, '^[a-zA-Z0-9]')"
+        letter_filter = "AND NOT (SUBSTRING(company_name, 1, 1) BETWEEN 'A' AND 'Z' OR SUBSTRING(company_name, 1, 1) BETWEEN 'a' AND 'z' OR SUBSTRING(company_name, 1, 1) BETWEEN '0' AND '9')"
     else:
-        letter_filter = f"AND REGEXP_CONTAINS(company_name, '^[{partition_key}{partition_key.lower()}]')"
+        letter_filter = f"AND (company_name LIKE '{partition_key}%' OR company_name LIKE '{partition_key.lower()}%')"
 
     query = f"""
     SELECT company_id, company_name, company_industry, career_url, ats_url
-    FROM {dataset_name}.master_company_urls
+    FROM {database_name}.{schema_name}.master_company_urls
     WHERE platform = 'workday'
     AND (ats_url IS NOT NULL OR career_url IS NOT NULL)
     AND url_verified = TRUE
@@ -103,49 +100,57 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
 
     query += " ORDER BY company_id"
 
-    # Apply limit if specified in config
     if config.max_companies:
         query += f" LIMIT {config.max_companies}"
 
     try:
-        query_job = client.query(query)
-        companies_df = query_job.to_dataframe()
+        cursor = conn.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        companies_df = pd.DataFrame(results, columns=columns)
+        companies_df.columns = companies_df.columns.str.lower()
+        cursor.close()
     except Exception as e:
         context.log.error(f"Error querying master_company_urls: {str(e)}")
         return {"error": str(e), "status": "failed"}
 
     total_companies = len(companies_df)
-    context.log.info(f"Found {total_companies} Workday companies in partition {partition_key} to process")
+    context.log.info(f"Found {total_companies} companies in partition {partition_key}")
 
     # Create workday_jobs table if it doesn't exist
-    create_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS {dataset_name}.workday_jobs (
-        job_id STRING,
-        company_id STRING,
-        job_title STRING,
-        job_description STRING,
-        job_url STRING,
-        location STRING,
-        time_type STRING,
-        employment_type STRING,
-        published_at DATE,
-        valid_through DATE,
-        date_retrieved TIMESTAMP,
-        is_active BOOL,
-        raw_data STRING,
-        partition_key STRING,
-        work_type STRING,
-        compensation STRING
-    )
-    """
-
+    cursor = conn.cursor()
     try:
-        query_job = client.query(create_table_sql)
-        query_job.result()
-        context.log.info("Created or verified workday_jobs table in BigQuery")
+        cursor.execute(f"USE DATABASE {database_name}")
+        cursor.execute(f"USE SCHEMA {schema_name}")
+
+        create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS workday_jobs (
+            job_id STRING,
+            company_id STRING,
+            job_title STRING,
+            job_description STRING,
+            job_url STRING,
+            location STRING,
+            time_type STRING,
+            employment_type STRING,
+            published_at DATE,
+            valid_through DATE,
+            date_retrieved TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN,
+            raw_data STRING,
+            partition_key STRING,
+            work_type STRING,
+            compensation STRING
+        )
+        """
+        cursor.execute(create_table_sql)
+        conn.commit()
     except Exception as e:
         context.log.error(f"Error creating jobs table: {str(e)}")
         return {"error": str(e), "status": "failed"}
+    finally:
+        cursor.close()
 
     # Track processing statistics
     stats = {
@@ -171,39 +176,34 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
             checkpoint_df = pd.read_csv(checkpoint_file)
             processed_company_ids = set(checkpoint_df["company_id"].astype(str).tolist())
             checkpoint_results = checkpoint_df.to_dict("records")
-            context.log.info(f"Loaded {len(processed_company_ids)} previously processed companies from checkpoint")
+            context.log.info(f"Loaded {len(processed_company_ids)} previously processed companies")
         except Exception as e:
             context.log.error(f"Error loading checkpoint file: {str(e)}")
 
-    # Load previously failed companies if file exists
+    # Filter companies based on checkpoint status
+    if not config.process_all_companies and checkpoint_file.exists():
+        companies_to_process = companies_df[~companies_df["company_id"].astype(str).isin(processed_company_ids)]
+        context.log.info(f"{len(companies_to_process)} companies remaining after checkpoint filter")
+    else:
+        companies_to_process = companies_df
+
+    # Load previously failed companies
     if failed_companies_file.exists():
         try:
             failed_df = pd.read_csv(failed_companies_file)
             failed_companies = failed_df.to_dict("records")
-            context.log.info(f"Loaded {len(failed_companies)} previously failed companies")
         except Exception as e:
             context.log.error(f"Error loading failed companies file: {str(e)}")
 
-    # Filter out already processed companies
-    if not config.process_all_companies:
-        companies_to_process = companies_df[~companies_df["company_id"].astype(str).isin(processed_company_ids)]
-        context.log.info(f"{len(companies_to_process)} companies remaining to process")
-    else:
-        companies_to_process = companies_df
-        context.log.info(f"Processing all {len(companies_to_process)} companies (ignoring checkpoint)")
-
-    # Get batch size from config
+    # Process companies in batches
     batch_size = config.batch_size
     new_failed_companies = []
 
-    # Process companies in batches
     for i in range(0, len(companies_to_process), batch_size):
         batch = companies_to_process.iloc[i:i+batch_size]
         batch_num = i//batch_size + 1
         total_batches = (len(companies_to_process) + batch_size - 1) // batch_size
-        context.log.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} companies)")
 
-        # List to track jobs from this batch
         batch_jobs = []
 
         # Process each company in batch
@@ -213,11 +213,10 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
             career_url = company["career_url"]
             ats_url = company["ats_url"]
 
-            context.log.info(f"Processing jobs for {company_name} (ID: {company_id})")
+            context.log.info(f"Processing {company_name} (ID: {company_id})")
 
             # Use ATS URL if available, otherwise fall back to career URL
             url_to_use = ats_url if ats_url else career_url
-            context.log.info(f"Using URL: {url_to_use}")
 
             # Track company results for checkpoint
             company_result = {
@@ -238,14 +237,13 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                     rate_limit=config.rate_limit,
                     max_retries=config.max_retries,
                     retry_delay=config.retry_delay,
-                    dagster_log=context.log  # Pass Dagster logger to the scraper
+                    dagster_log=context.log
                 )
 
                 # Get all job listings
                 job_listings = scraper.search_jobs()
 
                 if not job_listings:
-                    context.log.info(f"No jobs found for {company_name}")
                     checkpoint_results.append(company_result)
                     continue
 
@@ -254,93 +252,75 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                 stats["companies_with_jobs"] += 1
                 stats["total_jobs_found"] += len(job_listings)
 
-                # Track jobs found for this company
                 company_jobs_added = 0
                 company_jobs_updated = 0
 
-                # Check which jobs already exist in BigQuery
-                if len(job_listings) > 0:
+                # Check which jobs already exist in Snowflake
+                existing_jobs = {}
+                if job_listings:
                     job_ids = [job.get("job_id") for job in job_listings if job.get("job_id")]
-                    # Remove None and empty values
-                    job_ids = [job_id for job_id in job_ids if job_id]
-
-                    existing_jobs = {}
                     if job_ids:
-                        # Format IDs for the query with proper quoting
-                        job_ids_str = ", ".join([f"'{job_id}'" for job_id in job_ids])
-                        existing_query = f"""
-                        SELECT job_id, is_active, date_retrieved
-                        FROM {dataset_name}.workday_jobs
-                        WHERE company_id = '{company_id}'
-                        AND job_id IN ({job_ids_str})
-                        """
-
+                        cursor = conn.cursor()
                         try:
-                            existing_job_rows = client.query(existing_query).result()
-                            for row in existing_job_rows:
-                                existing_jobs[row.job_id] = {
-                                    "is_active": row.is_active,
-                                    "date_retrieved": row.date_retrieved
+                            job_ids_placeholders = ",".join(["%s"] * len(job_ids))
+                            existing_query = f"""
+                            SELECT job_id, is_active, date_retrieved
+                            FROM {database_name}.{schema_name}.workday_jobs
+                            WHERE company_id = %s
+                            AND job_id IN ({job_ids_placeholders})
+                            """
+                            cursor.execute(existing_query, [company_id] + job_ids)
+                            for row in cursor.fetchall():
+                                existing_jobs[row[0]] = {
+                                    "is_active": row[1],
+                                    "date_retrieved": row[2]
                                 }
-                            context.log.info(f"Found {len(existing_jobs)} existing jobs for {company_name}")
                         except Exception as e:
-                            context.log.error(f"Error querying existing jobs: {str(e)}")
+                            context.log.error(f"Error checking existing jobs: {str(e)}")
+                        finally:
+                            cursor.close()
 
                 # Process each job listing
                 for job in job_listings:
-                    # Extract job data
                     job_id = job.get("job_id")
                     job_title = job.get("job_title", "")
                     job_url = job.get("job_url", "")
                     location = job.get("location", "")
                     time_type = job.get("time_type", "")
                     posted_on = job.get("posted_on", "")
-                    raw_data = job.get("raw_data", "{}")
 
-                    # Skip jobs without ID
                     if not job_id:
-                        context.log.warning(f"Skipping job without ID: {job_title}")
                         continue
 
-                    # Check if job already exists
-                    existing_job = existing_jobs.get(job_id)
-
-                    # Get detailed job info if needed
+                    # Get detailed job info unless skipped in config
                     job_description = ""
                     employment_type = ""
                     date_posted = ""
                     valid_through = ""
                     work_type = job.get("work_type", "")
                     compensation = ""
+                    raw_data = json.dumps(job.get("raw_data", {}))
 
                     if not config.skip_detailed_fetch:
                         try:
-                            context.log.info(f"Fetching details for job: {job_title}")
                             job_details = scraper.get_job_details(job_url)
-
-                            # Extract additional details
                             job_description = job_details.get("job_description", "")
                             date_posted = job_details.get("date_posted", "")
                             valid_through = job_details.get("valid_through", "")
                             employment_type = job_details.get("employment_type", "")
 
-                            # Get work_type from details if available
                             if job_details.get("work_type"):
                                 work_type = job_details.get("work_type")
 
-                            # Update with more detailed raw data if available
                             if job_details.get("raw_data"):
-                                raw_data = job_details.get("raw_data")
+                                raw_data = json.dumps(job_details.get("raw_data"))
 
-                            # Add a delay to avoid rate limiting
-                            time.sleep(config.rate_limit / 2)  # Half the regular rate limit
+                            time.sleep(config.rate_limit / 2)
                         except Exception as e:
-                            context.log.error(f"Error fetching job details: {str(e)}")
+                            context.log.warning(f"Error getting details for job {job_id}: {str(e)}")
 
-                    # Try to parse date from different formats
+                    # Parse date from posted_on text
                     published_at = None
-
-                    # Try to extract date from posted_on text (e.g., "Posted 3 Days Ago")
                     if posted_on:
                         days_ago_match = re.search(r'Posted (\d+) Days? Ago', posted_on)
                         if days_ago_match:
@@ -351,25 +331,26 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                         elif "Posted Yesterday" in posted_on:
                             published_at = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
                         elif "Posted 30+ Days Ago" in posted_on:
-                            # Estimate as 30 days ago
                             published_at = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-                    # If we got a date_posted from detail page, use that instead
                     if date_posted:
                         published_at = date_posted
 
-                    # Skip old jobs based on cutoff date if we have a date
+                    # Check posting date if available
+                    is_recent = True
                     if published_at:
                         try:
-                            job_date = datetime.strptime(published_at, "%Y-%m-%d")
-                            if job_date < cutoff_date:
-                                context.log.info(f"Skipping old job: {job_title} (posted {published_at})")
-                                stats["old_jobs_skipped"] += 1
-                                continue
-                            else:
-                                stats["recent_jobs"] += 1
-                        except Exception as e:
-                            context.log.warning(f"Error parsing job date: {str(e)}")
+                            posted_date = datetime.strptime(published_at, "%Y-%m-%d")
+                            is_recent = posted_date >= cutoff_date
+                        except (ValueError, TypeError):
+                            is_recent = True
+
+                    # Skip old jobs
+                    if not is_recent:
+                        stats["old_jobs_skipped"] += 1
+                        continue
+
+                    stats["recent_jobs"] += 1
 
                     # Prepare job record
                     job_record = {
@@ -383,7 +364,6 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                         "employment_type": employment_type,
                         "published_at": published_at,
                         "valid_through": valid_through,
-                        "date_retrieved": datetime.now().isoformat(),
                         "is_active": True,
                         "raw_data": raw_data,
                         "partition_key": partition_key,
@@ -391,12 +371,10 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                         "compensation": compensation
                     }
 
-                    if existing_job:
-                        # For existing jobs, we'll handle updates in a separate step
+                    if job_id in existing_jobs:
                         company_jobs_updated += 1
                         stats["updated_jobs"] += 1
                     else:
-                        # Add to batch for insertion
                         batch_jobs.append(job_record)
                         company_jobs_added += 1
                         stats["new_jobs_added"] += 1
@@ -404,182 +382,135 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                 # Update company result for checkpoint
                 company_result["jobs_added"] = company_jobs_added
                 company_result["jobs_updated"] = company_jobs_updated
-                context.log.info(f"Processed {company_name}: Added {company_jobs_added}, Updated {company_jobs_updated}")
 
-                # Add a delay between companies to avoid rate limits
                 time.sleep(config.rate_limit)
 
             except Exception as e:
                 context.log.error(f"Error processing company {company_name}: {str(e)}")
-                company_result["status"] = "error"
-                company_result["error"] = str(e)
                 stats["errors"] += 1
 
-                # Add to failed companies list
-                new_failed_companies.append({
+                company_result["status"] = "error"
+                company_result["error"] = str(e)
+
+                # Add to failed companies
+                failed_entry = {
                     "company_id": company_id,
                     "company_name": company_name,
                     "error": str(e),
                     "timestamp": datetime.now().isoformat(),
                     "partition_key": partition_key
-                })
+                }
+                new_failed_companies.append(failed_entry)
 
-            # Update stats and checkpoints
-            stats["companies_processed"] += 1
             checkpoint_results.append(company_result)
+            stats["companies_processed"] += 1
 
-            # Save checkpoint after each company for resumability
-            try:
-                pd.DataFrame(checkpoint_results).to_csv(checkpoint_file, index=False)
-            except Exception as e:
-                context.log.error(f"Error saving checkpoint: {str(e)}")
-
-        # Insert jobs from this batch to BigQuery
+        # Insert jobs from this batch to Snowflake
         if batch_jobs:
             try:
-                # Create a temporary table for bulk loading
-                temp_table_name = f"{dataset_name}.workday_jobs_temp"
-
-                # Drop the temp table if it exists
-                query_job = client.query(f"DROP TABLE IF EXISTS {temp_table_name}")
-                query_job.result()
-
-                # Create the temporary table
-                create_temp_sql = f"""
-                CREATE TABLE {temp_table_name} (
-                    job_id STRING,
-                    company_id STRING,
-                    job_title STRING,
-                    job_description STRING,
-                    job_url STRING,
-                    location STRING,
-                    time_type STRING,
-                    employment_type STRING,
-                    published_at DATE,
-                    valid_through DATE,
-                    date_retrieved TIMESTAMP,
-                    is_active BOOL,
-                    raw_data STRING,
-                    partition_key STRING,
-                    work_type STRING,
-                    compensation STRING
-                )
-                """
-                query_job = client.query(create_temp_sql)
-                query_job.result()
-
-                # Convert list of dicts to dataframe
                 jobs_df = pd.DataFrame(batch_jobs)
 
-                # Handle data types - ensure all IDs are strings
-                for col in jobs_df.columns:
-                    if col.endswith('_id') or col == 'job_id' or col == 'company_id':
-                        jobs_df[col] = jobs_df[col].astype(str)
-
-                # Handle other object columns
+                # Handle data types for Snowflake
                 for col in jobs_df.select_dtypes(include=['object']).columns:
-                    jobs_df[col] = jobs_df[col].fillna('').astype(str)
+                    if col not in ['published_at', 'valid_through']:
+                        jobs_df[col] = jobs_df[col].fillna('').astype(str)
 
-                # Convert date columns
+                # Convert date columns properly for Snowflake
                 if 'published_at' in jobs_df.columns:
                     jobs_df['published_at'] = pd.to_datetime(jobs_df['published_at'], errors='coerce')
+                    jobs_df['published_at'] = jobs_df['published_at'].dt.date
+                    jobs_df['published_at'] = jobs_df['published_at'].where(pd.notnull(jobs_df['published_at']), None)
 
                 if 'valid_through' in jobs_df.columns:
                     jobs_df['valid_through'] = pd.to_datetime(jobs_df['valid_through'], errors='coerce')
+                    jobs_df['valid_through'] = jobs_df['valid_through'].dt.date
+                    jobs_df['valid_through'] = jobs_df['valid_through'].where(pd.notnull(jobs_df['valid_through']), None)
 
-                if 'date_retrieved' in jobs_df.columns:
-                    jobs_df['date_retrieved'] = pd.to_datetime(jobs_df['date_retrieved'], errors='coerce')
+                if 'is_active' in jobs_df.columns:
+                    jobs_df['is_active'] = jobs_df['is_active'].astype(bool)
 
-                # Set up job configuration
-                job_config = bigquery.LoadJobConfig(
-                    write_disposition="WRITE_TRUNCATE",
-                    schema=[
-                        bigquery.SchemaField("job_id", "STRING"),
-                        bigquery.SchemaField("company_id", "STRING"),
-                        bigquery.SchemaField("job_title", "STRING"),
-                        bigquery.SchemaField("job_description", "STRING"),
-                        bigquery.SchemaField("job_url", "STRING"),
-                        bigquery.SchemaField("location", "STRING"),
-                        bigquery.SchemaField("time_type", "STRING"),
-                        bigquery.SchemaField("employment_type", "STRING"),
-                        bigquery.SchemaField("published_at", "DATE"),
-                        bigquery.SchemaField("valid_through", "DATE"),
-                        bigquery.SchemaField("date_retrieved", "TIMESTAMP"),
-                        bigquery.SchemaField("is_active", "BOOL"),
-                        bigquery.SchemaField("raw_data", "STRING"),
-                        bigquery.SchemaField("partition_key", "STRING"),
-                        bigquery.SchemaField("work_type", "STRING"),
-                        bigquery.SchemaField("compensation", "STRING")
-                    ]
-                )
-
-                # Load the dataframe into the temporary table
-                job = client.load_table_from_dataframe(
+                # Use write_pandas for bulk insert
+                success, num_chunks, num_rows, output = write_pandas(
+                    conn,
                     jobs_df,
-                    temp_table_name,
-                    job_config=job_config
+                    'workday_jobs',
+                    database=database_name,
+                    schema=schema_name,
+                    auto_create_table=False,
+                    overwrite=False,
+                    quote_identifiers=False
                 )
-                # Wait for the load job to complete
-                job.result()
-                context.log.info(f"Loaded {len(jobs_df)} jobs into temporary table")
 
-                # Insert new jobs into the main table
-                insert_sql = f"""
-                INSERT INTO {dataset_name}.workday_jobs
-                SELECT * FROM {temp_table_name}
-                """
-                query_job = client.query(insert_sql)
-                query_job.result()
-                context.log.info(f"Inserted {len(jobs_df)} new jobs into main table")
+                if success:
+                    context.log.info(f"Loaded batch of {len(batch_jobs)} jobs into Snowflake")
+                else:
+                    context.log.error(f"Failed to load jobs to Snowflake: {output}")
+                    stats["errors"] += 1
 
-                # Clean up - drop the temporary table
-                query_job = client.query(f"DROP TABLE IF EXISTS {temp_table_name}")
-                query_job.result()
+                # Handle updates for existing jobs
+                if any(result["jobs_updated"] > 0 for result in checkpoint_results):
+                    cursor = conn.cursor()
+                    try:
+                        for job_record in batch_jobs:
+                            if job_record["job_id"] in existing_jobs:
+                                update_sql = f"""
+                                UPDATE {database_name}.{schema_name}.workday_jobs
+                                SET
+                                    job_title = %s,
+                                    job_description = %s,
+                                    job_url = %s,
+                                    location = %s,
+                                    time_type = %s,
+                                    employment_type = %s,
+                                    published_at = %s,
+                                    valid_through = %s,
+                                    date_retrieved = CURRENT_TIMESTAMP,
+                                    is_active = %s,
+                                    raw_data = %s,
+                                    partition_key = %s,
+                                    work_type = %s,
+                                    compensation = %s
+                                WHERE job_id = %s AND company_id = %s
+                                """
+                                cursor.execute(update_sql, (
+                                    job_record["job_title"],
+                                    job_record["job_description"],
+                                    job_record["job_url"],
+                                    job_record["location"],
+                                    job_record["time_type"],
+                                    job_record["employment_type"],
+                                    job_record["published_at"],
+                                    job_record["valid_through"],
+                                    job_record["is_active"],
+                                    job_record["raw_data"],
+                                    job_record["partition_key"],
+                                    job_record["work_type"],
+                                    job_record["compensation"],
+                                    job_record["job_id"],
+                                    job_record["company_id"]
+                                ))
+                        conn.commit()
+                    except Exception as e:
+                        context.log.error(f"Error updating existing jobs: {str(e)}")
+                    finally:
+                        cursor.close()
 
             except Exception as e:
-                context.log.error(f"Error inserting jobs into BigQuery: {str(e)}")
-                import traceback
-                context.log.error(f"Traceback: {traceback.format_exc()}")
+                context.log.error(f"Error loading jobs to Snowflake: {str(e)}")
+                stats["errors"] += 1
 
-        # Update existing jobs to mark them as still active
-        if stats["updated_jobs"] > 0:
-            try:
-                # Get job IDs from this batch
-                company_ids = batch["company_id"].astype(str).tolist()
-                company_ids_str = ", ".join([f"'{company_id}'" for company_id in company_ids])
-
-                # Extract unique job IDs for active jobs
-                active_job_ids = []
-                for job in job_listings:
-                    if job.get("job_id") and job.get("job_id") in existing_jobs:
-                        active_job_ids.append(job.get("job_id"))
-
-                if active_job_ids:
-                    # Format for SQL query
-                    job_ids_str = ", ".join([f"'{job_id}'" for job_id in active_job_ids])
-
-                    # Update existing jobs
-                    update_sql = f"""
-                    UPDATE {dataset_name}.workday_jobs
-                    SET
-                        date_retrieved = CURRENT_TIMESTAMP(),
-                        is_active = TRUE
-                    WHERE company_id IN ({company_ids_str})
-                    AND job_id IN ({job_ids_str})
-                    """
-
-                    query_job = client.query(update_sql)
-                    query_job.result()
-                    context.log.info(f"Updated {len(active_job_ids)} existing jobs")
-            except Exception as e:
-                context.log.error(f"Error updating existing jobs: {str(e)}")
+        # Save checkpoint after each batch
+        try:
+            checkpoint_df = pd.DataFrame(checkpoint_results)
+            checkpoint_df.to_csv(checkpoint_file, index=False)
+        except Exception as e:
+            context.log.error(f"Error saving checkpoint: {str(e)}")
 
         # Save failed companies if any new failures
         if new_failed_companies:
             try:
                 all_failed = failed_companies + new_failed_companies
                 pd.DataFrame(all_failed).to_csv(failed_companies_file, index=False)
-                context.log.info(f"Updated failed companies list with {len(new_failed_companies)} new entries")
             except Exception as e:
                 context.log.error(f"Error saving failed companies: {str(e)}")
 
@@ -601,50 +532,64 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
             )
         )
 
-    # Mark inactive jobs (if we found at least one job for a company)
+    # Mark inactive jobs for processed companies
     if stats["companies_with_jobs"] > 0:
         try:
-            # Get all companies that were successfully processed
             processed_company_ids = []
             for result in checkpoint_results:
                 if result.get("status") == "success" and result.get("jobs_found", 0) > 0:
                     processed_company_ids.append(result.get("company_id"))
 
             if processed_company_ids:
-                # Format for SQL
-                company_ids_str = ", ".join([f"'{company_id}'" for company_id in processed_company_ids])
-
-                # Mark jobs as inactive if they weren't seen in this run
-                current_date = datetime.now().strftime("%Y-%m-%d")
-                inactivate_sql = f"""
-                UPDATE {dataset_name}.workday_jobs
-                SET is_active = FALSE
-                WHERE company_id IN ({company_ids_str})
-                AND date_retrieved < '{current_date}'
-                AND is_active = TRUE
-                """
-
-                query_job = client.query(inactivate_sql)
-                result = query_job.result()
-
-                # Get count of affected rows
-                inactive_count = query_job.num_dml_affected_rows
-                context.log.info(f"Marked {inactive_count} jobs as inactive")
-                stats["jobs_marked_inactive"] = inactive_count
+                cursor = conn.cursor()
+                try:
+                    company_ids_placeholders = ",".join(["%s"] * len(processed_company_ids))
+                    current_date = datetime.now().strftime("%Y-%m-%d")
+                    inactivate_sql = f"""
+                    UPDATE {database_name}.{schema_name}.workday_jobs
+                    SET is_active = FALSE
+                    WHERE company_id IN ({company_ids_placeholders})
+                    AND DATE(date_retrieved) < %s
+                    AND is_active = TRUE
+                    """
+                    cursor.execute(inactivate_sql, processed_company_ids + [current_date])
+                    conn.commit()
+                    inactive_count = cursor.rowcount
+                    context.log.info(f"Marked {inactive_count} jobs as inactive")
+                    stats["jobs_marked_inactive"] = inactive_count
+                except Exception as e:
+                    context.log.error(f"Error marking inactive jobs: {str(e)}")
+                finally:
+                    cursor.close()
         except Exception as e:
-            context.log.error(f"Error marking inactive jobs: {str(e)}")
+            context.log.error(f"Error processing inactive jobs: {str(e)}")
 
-    # Log summary stats
-    context.log.info(f"Workday job discovery complete for partition {partition_key}. Stats:")
-    context.log.info(f"Total companies: {stats['total_companies']}")
-    context.log.info(f"Companies processed: {stats['companies_processed']}")
-    context.log.info(f"Companies with jobs: {stats['companies_with_jobs']}")
-    context.log.info(f"Total jobs found: {stats['total_jobs_found']}")
-    context.log.info(f"New jobs added: {stats['new_jobs_added']}")
-    context.log.info(f"Jobs updated: {stats['updated_jobs']}")
-    if "jobs_marked_inactive" in stats:
-        context.log.info(f"Jobs marked inactive: {stats['jobs_marked_inactive']}")
-    context.log.info(f"Errors: {stats['errors']}")
+    # Log final summary
+    context.log.info(f"Completed partition {partition_key}: {stats['companies_processed']} companies, {stats['new_jobs_added']} new jobs")
+
+    # Convert NumPy integers to Python integers for Dagster metadata
+    for key, value in stats.items():
+        if hasattr(value, 'dtype') and 'int' in str(value.dtype):
+            stats[key] = int(value)
+
+    # Update job count in Snowflake
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.workday_jobs WHERE partition_key = %s", (partition_key,))
+        count_result = cursor.fetchall()
+        partition_jobs = count_result[0][0]
+
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.workday_jobs")
+        count_result = cursor.fetchall()
+        total_jobs = count_result[0][0]
+
+        stats["jobs_in_partition"] = int(partition_jobs)
+        stats["total_jobs_in_table"] = int(total_jobs)
+        cursor.close()
+    except Exception as e:
+        context.log.error(f"Error getting job count: {str(e)}")
+
+    conn.close()
 
     # Add metadata to the output
     context.add_output_metadata({
@@ -655,7 +600,7 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
         "new_jobs_added": MetadataValue.int(int(stats["new_jobs_added"])),
         "jobs_updated": MetadataValue.int(int(stats["updated_jobs"])),
         "partition_key": MetadataValue.text(partition_key),
-        "bigquery_table": MetadataValue.text(f"{dataset_name}.workday_jobs")
+        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.workday_jobs")
     })
 
     return stats
