@@ -24,6 +24,151 @@ def generate_company_id(company_name: str) -> str:
     return hash_object.hexdigest()[:8]
 
 
+def handle_company_id_duplicates(conn, table_name: str, context: AssetExecutionContext) -> Dict:
+    """
+    Handle potential company_id duplicates by first attempting deduplication of identical records,
+    then resolving true hash collisions gracefully.
+    """
+    cursor = conn.cursor()
+    stats = {"duplicates_found": 0, "duplicates_resolved": 0, "records_deduplicated": 0}
+
+    try:
+        cursor.execute("USE DATABASE BETTERJOBS_DB")
+        cursor.execute("USE SCHEMA RAW")
+
+        # Check for company_id duplicates
+        cursor.execute(f"""
+        SELECT company_id, COUNT(*) as count,
+               LISTAGG(DISTINCT company_name, ', ') as company_names
+        FROM {table_name}
+        GROUP BY company_id
+        HAVING COUNT(*) > 1
+        """)
+
+        duplicates = cursor.fetchall()
+        stats["duplicates_found"] = len(duplicates)
+
+        if duplicates:
+            context.log.warning(f"Found {len(duplicates)} company_id duplicates")
+
+            for dup in duplicates:
+                company_id, count, company_names = dup
+                context.log.info(f"Analyzing duplicate company_id {company_id} for companies: {company_names}")
+
+                # Get all records with this duplicate ID with detailed comparison fields
+                cursor.execute(f"""
+                SELECT company_name, company_industry, platform, ats_url, career_url,
+                       url_verified, date_added, last_updated, source_file, file_hash,
+                       ingested_at,
+                       -- Create a signature for comparing record content (excluding metadata)
+                       SHA2(CONCAT(
+                           COALESCE(UPPER(TRIM(company_name)), ''),
+                           COALESCE(UPPER(TRIM(company_industry)), ''),
+                           COALESCE(UPPER(TRIM(platform)), ''),
+                           COALESCE(LOWER(TRIM(ats_url)), ''),
+                           COALESCE(LOWER(TRIM(career_url)), ''),
+                           COALESCE(url_verified::STRING, '')
+                       ), 256) as content_signature
+                FROM {table_name}
+                WHERE company_id = %s
+                ORDER BY url_verified DESC, last_updated DESC, ingested_at DESC
+                """, (company_id,))
+
+                duplicate_records = cursor.fetchall()
+
+                if len(duplicate_records) > 1:
+                    # Group records by content signature to identify truly identical records
+                    content_groups = {}
+                    for record in duplicate_records:
+                        content_sig = record[11]  # content_signature is at index 11
+                        if content_sig not in content_groups:
+                            content_groups[content_sig] = []
+                        content_groups[content_sig].append(record)
+
+                    if len(content_groups) == 1:
+                        # All records have the same content - this is true duplication (e.g., same CSV from S3 and local)
+                        context.log.info(f"Found {len(duplicate_records)} identical records for {duplicate_records[0][0]} - deduplicating")
+
+                        # Keep the best record (first one based on our ORDER BY)
+                        best_record = duplicate_records[0]
+                        records_to_remove = duplicate_records[1:]
+
+                        context.log.info(f"Keeping best record: {best_record[0]} from {best_record[8]} (verified: {best_record[5]})")
+
+                        # Remove duplicate records
+                        for record in records_to_remove:
+                            cursor.execute(f"""
+                            DELETE FROM {table_name}
+                            WHERE company_id = %s
+                            AND company_name = %s
+                            AND source_file = %s
+                            AND file_hash = %s
+                            AND ingested_at = %s
+                            """, (company_id, record[0], record[8], record[9], record[10]))
+
+                            context.log.info(f"Removed duplicate record: {record[0]} from {record[8]}")
+                            stats["records_deduplicated"] += 1
+
+                    else:
+                        # Multiple content signatures - these are genuinely different companies with hash collision
+                        context.log.warning(f"True hash collision detected for company_id {company_id} - {len(content_groups)} different companies")
+
+                        # Sort content groups by quality (verified URLs, latest updates)
+                        sorted_groups = []
+                        for content_sig, records in content_groups.items():
+                            # Best record in this group
+                            best_in_group = records[0]  # Already sorted by quality
+                            sorted_groups.append((best_in_group, records))
+
+                        # Sort groups by quality of their best record
+                        sorted_groups.sort(key=lambda x: (
+                            x[0][5] if x[0][5] is not None else False,  # url_verified (boolean)
+                            x[0][7] if x[0][7] is not None else datetime.min,  # last_updated (handle None)
+                            x[0][10] if x[0][10] is not None else datetime.min  # ingested_at (handle None)
+                        ), reverse=True)
+
+                        # Keep the best group with original company_id
+                        best_group = sorted_groups[0]
+                        best_record = best_group[0]
+                        context.log.info(f"Keeping original company_id {company_id} for: {best_record[0]} (verified: {best_record[5]})")
+
+                        # Reassign company_ids for other groups
+                        for i, (group_best, group_records) in enumerate(sorted_groups[1:], 1):
+                            company_name = group_best[0]
+                            # Add a counter to make it unique while keeping it deterministic
+                            modified_name = f"{company_name}_dup_{i}"
+                            new_company_id = generate_company_id(modified_name)
+
+                            context.log.info(f"Reassigning {company_name} to new ID: {new_company_id}")
+
+                            # Update all records in this group with the new company_id
+                            for record in group_records:
+                                cursor.execute(f"""
+                                UPDATE {table_name}
+                                SET company_id = %s
+                                WHERE company_id = %s
+                                AND company_name = %s
+                                AND source_file = %s
+                                AND file_hash = %s
+                                AND ingested_at = %s
+                                """, (new_company_id, company_id, record[0], record[8], record[9], record[10]))
+
+                            stats["duplicates_resolved"] += len(group_records)
+
+            conn.commit()
+            context.log.info(f"Deduplicated {stats['records_deduplicated']} identical records")
+            context.log.info(f"Resolved {stats['duplicates_resolved']} true hash collision records")
+        else:
+            context.log.info("No company_id duplicates found")
+
+    except Exception as e:
+        context.log.error(f"Error handling duplicates: {str(e)}")
+    finally:
+        cursor.close()
+
+    return stats
+
+
 def get_file_metadata(file_path: str) -> Dict:
     """Get file metadata including size and last modified time."""
     if not os.path.exists(file_path):
@@ -62,7 +207,7 @@ def setup_snowflake_stage_and_table(conn, stage_name: str, s3_uri: str, table_na
         # Create table if it doesn't exist (always create regardless of S3)
         table_sql = f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            company_id STRING,
+            company_id STRING PRIMARY KEY,
             company_name STRING NOT NULL,
             company_industry STRING,
             platform STRING,
@@ -109,7 +254,7 @@ def setup_snowflake_tables_only(conn, table_name: str):
         # Create table if it doesn't exist
         table_sql = f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
-            company_id STRING,
+            company_id STRING PRIMARY KEY,
             company_name STRING NOT NULL,
             company_industry STRING,
             platform STRING,
@@ -240,6 +385,9 @@ def process_local_csv_files(
                 # Read CSV file
                 df = pd.read_csv(file_path)
                 if not df.empty:
+                    # Generate company_id for all records
+                    df['company_id'] = df['company_name'].apply(generate_company_id)
+
                     # Convert timestamp columns if they exist in CSV
                     timestamp_columns = ['date_added', 'last_updated']
                     for col in timestamp_columns:
@@ -310,17 +458,14 @@ def process_s3_csv_files(
                 continue
 
             # Handle file path properly for stage reference
-            # The stage path should be relative to the stage URL
             if '/' in file_name:
-                # If the file name contains path separators, use just the filename
                 actual_filename = file_name.split('/')[-1]
                 stage_file_path = actual_filename
             else:
-                # If it's just a filename, use as-is
                 actual_filename = file_name
                 stage_file_path = file_name
 
-            context.log.info(f"Will use stage file path: '{stage_file_path}' for file: '{actual_filename}'")
+            context.log.info(f"Processing S3 file: {actual_filename}")
 
             # Generate a hash based on file attributes
             file_hash = hashlib.sha256(f"{file_name}_{file_size}_{file_modified}".encode()).hexdigest()
@@ -340,35 +485,13 @@ def process_s3_csv_files(
 
             if needs_processing:
                 try:
-                    # First, let's examine the file structure to understand the columns
-                    try:
-                        cursor.execute(f"SELECT $1, $2, $3 FROM @{stage_name}/{stage_file_path} LIMIT 2")
-                        sample_rows = cursor.fetchall()
-                    except Exception as examine_error:
-                        context.log.warning(f"Could not examine file structure for {file_name}: {str(examine_error)}")
-                        # Try without subdirectory
-                        try:
-                            cursor.execute(f"SELECT $1, $2, $3 FROM @{stage_name}/{actual_filename} LIMIT 2")
-                            sample_rows = cursor.fetchall()
-                            stage_file_path = actual_filename  # Update to working path
-                        except Exception as examine_error2:
-                            context.log.error(f"Failed to examine file {file_name} with both paths: {str(examine_error2)}")
-                            continue
-
-                    # Skip processing if the file looks problematic
-                    if not sample_rows:
-                        context.log.warning(f"No data found in S3 file {file_name}, skipping")
-                        continue
-
-                    # Create a temporary table that matches the actual CSV structure
-                    # CSV format: company_id,company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
+                    # Create a temporary table for S3 data (no company_id column expected)
                     temp_table = f"{table_name}_temp_s3"
                     cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
 
-                    # Create temp table with proper column structure matching CSV
+                    # Create temp table matching new CSV structure (without company_id)
                     create_temp_sql = f"""
                     CREATE OR REPLACE TABLE {temp_table} (
-                        company_id STRING,
                         company_name STRING,
                         company_industry STRING,
                         platform STRING,
@@ -378,31 +501,31 @@ def process_s3_csv_files(
                         date_added STRING,
                         last_updated STRING,
                         source_file STRING,
-                        file_hash STRING
+                        file_hash STRING,
+                        company_id STRING  -- Will be generated after COPY
                     )
                     """
                     cursor.execute(create_temp_sql)
                     context.log.info(f"Created temp table: {temp_table}")
 
-                    # Use COPY command that properly maps CSV columns to temp table columns
-                    # CSV columns: company_id,company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
+                    # COPY command for CSV without company_id column
+                    # CSV structure: company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
                     copy_sql = f"""
                     COPY INTO {temp_table} (
-                        company_id, company_name, company_industry, platform,
+                        company_name, company_industry, platform,
                         ats_url, career_url, url_verified, date_added, last_updated,
                         source_file, file_hash
                     )
                     FROM (
                         SELECT
-                            $1 as company_id,
-                            $2 as company_name,
-                            $3 as company_industry,
-                            $4 as platform,
-                            $5 as ats_url,
-                            $6 as career_url,
-                            $7 as url_verified,
-                            $8 as date_added,
-                            $9 as last_updated,
+                            $1 as company_name,
+                            $2 as company_industry,
+                            $3 as platform,
+                            $4 as ats_url,
+                            $5 as career_url,
+                            $6 as url_verified,
+                            $7 as date_added,
+                            $8 as last_updated,
                             '{actual_filename}' as source_file,
                             '{file_hash}' as file_hash
                         FROM @{stage_name}/{stage_file_path}
@@ -413,20 +536,20 @@ def process_s3_csv_files(
 
                     cursor.execute(copy_sql)
 
-                    # Check for COPY errors
-                    cursor.execute("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))")
-                    copy_results = cursor.fetchall()
+                    # Generate company_id for all records
+                    cursor.execute(f"""
+                    UPDATE {temp_table}
+                    SET company_id = LEFT(SHA2(LOWER(TRIM(company_name)), 256), 8)
+                    WHERE company_name IS NOT NULL
+                    AND LENGTH(TRIM(company_name)) > 0
+                    """)
 
                     # Get record count and validate data
                     cursor.execute(f"SELECT COUNT(*) FROM {temp_table}")
                     record_count = cursor.fetchone()[0]
 
                     if record_count > 0:
-                        # Validate the data structure before proceeding
-                        cursor.execute(f"SELECT company_id, company_name, company_industry, platform FROM {temp_table} LIMIT 5")
-                        validation_rows = cursor.fetchall()
-
-                        # Check if company_name looks reasonable (not empty, not just numbers)
+                        # Check if company_name looks reasonable
                         cursor.execute(f"SELECT COUNT(*) FROM {temp_table} WHERE company_name IS NOT NULL AND LENGTH(TRIM(company_name)) > 0")
                         valid_company_names = cursor.fetchone()[0]
 
@@ -437,37 +560,56 @@ def process_s3_csv_files(
 
                         context.log.info(f"Inserting {record_count} records from {file_name} into main table")
 
-                        # Insert into main table, using existing company_id from CSV
-                        insert_sql = f"""
-                        INSERT INTO {table_name} (
+                        # Insert into main table with MERGE to handle potential duplicates
+                        merge_sql = f"""
+                        MERGE INTO {table_name} AS target
+                        USING (
+                            SELECT
+                                TRIM(company_id) as company_id,
+                                TRIM(company_name) as company_name,
+                                TRIM(company_industry) as company_industry,
+                                TRIM(platform) as platform,
+                                NULLIF(TRIM(ats_url), '') as ats_url,
+                                NULLIF(TRIM(career_url), '') as career_url,
+                                CASE
+                                    WHEN UPPER(TRIM(url_verified)) IN ('TRUE', '1', 'YES', 'Y') THEN TRUE
+                                    ELSE FALSE
+                                END as url_verified,
+                                TRY_TO_TIMESTAMP(date_added) as date_added,
+                                TRY_TO_TIMESTAMP(last_updated) as last_updated,
+                                source_file,
+                                file_hash
+                            FROM {temp_table}
+                            WHERE company_name IS NOT NULL
+                            AND LENGTH(TRIM(company_name)) > 0
+                            AND company_name NOT LIKE '%company_name%'
+                            AND company_id IS NOT NULL
+                        ) AS source
+                        ON target.company_id = source.company_id
+                        WHEN MATCHED THEN UPDATE SET
+                            company_name = source.company_name,
+                            company_industry = source.company_industry,
+                            platform = source.platform,
+                            ats_url = source.ats_url,
+                            career_url = source.career_url,
+                            url_verified = source.url_verified,
+                            date_added = COALESCE(source.date_added, target.date_added),
+                            last_updated = COALESCE(source.last_updated, CURRENT_TIMESTAMP),
+                            source_file = source.source_file,
+                            file_hash = source.file_hash
+                        WHEN NOT MATCHED THEN INSERT (
                             company_id, company_name, company_industry, platform,
-                            ats_url, career_url, url_verified,
-                            date_added, last_updated, source_file, file_hash
+                            ats_url, career_url, url_verified, date_added, last_updated,
+                            source_file, file_hash
+                        ) VALUES (
+                            source.company_id, source.company_name, source.company_industry,
+                            source.platform, source.ats_url, source.career_url,
+                            source.url_verified, source.date_added, source.last_updated,
+                            source.source_file, source.file_hash
                         )
-                        SELECT
-                            TRIM(company_id) as company_id,
-                            TRIM(company_name) as company_name,
-                            TRIM(company_industry) as company_industry,
-                            TRIM(platform) as platform,
-                            NULLIF(TRIM(ats_url), '') as ats_url,
-                            NULLIF(TRIM(career_url), '') as career_url,
-                            CASE
-                                WHEN UPPER(TRIM(url_verified)) IN ('TRUE', '1', 'YES', 'Y') THEN TRUE
-                                ELSE FALSE
-                            END as url_verified,
-                            TRY_TO_TIMESTAMP(date_added) as date_added,
-                            TRY_TO_TIMESTAMP(last_updated) as last_updated,
-                            source_file,
-                            file_hash
-                        FROM {temp_table}
-                        WHERE company_name IS NOT NULL
-                        AND LENGTH(TRIM(company_name)) > 0
-                        AND company_name NOT LIKE '%company_name%'  -- Skip header rows that might have slipped through
-                        AND company_id IS NOT NULL
-                        AND LENGTH(TRIM(company_id)) > 0
                         """
-                        cursor.execute(insert_sql)
-                        context.log.info(f"Successfully inserted records from {file_name}")
+                        cursor.execute(merge_sql)
+                        context.log.info(f"Successfully merged records from {file_name}")
 
                         # Track file metadata
                         file_metadata_list.append({
@@ -525,6 +667,9 @@ def snowflake_master_company_urls(
     This asset ingests CSV files from both S3 bucket (via S3_URI) and local folder
     (via MAIN_INPUT_FOLDER) with incremental processing to detect new/changed files.
 
+    CSV files should NOT contain company_id column - it will be generated automatically
+    using a hash-based approach from company_name.
+
     Features:
     - Uses Snowflake stages for efficient S3 data loading
     - Tracks processed files to avoid reprocessing
@@ -532,6 +677,7 @@ def snowflake_master_company_urls(
     - Supports both S3 and local CSV sources
     - Incremental processing based on file hashes and metadata
     - Stores data in RAW schema for further processing
+    - Handles duplicate company_id conflicts gracefully
     """
     # Get environment variables
     s3_uri = os.getenv("S3_URI")
@@ -584,7 +730,10 @@ def snowflake_master_company_urls(
         "s3_files": 0,
         "local_files": 0,
         "skipped_files": 0,
-        "errors": 0
+        "errors": 0,
+        "duplicates_found": 0,
+        "duplicates_resolved": 0,
+        "records_deduplicated": 0
     }
 
     all_file_metadata = []
@@ -635,10 +784,6 @@ def snowflake_master_company_urls(
         for col in required_columns:
             if col not in combined_df.columns:
                 combined_df[col] = None
-
-        # Generate company IDs if not present in local files
-        if 'company_id' not in combined_df.columns:
-            combined_df["company_id"] = combined_df["company_name"].apply(generate_company_id)
 
         # Add timestamps - only if not already present from CSV
         current_time = datetime.now()
@@ -698,9 +843,14 @@ def snowflake_master_company_urls(
     else:
         context.log.info("No local files to process")
 
-    # STEP 4: Update processing log for all processed files
+    # STEP 4: Handle any company_id duplicates
+    context.log.info("=== STEP 4: Checking for company_id duplicates ===")
+    duplicate_stats = handle_company_id_duplicates(conn, table_name, context)
+    stats.update(duplicate_stats)
+
+    # STEP 5: Update processing log for all processed files
     if all_file_metadata:
-        context.log.info("=== STEP 4: Updating processing log ===")
+        context.log.info("=== STEP 5: Updating processing log ===")
         cursor = conn.cursor()
         try:
             for file_meta in all_file_metadata:
@@ -753,9 +903,9 @@ def snowflake_master_company_urls(
         finally:
             cursor.close()
 
-    # STEP 5: Deduplicate data if enabled
+    # STEP 6: Final deduplication if enabled
     if config.deduplicate_on_load:
-        context.log.info("=== STEP 5: Deduplicating data ===")
+        context.log.info("=== STEP 6: Final deduplication ===")
         cursor = conn.cursor()
         try:
             cursor.execute("USE DATABASE BETTERJOBS_DB")
@@ -793,9 +943,9 @@ def snowflake_master_company_urls(
             cursor.execute(f"ALTER TABLE {table_name}_deduped RENAME TO {table_name}")
 
             conn.commit()
-            context.log.info("✓ Deduplication completed successfully")
+            context.log.info("✓ Final deduplication completed successfully")
         except Exception as e:
-            context.log.error(f"✗ Error during deduplication: {str(e)}")
+            context.log.error(f"✗ Error during final deduplication: {str(e)}")
             stats["errors"] += 1
         finally:
             cursor.close()
@@ -832,6 +982,9 @@ def snowflake_master_company_urls(
     context.log.info(f"Total records in table: {total_records}")
     context.log.info(f"Unique companies: {unique_companies}")
     context.log.info(f"Verified URLs: {verified_urls}")
+    context.log.info(f"Duplicates found: {stats['duplicates_found']}")
+    context.log.info(f"Records deduplicated: {stats['records_deduplicated']}")
+    context.log.info(f"Duplicates resolved: {stats['duplicates_resolved']}")
     context.log.info(f"Errors encountered: {stats['errors']}")
     context.log.info("=========================")
 
@@ -844,6 +997,9 @@ def snowflake_master_company_urls(
         "total_records": MetadataValue.int(total_records),
         "unique_companies": MetadataValue.int(unique_companies),
         "verified_urls": MetadataValue.int(verified_urls),
+        "duplicates_found": MetadataValue.int(stats["duplicates_found"]),
+        "records_deduplicated": MetadataValue.int(stats["records_deduplicated"]),
+        "duplicates_resolved": MetadataValue.int(stats["duplicates_resolved"]),
         "errors": MetadataValue.int(stats["errors"]),
         "snowflake_table": MetadataValue.text(f"BETTERJOBS_DB.RAW.{table_name}"),
         "s3_enabled": MetadataValue.bool(config.enable_s3_processing and bool(s3_uri)),
@@ -859,6 +1015,9 @@ def snowflake_master_company_urls(
         "total_records": total_records,
         "unique_companies": unique_companies,
         "verified_urls": verified_urls,
+        "duplicates_found": stats["duplicates_found"],
+        "records_deduplicated": stats["records_deduplicated"],
+        "duplicates_resolved": stats["duplicates_resolved"],
         "errors": stats["errors"],
         "processed_at": datetime.now()
     }])
