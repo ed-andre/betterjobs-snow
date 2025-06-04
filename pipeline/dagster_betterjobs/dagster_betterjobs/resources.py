@@ -1,4 +1,5 @@
 import psycopg2
+import snowflake.connector
 from dagster import ConfigurableResource
 
 class PostgresResource(ConfigurableResource):
@@ -27,3 +28,25 @@ class PostgresResource(ConfigurableResource):
             connection_params["options"] = f"-c search_path=public"
 
         return psycopg2.connect(**connection_params)
+
+class SnowflakeResource(ConfigurableResource):
+    """Resource for connecting to a Snowflake database."""
+    account: str
+    user: str
+    password: str
+    warehouse: str
+    database: str
+    schema: str = "PUBLIC"
+    role: str = "ACCOUNTADMIN"
+
+    def get_connection(self):
+        """Return a connection to the Snowflake database."""
+        return snowflake.connector.connect(
+            account=self.account,
+            user=self.user,
+            password=self.password,
+            warehouse=self.warehouse,
+            database=self.database,
+            schema=self.schema,
+            role=self.role
+        )

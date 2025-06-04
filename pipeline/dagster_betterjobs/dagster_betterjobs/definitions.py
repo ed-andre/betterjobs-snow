@@ -61,7 +61,7 @@ from dagster_betterjobs.schedules import (
 )
 
 # Import the custom PostgresResource
-from dagster_betterjobs.resources import PostgresResource
+from dagster_betterjobs.resources import PostgresResource, SnowflakeResource
 
 
 @resource
@@ -128,6 +128,15 @@ resources = {
         dbname=EnvVar("SUPABASE_DB"),
         sslmode="require"
     ),
+    "snowflake": SnowflakeResource(
+        account=EnvVar("SNOWFLAKE_ACCOUNT"),
+        user=EnvVar("SNOWFLAKE_USER"),
+        password=EnvVar("SNOWFLAKE_PASSWORD"),
+        warehouse=EnvVar("SNOWFLAKE_WAREHOUSE"),
+        database=EnvVar("SNOWFLAKE_DATABASE"),
+        schema=EnvVar("SNOWFLAKE_RAW_SCHEMA"),
+        role=EnvVar("SNOWFLAKE_ROLE")
+    ),
 }
 
 # Verify presence of required environment variables
@@ -138,6 +147,11 @@ print("GCP_LOCATION present:", bool(os.getenv("GCP_LOCATION")))
 print("SUPABASE_HOST present:", bool(os.getenv("SUPABASE_HOST")))
 print("SUPABASE_USER present:", bool(os.getenv("SUPABASE_USER")))
 print("SUPABASE_PASSWORD present:", bool(os.getenv("SUPABASE_PASSWORD")))
+print("SNOWFLAKE_ACCOUNT present:", bool(os.getenv("SNOWFLAKE_ACCOUNT")))
+print("SNOWFLAKE_USER present:", bool(os.getenv("SNOWFLAKE_USER")))
+print("SNOWFLAKE_PASSWORD present:", bool(os.getenv("SNOWFLAKE_PASSWORD")))
+print("S3_URI present:", bool(os.getenv("S3_URI")))
+print("MAIN_INPUT_FOLDER present:", bool(os.getenv("MAIN_INPUT_FOLDER")))
 
 # Define Dagster application
 defs = Definitions(
