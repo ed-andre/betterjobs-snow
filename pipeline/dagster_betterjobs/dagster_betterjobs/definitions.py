@@ -34,16 +34,6 @@ from dagster_betterjobs.assets.workday_jobs_discovery import (
 )
 from dagster_betterjobs.io import BetterJobsIOManager
 from dagster_betterjobs.jobs import (
-
-    workday_url_discovery_job,
-    greenhouse_url_discovery_job,
-    bamboohr_url_discovery_job,
-    icims_url_discovery_job,
-    jobvite_url_discovery_job,
-    lever_url_discovery_job,
-    smartrecruiters_url_discovery_job,
-    full_url_discovery_job,
-    master_company_urls_job,
     data_engineering_job,
     full_jobs_discovery_job,
     bamboohr_jobs_discovery_job,
@@ -51,13 +41,10 @@ from dagster_betterjobs.jobs import (
     smartrecruiters_jobs_discovery_job,
     workday_jobs_discovery_job,
     full_jobs_discovery_and_search_job,
-    # supabase_transport_job
-
+    snowflake_master_company_urls_job,
 )
 from dagster_betterjobs.schedules import (
-    # bamboohr_jobs_hourly_schedule,
     full_jobs_discovery_and_search_schedule,
-    # full_jobs_discovery_and_supabase_schedule
 )
 
 # Import the custom PostgresResource
@@ -158,30 +145,17 @@ defs = Definitions(
     assets=all_assets,
     resources=resources,
     jobs=[
-
-        workday_url_discovery_job,
-        greenhouse_url_discovery_job,
-        bamboohr_url_discovery_job,
-        icims_url_discovery_job,
-        jobvite_url_discovery_job,
-        lever_url_discovery_job,
-        smartrecruiters_url_discovery_job,
-        full_url_discovery_job,
-        master_company_urls_job,
+        data_engineering_job,
+        full_jobs_discovery_job,
         bamboohr_jobs_discovery_job,
         greenhouse_jobs_discovery_job,
         smartrecruiters_jobs_discovery_job,
         workday_jobs_discovery_job,
-        full_jobs_discovery_job,
-        data_engineering_job,
         full_jobs_discovery_and_search_job,
-        # supabase_transport_job
-
+        snowflake_master_company_urls_job,
     ],
     schedules=[
-        # bamboohr_jobs_hourly_schedule,
         full_jobs_discovery_and_search_schedule,
-        # full_jobs_discovery_and_supabase_schedule,
     ],
     sensors=[
         adhoc_company_urls_sensor,

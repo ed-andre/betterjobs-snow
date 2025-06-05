@@ -87,77 +87,6 @@ def icims_partitioned_config(partition_key: str):
         }
     }
 
-# Define jobs based on asset selection
-job_scraping_job = define_asset_job(
-    name="job_scraping_job",
-    selection=AssetSelection.groups("job_scraping"),
-    description="Job that scrapes job listings for configured companies"
-)
-
-# Define a job specifically for discovering Workday company URLs
-workday_url_discovery_job = define_asset_job(
-    name="workday_url_discovery_job",
-    selection=AssetSelection.assets("workday_company_urls", "retry_failed_workday_company_urls"),
-    description="Job that specifically discovers URLs for companies using Workday ATS"
-
-)
-
-# Define a job specifically for discovering Greenhouse company URLs
-greenhouse_url_discovery_job = define_asset_job(
-    name="greenhouse_url_discovery_job",
-    selection=AssetSelection.assets("greenhouse_company_urls", "retry_failed_greenhouse_company_urls"),
-    description="Job that specifically discovers URLs for companies using Greenhouse ATS"
-)
-
-# Define a job specifically for discovering BambooHR company URLs
-bamboohr_url_discovery_job = define_asset_job(
-    name="bamboohr_url_discovery_job",
-    selection=AssetSelection.assets("bamboohr_company_urls", "retry_failed_bamboohr_company_urls"),
-    description="Job that specifically discovers URLs for companies using BambooHR ATS"
-)
-
-# Define a job specifically for discovering iCIMS company URLs
-icims_url_discovery_job = define_asset_job(
-    name="icims_url_discovery_job",
-    selection=AssetSelection.assets("icims_company_urls", "retry_failed_icims_company_urls"),
-    description="Job that specifically discovers URLs for companies using iCIMS ATS"
-)
-
-# Define a job specifically for discovering Jobvite company URLs
-jobvite_url_discovery_job = define_asset_job(
-    name="jobvite_url_discovery_job",
-    selection=AssetSelection.assets("jobvite_company_urls", "retry_failed_jobvite_company_urls"),
-    description="Job that specifically discovers URLs for companies using Jobvite ATS"
-)
-
-# Define a job specifically for discovering Lever company URLs
-lever_url_discovery_job = define_asset_job(
-    name="lever_url_discovery_job",
-    selection=AssetSelection.assets("lever_company_urls", "retry_failed_lever_company_urls"),
-    description="Job that specifically discovers URLs for companies using Lever ATS"
-)
-
-# Define a job specifically for discovering SmartRecruiters company URLs
-smartrecruiters_url_discovery_job = define_asset_job(
-    name="smartrecruiters_url_discovery_job",
-    selection=AssetSelection.assets("smartrecruiters_company_urls", "retry_failed_smartrecruiters_company_urls"),
-    description="Job that specifically discovers URLs for companies using SmartRecruiters ATS"
-)
-
-# Define a job for all URL discovery
-full_url_discovery_job = define_asset_job(
-    name="full_url_discovery_job",
-    selection=AssetSelection.groups("url_discovery"),
-    description="Job that discovers URLs for all companies across all ATS platforms"
-)
-
-# Define a job for maintaining the master company URLs table
-master_company_urls_job = define_asset_job(
-    name="master_company_urls_job",
-    selection=AssetSelection.assets("master_company_urls"),
-    description="Job that maintains the master table of all company URLs"
-)
-
 # Define jobs for job discovery by platform
 bamboohr_jobs_discovery_job = define_asset_job(
     name="bamboohr_jobs_discovery_job",
@@ -191,23 +120,6 @@ workday_jobs_discovery_job = define_asset_job(
     config=workday_partitioned_config
 )
 
-icims_jobs_discovery_job = define_asset_job(
-    name="icims_jobs_discovery_job",
-    selection=AssetSelection.assets("icims_company_jobs_discovery"),
-    description="Job that discovers and collects job listings from ICIMS career sites",
-    partitions_def=icims_partitions_def,
-    config=icims_partitioned_config
-)
-
-# For Supabase transport assets
-# supabase_transport_job = define_asset_job(
-#     name ="supabase_transport_job",
-#     selection=AssetSelection.assets("bamboohr_jobs_to_supabase", "greenhouse_jobs_to_supabase", "workday_jobs_to_supabase", "smartrecruiters_jobs_to_supabase"),
-#     description="Job that transports job info from bigquery data to Supabase"
-# )
-
-
-
 # Define a job for all job discovery across platforms
 @static_partitioned_config(partition_keys=alpha_partitions.get_partition_keys())
 def full_jobs_partitioned_config(partition_key: str):
@@ -217,7 +129,6 @@ def full_jobs_partitioned_config(partition_key: str):
             "greenhouse_company_jobs_discovery": {"config": {}},
             "workday_company_jobs_discovery": {"config": {}},
             "smartrecruiters_company_jobs_discovery": {"config": {}},
-            "icims_company_jobs_discovery": {"config": {}}
         }
     }
 
@@ -280,12 +191,30 @@ data_engineering_job = define_asset_job(
     )
 )
 
-# Define a job for all job discovery across platforms (except iCIMS) plus job search
+# Define a job for Snowflake master company URLs processing
+snowflake_master_company_urls_job = define_asset_job(
+    name="snowflake_master_company_urls_job",
+    selection=AssetSelection.assets("snowflake_master_company_urls"),
+    description="Job that processes and maintains master company URLs in Snowflake from S3 and local CSV sources",
+    config=RunConfig(
+        ops={
+            "snowflake_master_company_urls": {
+                "config": {
+                    "batch_size": 1000,
+                    "enable_s3_processing": True,
+                    "enable_local_processing": True,
+                    "deduplicate_on_load": True
+                }
+            }
+        }
+    )
+)
+
+# Define a job for all job discovery across platforms plus job search
 @static_partitioned_config(partition_keys=alpha_partitions.get_partition_keys())
 def full_jobs_discovery_and_search_partitioned_config(partition_key: str):
     return {
         "ops": {
-            # "bamboohr_company_jobs_discovery": {"config": {}},
             "greenhouse_company_jobs_discovery": {"config": {}},
             "workday_company_jobs_discovery": {"config": {}},
             "smartrecruiters_company_jobs_discovery": {"config": {}},
@@ -321,35 +250,6 @@ full_jobs_discovery_and_search_job = define_asset_job(
     partitions_def=alpha_partitions,
     config=full_jobs_discovery_and_search_partitioned_config
 )
-
-# Define a job that combines job discovery and Supabase transport
-# @static_partitioned_config(partition_keys=alpha_partitions.get_partition_keys())
-# def discovery_and_transport_partitioned_config(partition_key: str):
-#     return {
-#         "ops": {
-#             "bamboohr_company_jobs_discovery": {"config": {}},
-#             "greenhouse_company_jobs_discovery": {"config": {}},
-#             "workday_company_jobs_discovery": {"config": {}},
-#             "smartrecruiters_company_jobs_discovery": {"config": {}}
-#         }
-#     }
-
-# discovery_and_transport_job = define_asset_job(
-#     name="discovery_and_transport_job",
-#     selection=AssetSelection.assets(
-#         "greenhouse_company_jobs_discovery",
-#         "workday_company_jobs_discovery",
-#         "smartrecruiters_company_jobs_discovery",
-#         "bamboohr_company_jobs_discovery",
-#         "bamboohr_jobs_to_supabase",
-#         "greenhouse_jobs_to_supabase",
-#         "workday_jobs_to_supabase",
-#         "smartrecruiters_jobs_to_supabase"
-#     ),
-#     description="Job that discovers jobs (except iCIMS) and transports them to Supabase",
-#     partitions_def=alpha_partitions,
-#     config=discovery_and_transport_partitioned_config
-# )
 
 
 
