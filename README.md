@@ -142,12 +142,11 @@ The Dagster UI will be available at `http://localhost:3000` where you can run jo
 
 The following Dagster jobs are available to run:
 
-- **URL Discovery Jobs**:
-  - `workday_url_discovery_job`: Discover Workday career URLs
-  - `greenhouse_url_discovery_job`: Discover Greenhouse career URLs
-  - `bamboohr_url_discovery_job`: Discover BambooHR career URLs
-  - `smartrecruiters_url_discovery_job`: Discover SmartRecruiters career URLs
-  - And others (lever, jobvite, icims)
+
+
+
+- **Master Company URLs Job**:
+  - `snowflake_master_company_urls_job`: Process and maintain master company URLs in Snowflake from S3 and local CSV sources
 
 - **Job Position Discovery Jobs**:
   - `bamboohr_jobs_discovery_job`: Find BambooHR jobs
@@ -155,8 +154,12 @@ The following Dagster jobs are available to run:
   - `workday_jobs_discovery_job`: Find Workday jobs
   - `smartrecruiters_jobs_discovery_job`: Find SmartRecruiters jobs
 
+- **Data Engineering Jobs**:
+  - `data_engineering_job`: Run job search for data engineering positions
+
 - **End-to-End Jobs**:
-  - `full_jobs_discovery_and_search_job`: Run all URL discovery, job discovery, and data enrichment
+  - `full_jobs_discovery_and_search_job`: Run all job discovery, and data_engineering job
+
 
 See the Dagster UI for the complete list of available jobs and their descriptions.
 
@@ -184,9 +187,9 @@ Supported platforms include:
 - smartrecruiters
 - lever (job discovery not implemented yet)
 - jobvite (job discovery not implemented yet)
-- icims (job discovery not properly implemented yet)
+- icims (job discovery not properly implemented yet. The response from icims sites is a bit on the complex site. Will revisit in the future)
 
-2. After updating CSV files, you need to run the relevant URL discovery jobs to detect the career sites for these companies.
+
 
 ### Asset Materialization Workflows
 
@@ -194,7 +197,7 @@ There are two main approaches to running the pipeline:
 
 #### Option 1: Full Asset Materialization
 
-To materialize all assets in the pipeline, including URL discovery and job discovery:
+To materialize all assets in the pipeline:
 
 ```bash
 cd pipeline/dagster_betterjobs
@@ -225,7 +228,7 @@ Acme Corp,Technology,workday,https://acme.wd1.myworkdayjobs.com/acme_careers/,ht
 
 For automated use, you should configure appropriate schedules:
 
-1. The URL discovery assets (`*_company_urls`) only need to run when you update the datasource CSV files with new companies.
+1. The snowflake_master_company_urls_job only needs to run when you update the datasource CSV files with new companies.
 
 2. The job discovery assets need to run frequently to find new job postings.
 
@@ -257,9 +260,8 @@ def jobs_every_four_hours_schedule():
 
 ### Best Practices for Resource Usage
 
-- URL discovery jobs should be run less frequently (monthly)
+- Snowflake master company urls job should be run when you update the CSV files with new companies on S3 or locally
 - Job discovery jobs should be run more frequently (daily or multiple times daily)
-- To conserve resources, focus on platforms with high job turnover
 - Some ATS platforms have rate limits - avoid running jobs too frequently
 
 ## Data Analytics & Reporting
