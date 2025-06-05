@@ -5,7 +5,8 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from google.cloud import bigquery
+import snowflake.connector
+from snowflake.connector.pandas_tools import write_pandas
 from dagster import (
     asset, AssetExecutionContext, Config, get_dagster_logger,
     MetadataValue, AssetMaterialization, StaticPartitionsDefinition,
@@ -31,15 +32,15 @@ class SmartRecruitersJobsDiscoveryConfig(Config):
     retry_delay: int = 2
     min_company_id: Optional[int] = None  # For batch processing
     max_company_id: Optional[int] = None  # For batch processing
-    days_to_look_back: int = 14  # Job freshness threshold in days
+    days_to_look_back: int = 7  # Job freshness threshold in days
     batch_size: int = 10  # Companies per batch before committing
     process_all_companies: bool = True  # By default, process all companies regardless of checkpoint status
 
 @asset(
     group_name="job_discovery",
-    kinds={"API", "bigquery", "python"},
-    required_resource_keys={"bigquery"},
-    deps=["master_company_urls"],
+    kinds={"API", "snowflake", "python"},
+    required_resource_keys={"snowflake"},
+    deps=["snowflake_master_company_urls"],
     partitions_def=alpha_partitions
 )
 def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, config: SmartRecruitersJobsDiscoveryConfig) -> Dict:
@@ -47,11 +48,12 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
     Discovers and stores job listings from SmartRecruiters career sites.
 
     Processes companies partitioned by first letter of company name,
-    retrieves all current job listings using HTML parsing, and stores them in BigQuery.
+    retrieves all current job listings using HTML parsing, and stores them in Snowflake.
     """
-    # Initialize BigQuery client and get dataset
-    client = context.resources.bigquery
-    dataset_name = os.getenv("GCP_DATASET_ID")
+    # Initialize Snowflake connection
+    conn = context.resources.snowflake.get_connection()
+    database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
+    schema_name = os.getenv("SNOWFLAKE_RAW_SCHEMA", "RAW")
     partition_key = context.partition_key
 
     # Set job freshness cutoff date
@@ -80,15 +82,15 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
 
     # Build query for companies in current partition
     if partition_key == "0-9":
-        letter_filter = "AND REGEXP_CONTAINS(company_name, '^[0-9]')"
+        letter_filter = "AND SUBSTRING(company_name, 1, 1) BETWEEN '0' AND '9'"
     elif partition_key == "other":
-        letter_filter = "AND NOT REGEXP_CONTAINS(company_name, '^[a-zA-Z0-9]')"
+        letter_filter = "AND NOT (SUBSTRING(company_name, 1, 1) BETWEEN 'A' AND 'Z' OR SUBSTRING(company_name, 1, 1) BETWEEN 'a' AND 'z' OR SUBSTRING(company_name, 1, 1) BETWEEN '0' AND '9')"
     else:
-        letter_filter = f"AND REGEXP_CONTAINS(company_name, '^[{partition_key}{partition_key.lower()}]')"
+        letter_filter = f"AND (company_name LIKE '{partition_key}%' OR company_name LIKE '{partition_key.lower()}%')"
 
     query = f"""
     SELECT company_id, company_name, company_industry, career_url, ats_url
-    FROM {dataset_name}.master_company_urls
+    FROM {database_name}.{schema_name}.master_company_urls
     WHERE platform = 'smartrecruiters'
     AND (ats_url IS NOT NULL OR career_url IS NOT NULL)
     AND url_verified = TRUE
@@ -108,8 +110,13 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
         query += f" LIMIT {config.max_companies}"
 
     try:
-        query_job = client.query(query)
-        companies_df = query_job.to_dataframe()
+        cursor = conn.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        companies_df = pd.DataFrame(results, columns=columns)
+        companies_df.columns = companies_df.columns.str.lower()
+        cursor.close()
     except Exception as e:
         context.log.error(f"Error querying master_company_urls: {str(e)}")
         return {"error": str(e), "status": "failed"}
@@ -174,32 +181,36 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
             context.log.error(f"Error loading failed companies file: {str(e)}")
 
     # Create jobs table if it doesn't exist
-    create_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS {dataset_name}.smartrecruiters_jobs (
-        job_id STRING,
-        company_id STRING,
-        job_title STRING,
-        job_description STRING,
-        job_url STRING,
-        location STRING,
-        department STRING,
-        published_at DATE,
-        updated_at TIMESTAMP,
-        requisition_id STRING,
-        date_retrieved TIMESTAMP,
-        is_active BOOL,
-        raw_data STRING,
-        partition_key STRING
-    )
-    """
-
+    cursor = conn.cursor()
     try:
-        query_job = client.query(create_table_sql)
-        query_job.result()
-        context.log.info("Created or verified smartrecruiters_jobs table in BigQuery")
+        cursor.execute(f"USE DATABASE {database_name}")
+        cursor.execute(f"USE SCHEMA {schema_name}")
+
+        create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS smartrecruiters_jobs (
+            job_id STRING,
+            company_id STRING,
+            job_title STRING,
+            job_description STRING,
+            job_url STRING,
+            location STRING,
+            department STRING,
+            published_at DATE,
+            requisition_id STRING,
+            date_retrieved TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN,
+            raw_data STRING,
+            partition_key STRING
+        )
+        """
+        cursor.execute(create_table_sql)
+        conn.commit()
+        context.log.info("Created or verified smartrecruiters_jobs table in Snowflake")
     except Exception as e:
         context.log.error(f"Error creating jobs table: {str(e)}")
         return {"error": str(e), "status": "failed"}
+    finally:
+        cursor.close()
 
     # Process companies in batches
     batch_size = config.batch_size
@@ -290,19 +301,21 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
 
                     stats["recent_jobs"] += 1
 
-                    # Check if job already exists in BigQuery
-                    check_sql = f"""
-                    SELECT job_id
-                    FROM {dataset_name}.smartrecruiters_jobs
-                    WHERE job_url = '{job_url}'
-                    """
-
+                    # Check if job already exists in Snowflake
+                    cursor = conn.cursor()
                     try:
-                        query_job = client.query(check_sql)
-                        existing_job = list(query_job.result())
+                        check_sql = f"""
+                        SELECT job_id
+                        FROM {database_name}.{schema_name}.smartrecruiters_jobs
+                        WHERE job_url = %s
+                        """
+                        cursor.execute(check_sql, (job_url,))
+                        existing_job = cursor.fetchall()
                     except Exception as e:
                         context.log.error(f"Error checking if job exists: {str(e)}")
                         existing_job = []
+                    finally:
+                        cursor.close()
 
                     # Prepare job data
                     job_title = job.get("job_title", "")
@@ -320,7 +333,6 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
 
                     # Get dates
                     published_at = job.get("published_at")
-                    updated_at = job.get("updated_at")
                     requisition_id = job.get("requisition_id")
 
                     # Convert any structured data to JSON strings
@@ -342,9 +354,7 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
                         "location": location_str,
                         "department": department,
                         "published_at": published_at,
-                        "updated_at": updated_at,
                         "requisition_id": str(requisition_id) if requisition_id else None,
-                        "date_retrieved": datetime.now().isoformat(),
                         "is_active": True,
                         "raw_data": raw_data,
                         "partition_key": partition_key
@@ -392,139 +402,89 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
             # Increment counter
             stats["companies_processed"] += 1
 
-        # Insert jobs from this batch to BigQuery
+        # Insert jobs from this batch to Snowflake
         if batch_jobs:
             try:
-                # Create a temporary table for bulk loading
-                temp_table_name = f"{dataset_name}.smartrecruiters_jobs_temp"
-
-                # Drop the temp table if it exists
-                query_job = client.query(f"DROP TABLE IF EXISTS {temp_table_name}")
-                query_job.result()
-
-                # Create the temporary table
-                create_temp_sql = f"""
-                CREATE TABLE {temp_table_name} (
-                    job_id STRING,
-                    company_id STRING,
-                    job_title STRING,
-                    job_description STRING,
-                    job_url STRING,
-                    location STRING,
-                    department STRING,
-                    published_at DATE,
-                    updated_at TIMESTAMP,
-                    requisition_id STRING,
-                    date_retrieved TIMESTAMP,
-                    is_active BOOL,
-                    raw_data STRING,
-                    partition_key STRING
-                )
-                """
-                query_job = client.query(create_temp_sql)
-                query_job.result()
-
                 # Convert list of dicts to dataframe
                 jobs_df = pd.DataFrame(batch_jobs)
 
-                # Handle data types - ensure all IDs are strings
+                # Handle data types for Snowflake - ensure all IDs are strings
                 for col in jobs_df.columns:
                     if col.endswith('_id') or col == 'job_id' or col == 'company_id':
                         jobs_df[col] = jobs_df[col].astype(str)
 
                 # Handle other object columns
                 for col in jobs_df.select_dtypes(include=['object']).columns:
-                    jobs_df[col] = jobs_df[col].fillna('').astype(str)
+                    if col not in ['published_at']:
+                        jobs_df[col] = jobs_df[col].fillna('').astype(str)
 
-                # Convert date columns
+                # Convert date columns properly for Snowflake
                 if 'published_at' in jobs_df.columns:
                     jobs_df['published_at'] = pd.to_datetime(jobs_df['published_at'], errors='coerce')
+                    jobs_df['published_at'] = jobs_df['published_at'].dt.date
+                    jobs_df['published_at'] = jobs_df['published_at'].where(pd.notnull(jobs_df['published_at']), None)
 
-                if 'updated_at' in jobs_df.columns:
-                    jobs_df['updated_at'] = pd.to_datetime(jobs_df['updated_at'], errors='coerce')
+                if 'is_active' in jobs_df.columns:
+                    jobs_df['is_active'] = jobs_df['is_active'].astype(bool)
 
-                if 'date_retrieved' in jobs_df.columns:
-                    jobs_df['date_retrieved'] = pd.to_datetime(jobs_df['date_retrieved'], errors='coerce')
-
-                # Set up job configuration
-                job_config = bigquery.LoadJobConfig(
-                    write_disposition="WRITE_TRUNCATE",
-                    schema=[
-                        bigquery.SchemaField("job_id", "STRING"),
-                        bigquery.SchemaField("company_id", "STRING"),
-                        bigquery.SchemaField("job_title", "STRING"),
-                        bigquery.SchemaField("job_description", "STRING"),
-                        bigquery.SchemaField("job_url", "STRING"),
-                        bigquery.SchemaField("location", "STRING"),
-                        bigquery.SchemaField("department", "STRING"),
-                        bigquery.SchemaField("published_at", "DATE"),
-                        bigquery.SchemaField("updated_at", "TIMESTAMP"),
-                        bigquery.SchemaField("requisition_id", "STRING"),
-                        bigquery.SchemaField("date_retrieved", "TIMESTAMP"),
-                        bigquery.SchemaField("is_active", "BOOL"),
-                        bigquery.SchemaField("raw_data", "STRING"),
-                        bigquery.SchemaField("partition_key", "STRING")
-                    ]
-                )
-
-                # Load the dataframe into the temporary table
-                load_job = client.load_table_from_dataframe(
+                # Use write_pandas for bulk insert
+                success, num_chunks, num_rows, output = write_pandas(
+                    conn,
                     jobs_df,
-                    temp_table_name,
-                    job_config=job_config
+                    'smartrecruiters_jobs',
+                    database=database_name,
+                    schema=schema_name,
+                    auto_create_table=False,
+                    overwrite=False,
+                    quote_identifiers=False
                 )
-                load_job.result()
 
-                # Insert only new jobs (not already in the main table)
-                insert_sql = f"""
-                INSERT INTO {dataset_name}.smartrecruiters_jobs (
-                    job_id, company_id, job_title, job_description, job_url,
-                    location, department, published_at, updated_at,
-                    requisition_id, date_retrieved, is_active, raw_data, partition_key
-                )
-                SELECT
-                    t.job_id, t.company_id, t.job_title, t.job_description, t.job_url,
-                    t.location, t.department, t.published_at, t.updated_at,
-                    t.requisition_id, t.date_retrieved, t.is_active, t.raw_data, t.partition_key
-                FROM {temp_table_name} t
-                LEFT JOIN {dataset_name}.smartrecruiters_jobs j
-                    ON t.job_url = j.job_url
-                WHERE j.job_url IS NULL
-                """
+                if success:
+                    context.log.info(f"Successfully loaded batch of {len(batch_jobs)} jobs into Snowflake")
+                else:
+                    context.log.error(f"Failed to load jobs to Snowflake: {output}")
+                    stats["errors"] += 1
 
-                query_job = client.query(insert_sql)
-                query_job.result()
-
-                # Update existing jobs
-                update_sql = f"""
-                UPDATE {dataset_name}.smartrecruiters_jobs j
-                SET
-                    j.job_title = t.job_title,
-                    j.job_description = t.job_description,
-                    j.location = t.location,
-                    j.department = t.department,
-                    j.published_at = t.published_at,
-                    j.updated_at = t.updated_at,
-                    j.requisition_id = t.requisition_id,
-                    j.date_retrieved = t.date_retrieved,
-                    j.is_active = t.is_active,
-                    j.raw_data = t.raw_data,
-                    j.partition_key = t.partition_key
-                FROM {temp_table_name} t
-                WHERE j.job_url = t.job_url
-                """
-
-                query_job = client.query(update_sql)
-                query_job.result()
-
-                # Drop the temporary table
-                query_job = client.query(f"DROP TABLE IF EXISTS {temp_table_name}")
-                query_job.result()
-
-                context.log.info(f"Successfully loaded batch of {len(batch_jobs)} jobs into BigQuery")
+                # Handle updates for existing jobs
+                cursor = conn.cursor()
+                try:
+                    for job_record in batch_jobs:
+                        if any(result["jobs_updated"] > 0 for result in checkpoint_results[-len(batch):]):
+                            update_sql = f"""
+                            UPDATE {database_name}.{schema_name}.smartrecruiters_jobs
+                            SET
+                                job_title = %s,
+                                job_description = %s,
+                                location = %s,
+                                department = %s,
+                                published_at = %s,
+                                requisition_id = %s,
+                                date_retrieved = CURRENT_TIMESTAMP,
+                                is_active = %s,
+                                raw_data = %s,
+                                partition_key = %s
+                            WHERE job_url = %s
+                            """
+                            cursor.execute(update_sql, (
+                                job_record["job_title"],
+                                job_record["job_description"],
+                                job_record["location"],
+                                job_record["department"],
+                                job_record["published_at"],
+                                job_record["requisition_id"],
+                                job_record["is_active"],
+                                job_record["raw_data"],
+                                job_record["partition_key"],
+                                job_record["job_url"]
+                            ))
+                    conn.commit()
+                except Exception as e:
+                    context.log.error(f"Error updating existing jobs: {str(e)}")
+                finally:
+                    cursor.close()
 
             except Exception as e:
-                context.log.error(f"Error loading jobs to BigQuery: {str(e)}")
+                context.log.error(f"Error loading jobs to Snowflake: {str(e)}")
                 stats["errors"] += 1
 
         # Save checkpoint after each batch
@@ -583,24 +543,29 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
             # If we have nested structures, convert those too
             context.log.info(f"Converting complex stat: {key}, type: {type(value)}")
 
-    # Update job count in BigQuery
+    # Update job count in Snowflake
     try:
-        query_job = client.query(f"SELECT COUNT(*) FROM {dataset_name}.smartrecruiters_jobs WHERE partition_key = '{partition_key}'")
-        count_result = list(query_job.result())
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.smartrecruiters_jobs WHERE partition_key = %s", (partition_key,))
+        count_result = cursor.fetchall()
         partition_jobs = count_result[0][0]
-        context.log.info(f"Jobs in BigQuery table for partition {partition_key}: {partition_jobs}")
+        context.log.info(f"Jobs in Snowflake table for partition {partition_key}: {partition_jobs}")
 
         # Get total job count too
-        query_job = client.query(f"SELECT COUNT(*) FROM {dataset_name}.smartrecruiters_jobs")
-        count_result = list(query_job.result())
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.smartrecruiters_jobs")
+        count_result = cursor.fetchall()
         total_jobs = count_result[0][0]
-        context.log.info(f"Total jobs in BigQuery table: {total_jobs}")
+        context.log.info(f"Total jobs in Snowflake table: {total_jobs}")
 
         # Add to stats - ensure they're Python ints
         stats["jobs_in_partition"] = int(partition_jobs)
         stats["total_jobs_in_table"] = int(total_jobs)
+        cursor.close()
     except Exception as e:
         context.log.error(f"Error getting job count: {str(e)}")
+
+    # Close Snowflake connection
+    conn.close()
 
     # Add metadata to the output
     context.add_output_metadata({
@@ -611,7 +576,7 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
         "new_jobs_added": MetadataValue.int(int(stats["new_jobs_added"])),
         "jobs_updated": MetadataValue.int(int(stats["updated_jobs"])),
         "partition_key": MetadataValue.text(partition_key),
-        "bigquery_table": MetadataValue.text(f"{dataset_name}.smartrecruiters_jobs")
+        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.smartrecruiters_jobs")
     })
 
     return stats
