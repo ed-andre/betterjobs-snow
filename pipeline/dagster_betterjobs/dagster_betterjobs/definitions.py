@@ -32,6 +32,9 @@ from dagster_betterjobs.assets.smartrecruiters_jobs_discovery import (
 from dagster_betterjobs.assets.workday_jobs_discovery import (
     workday_company_jobs_discovery
 )
+from dagster_betterjobs.assets.raw_company_profiles import (
+    raw_company_profiles
+)
 from dagster_betterjobs.io import BetterJobsIOManager
 from dagster_betterjobs.jobs import (
     data_engineering_job,
