@@ -1,6 +1,6 @@
 # STAGE Schema Setup for Silver Layer Transformations
 
-This document provides instructions for setting up the STAGE schema and `stage_jobs_unified` table in Snowflake for the Silver layer transformations.
+This document provides instructions for setting up the STAGE schema and `jobs_unified` table in Snowflake for the Silver layer transformations.
 
 ## Overview
 
@@ -43,7 +43,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA STAGE TO ROLE BE
 USE SCHEMA STAGE;
 
 -- Create the unified jobs table
-CREATE TABLE IF NOT EXISTS stage_jobs_unified (
+CREATE TABLE IF NOT EXISTS jobs_unified (
     -- Core identifiers
     job_id STRING PRIMARY KEY,
     company_id STRING,
@@ -128,17 +128,17 @@ CREATE TABLE IF NOT EXISTS stage_jobs_unified (
 
 ```sql
 -- Add clustering for optimal query performance
-ALTER TABLE stage_jobs_unified CLUSTER BY (platform, date_posted);
+ALTER TABLE jobs_unified CLUSTER BY (platform, date_posted);
 
 -- Add search optimization for text fields (optional, for production)
--- ALTER TABLE stage_jobs_unified ADD SEARCH OPTIMIZATION;
+-- ALTER TABLE jobs_unified ADD SEARCH OPTIMIZATION;
 ```
 
 ### 4. Create Supporting Tables
 
 ```sql
 -- Company profiles enrichment table
-CREATE TABLE IF NOT EXISTS stage_company_profiles (
+CREATE TABLE IF NOT EXISTS company_profiles (
     company_id STRING PRIMARY KEY,
     company_name_standardized STRING,
     company_industry_standardized STRING,
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS stage_company_profiles (
 );
 
 -- Location mapping table
-CREATE TABLE IF NOT EXISTS stage_location_mapping (
+CREATE TABLE IF NOT EXISTS location_mapping (
     location_raw STRING,
     location_standardized STRING,
     city STRING,
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS stage_location_mapping (
 );
 
 -- Skills taxonomy table
-CREATE TABLE IF NOT EXISTS stage_skills_taxonomy (
+CREATE TABLE IF NOT EXISTS skills_taxonomy (
     skill_name STRING PRIMARY KEY,
     skill_category STRING,  -- programming_language, database, cloud_platform, framework, tool
     skill_aliases VARIANT,  -- Array of alternative names
@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS stage_skills_taxonomy (
 );
 
 -- Transformation logs for audit trail
-CREATE TABLE IF NOT EXISTS stage_transformation_logs (
+CREATE TABLE IF NOT EXISTS transformation_logs (
     log_id STRING PRIMARY KEY,
     job_id STRING,
     transformation_step STRING,
@@ -186,23 +186,23 @@ CREATE TABLE IF NOT EXISTS stage_transformation_logs (
 
 ```sql
 -- View for English jobs only
-CREATE OR REPLACE VIEW stage_jobs_english AS
-SELECT * FROM stage_jobs_unified
+CREATE OR REPLACE VIEW jobs_english AS
+SELECT * FROM jobs_unified
 WHERE is_english = TRUE;
 
 -- View for recent jobs (last 30 days)
-CREATE OR REPLACE VIEW stage_jobs_recent AS
-SELECT * FROM stage_jobs_unified
+CREATE OR REPLACE VIEW jobs_recent AS
+SELECT * FROM jobs_unified
 WHERE date_posted >= CURRENT_DATE - 30
 AND is_active = TRUE;
 
 -- View for jobs with salary information
-CREATE OR REPLACE VIEW stage_jobs_with_salary AS
-SELECT * FROM stage_jobs_unified
+CREATE OR REPLACE VIEW jobs_with_salary AS
+SELECT * FROM jobs_unified
 WHERE salary_min IS NOT NULL OR salary_max IS NOT NULL;
 
 -- Platform summary view
-CREATE OR REPLACE VIEW stage_platform_summary AS
+CREATE OR REPLACE VIEW platform_summary AS
 SELECT
     platform,
     COUNT(*) as total_jobs,
@@ -211,7 +211,7 @@ SELECT
     AVG(data_quality_score) as avg_quality_score,
     MIN(date_posted) as earliest_job,
     MAX(date_posted) as latest_job
-FROM stage_jobs_unified
+FROM jobs_unified
 GROUP BY platform;
 ```
 
@@ -237,7 +237,7 @@ USE SCHEMA STAGE;
 SHOW TABLES;
 
 -- Verify table structure
-DESCRIBE TABLE stage_jobs_unified;
+DESCRIBE TABLE jobs_unified;
 
 -- Check views
 SHOW VIEWS;
