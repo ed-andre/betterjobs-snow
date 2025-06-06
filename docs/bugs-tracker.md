@@ -79,34 +79,152 @@ However, these values are not being properly extracted and mapped to the corresp
 
 ---
 
-## Template for New Bugs
-
-```markdown
-## BUG-XXX: [Brief Description]
+## BUG-002: Greenhouse Jobs Discovery - Job ID Extraction Failing
 
 **Status**: Open
-**Severity**: [Critical/High/Medium/Low]
-**Component**: [System Component]
-**Date Reported**: [YYYY-MM-DD]
+**Severity**: Critical
+**Component**: Job Discovery Pipeline - Greenhouse
+**Date Reported**: 2025-06-06
 
 ### Description
-[Detailed description of the issue]
+6,076 Greenhouse job records have `job_id` set to `'None'` instead of the actual job ID from the API response. This causes massive data quality issues and incorrect deduplication.
 
 ### Root Cause Analysis
-[Analysis of why the bug occurs]
+The job ID extraction logic in `greenhouse_jobs_discovery.py` is not properly extracting the `"id"` field from the Greenhouse API response. The API response contains:
+```json
+{
+    "id": 4749694007,
+    "title": "Part-Time Market Trainer - Los Angeles",
+    "internal_job_id": 4433190007,
+    ...
+}
+```
+But the job_id field is being set to None in the database.
 
 ### Reproduction Steps
-1. [Step 1]
-2. [Step 2]
-3. [Step 3]
+1. Run greenhouse jobs discovery pipeline
+2. Check `greenhouse_jobs` table in Snowflake
+3. Query for records where `job_id = 'None'`
+4. Observe 6,076+ records with null job IDs
 
 ### Expected vs Actual
-**Expected**: [What should happen]
-**Actual**: [What actually happens]
+**Expected**: job_id should be `4749694007` (from `"id"` field in API response)
+**Actual**: job_id is `'None'` in database records
 
 ### Impact
-[Description of impact on system/users]
+- Critical data quality issue affecting 6,076 jobs
+- Massive duplication removal (6,076 jobs treated as same ID)
+- Downstream analytics and processing broken
+- Job matching and tracking impossible
 
 ### Files Affected
-- [List of affected files]
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/greenhouse_jobs_discovery.py`
+- `pipeline/dagster_betterjobs/dagster_betterjobs/scrapers/greenhouse_scraper.py`
+
+---
+
+## BUG-003: SmartRecruiters Job ID Extraction Logic Incorrect
+
+**Status**: Resolved
+**Severity**: Critical
+**Component**: Job Discovery Pipeline - SmartRecruiters
+**Date Reported**: 2025-06-06
+**Date Resolved**: 2025-01-06
+
+### Description
+SmartRecruiters job ID extraction is extracting company names instead of actual job IDs from URLs, causing massive duplication issues.
+
+### Root Cause Analysis
+The job ID extraction logic in `smartrecruiters_scraper.py` is incorrectly parsing the URL structure. For URL:
+`https://jobs.smartrecruiters.com/AbbVie/3743990008187744-sfe-manager`
+
+**Current Logic**: Extracts `'AbbVie'` (company name) as job_id
+**Correct Logic**: Should extract `'3743990008187744'` (actual job ID)
+
+The job ID is the segment after the 4th slash (/) and before the next dash (-).
+
+### Example Cases
+- URL: `https://jobs.smartrecruiters.com/AbbVie/3743990008187744-sfe-manager`
+- Current job_id: `'AbbVie'` ❌
+- Correct job_id: `'3743990008187744'` ✅
+
+### Reproduction Steps
+1. Run smartrecruiters jobs discovery pipeline
+2. Check job_id values in `smartrecruiters_jobs` table
+3. Observe company names as job_ids: 'MonroInc', 'SonicAutomotive', 'AbbVie'
+
+### Expected vs Actual
+**Expected**: job_id should be unique alphanumeric identifier from URL path
+**Actual**: job_id is company name, causing massive duplicates
+
+### Impact
+- 812+ SmartRecruiters jobs treated as duplicates
+- Data quality degradation
+- Job tracking impossible due to non-unique IDs
+
+### Files Affected
+- `pipeline/dagster_betterjobs/dagster_betterjobs/scrapers/smartrecruiters_scraper.py`
+
+### Resolution
+**Fixed**: Updated job ID extraction logic in `smartrecruiters_scraper.py` (lines 186-202)
+
+**Changes Made**:
+1. Modified URL parsing to specifically target the 3rd path segment (index 2)
+2. Added logic to extract numeric part before any dash separator
+3. Added validation to ensure extracted job ID is numeric
+4. Improved error handling and logging for invalid job IDs
+
+**New Logic**:
+```python
+# SmartRecruiters URL format: https://jobs.smartrecruiters.com/CompanyName/JobID-job-title
+path_segments = urlparse(job_url).path.split('/')
+if len(path_segments) >= 3:
+    job_segment = path_segments[2]  # Get JobID-title segment
+    job_id = job_segment.split('-')[0]  # Extract numeric part before dash
+    # Validate numeric job ID
+    if not re.match(r'^\d+$', job_id):
+        job_id = None
 ```
+
+This fix ensures proper extraction of numeric job IDs like `3743990008187744` instead of company names.
+
+---
+
+## BUG-004: Deduplication Strategy Too Aggressive
+
+**Status**: Open
+**Severity**: High
+**Component**: Data Processing Pipeline - Stage Jobs Unified
+**Date Reported**: 2025-06-06
+
+### Description
+Current deduplication strategy using `job_id + platform` is insufficient. Different companies may use overlapping job ID schemas, requiring `job_id + platform + company_id` for proper deduplication.
+
+### Root Cause Analysis
+The deduplication logic in `stage_jobs_unified.py` uses:
+```python
+combined_df.drop_duplicates(subset=['job_id', 'platform'], keep='first')
+```
+
+This doesn't account for legitimate cases where different companies on the same platform might have overlapping job ID ranges.
+
+### Reproduction Steps
+1. Run stage_jobs_unified asset
+2. Observe duplicate removal statistics
+3. Note that 7,784 out of 10,530 jobs are being removed as duplicates
+
+### Expected vs Actual
+**Expected**: Only true duplicates (same job from same company) should be removed
+**Actual**: Jobs with same ID across different companies are incorrectly deduplicated
+
+### Impact
+- Over-aggressive duplicate removal
+- Valid jobs from different companies incorrectly filtered out
+- Data loss affecting analytics and reporting
+
+### Files Affected
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/stage_jobs_unified.py`
+
+---
+
+## Template for New Bugs

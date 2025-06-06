@@ -194,13 +194,23 @@ class SmartRecruitersJobScraper(BaseScraper):
                     # Extract job ID from URL
                     job_id = None
                     if job_url:
-                        # Try to extract ID from URL path segments
+                        # SmartRecruiters URL format: https://jobs.smartrecruiters.com/CompanyName/JobID-job-title
+                        # Extract the job ID which is the numeric segment after the company name
                         path_segments = urlparse(job_url).path.split('/')
-                        for segment in path_segments:
-                            # Look for numeric or alphanumeric segments that might be IDs
-                            if re.match(r'\d+', segment) or re.match(r'^[a-zA-Z0-9-]+$', segment):
-                                job_id = segment
-                                break
+                        if len(path_segments) >= 3:
+                            # The job ID is typically in the 3rd segment (index 2)
+                            # Format: /CompanyName/JobID-title or /CompanyName/JobID
+                            job_segment = path_segments[2]
+                            # Extract the numeric part before any dash
+                            if '-' in job_segment:
+                                job_id = job_segment.split('-')[0]
+                            else:
+                                job_id = job_segment
+
+                            # Validate that we extracted a numeric job ID
+                            if job_id and not re.match(r'^\d+$', job_id):
+                                self.log_message("warning", f"Extracted job ID '{job_id}' is not numeric from URL: {job_url}")
+                                job_id = None
 
                     if not job_id:
                         self.log_message("warning", f"Could not extract job ID from URL: {job_url}")
