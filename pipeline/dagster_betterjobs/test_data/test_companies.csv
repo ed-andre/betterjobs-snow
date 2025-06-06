@@ -1,0 +1,5 @@
+company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
+"Test Corp A","Technology","workday","https://testcorpa.workday.com","https://testcorpa.com/careers",true,"2024-01-15 10:30:00","2024-01-15 10:30:00"
+"Test Corp B","Software","greenhouse","https://greenhouse.io/testcorpb","https://testcorpb.com/jobs",false,"2024-01-16 09:15:00","2024-01-16 09:15:00"
+"Test Corp C","Manufacturing","bamboohr","https://bamboohr.com/testcorpc","https://testcorpc.com/careers",true,"2024-01-17 14:45:00","2024-01-17 14:45:00"
+"Test Corp D","Finance","icims","https://icims.com/testcorpd","https://testcorpd.com/careers",false,"2024-01-18 08:20:00","2024-01-18 08:20:00"
