@@ -42,7 +42,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA STAGE TO ROLE BE
 -- Switch to STAGE schema
 USE SCHEMA STAGE;
 
--- Create the unified jobs table
+-- Create the unified jobs table (Phase 1 - Basic Transformation)
 CREATE TABLE IF NOT EXISTS jobs_unified (
     -- Core identifiers
     job_id STRING PRIMARY KEY,
@@ -71,57 +71,65 @@ CREATE TABLE IF NOT EXISTS jobs_unified (
     is_english BOOLEAN,
     language_detection_method STRING,
 
-    -- Extracted salary info (from LLM)
-    salary_min NUMBER,
-    salary_max NUMBER,
-    salary_currency STRING DEFAULT 'USD',
-    salary_period STRING,  -- hourly, annually, monthly
-    salary_confidence FLOAT,
-
-    -- Experience and requirements (from LLM)
-    min_years_experience NUMBER,
-    max_years_experience NUMBER,
-    experience_level STRING,  -- Entry, Mid, Senior, Executive
-    education_requirements VARIANT,  -- Array of requirements
-
-    -- Technical skills (from LLM, stored as JSON arrays)
-    programming_languages VARIANT,
-    databases VARIANT,
-    cloud_platforms VARIANT,
-    frameworks VARIANT,
-    tools VARIANT,
-    soft_skills VARIANT,
-
-    -- Work arrangement (from LLM)
-    work_type STRING,  -- Remote, Hybrid, On-site
-    remote_flexibility STRING,
-    travel_requirements STRING,
-    office_locations VARIANT,
-
-    -- Keywords and classification (from LLM)
-    primary_keywords VARIANT,
-    industry_keywords VARIANT,
-    role_type_keywords VARIANT,
-    company_stage_keywords VARIANT,
-    job_family STRING,
-    job_sub_family STRING,
-
-    -- Platform-specific data (flexible VARIANT column)
+    -- Platform-specific data (preserved as JSON)
     platform_specific_data VARIANT,
 
     -- Quality and metadata
     transformation_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
     data_quality_score FLOAT,
-    extraction_confidence_avg FLOAT,
-    keyword_quality_score FLOAT,
 
     -- Source tracking
     source_raw_table STRING,  -- Original table name for lineage
     raw_data VARIANT,  -- Compressed original raw data for reference
 
-    -- Partitioning and clustering
+    -- Partitioning
     partition_date DATE
 );
+```
+
+### 2.1 Future Schema Extensions (Phase 2 - LLM Enrichments)
+
+When Phase 2 LLM processing is implemented, the following columns will be added:
+
+```sql
+-- Add LLM extraction columns in Phase 2
+ALTER TABLE jobs_unified ADD COLUMN salary_min NUMBER;
+ALTER TABLE jobs_unified ADD COLUMN salary_max NUMBER;
+ALTER TABLE jobs_unified ADD COLUMN salary_currency STRING DEFAULT 'USD';
+ALTER TABLE jobs_unified ADD COLUMN salary_period STRING;  -- hourly, annually, monthly
+ALTER TABLE jobs_unified ADD COLUMN salary_confidence FLOAT;
+
+-- Experience and requirements (from LLM)
+ALTER TABLE jobs_unified ADD COLUMN min_years_experience NUMBER;
+ALTER TABLE jobs_unified ADD COLUMN max_years_experience NUMBER;
+ALTER TABLE jobs_unified ADD COLUMN experience_level STRING;  -- Entry, Mid, Senior, Executive
+ALTER TABLE jobs_unified ADD COLUMN education_requirements VARIANT;  -- Array of requirements
+
+-- Technical skills (from LLM, stored as JSON arrays)
+ALTER TABLE jobs_unified ADD COLUMN programming_languages VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN databases VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN cloud_platforms VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN frameworks VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN tools VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN soft_skills VARIANT;
+
+-- Work arrangement (from LLM)
+ALTER TABLE jobs_unified ADD COLUMN work_type STRING;  -- Remote, Hybrid, On-site
+ALTER TABLE jobs_unified ADD COLUMN remote_flexibility STRING;
+ALTER TABLE jobs_unified ADD COLUMN travel_requirements STRING;
+ALTER TABLE jobs_unified ADD COLUMN office_locations VARIANT;
+
+-- Keywords and classification (from LLM)
+ALTER TABLE jobs_unified ADD COLUMN primary_keywords VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN industry_keywords VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN role_type_keywords VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN company_stage_keywords VARIANT;
+ALTER TABLE jobs_unified ADD COLUMN job_family STRING;
+ALTER TABLE jobs_unified ADD COLUMN job_sub_family STRING;
+
+-- Additional quality metrics
+ALTER TABLE jobs_unified ADD COLUMN extraction_confidence_avg FLOAT;
+ALTER TABLE jobs_unified ADD COLUMN keyword_quality_score FLOAT;
 ```
 
 ### 3. Add Clustering and Indexes
