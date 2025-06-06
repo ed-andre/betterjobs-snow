@@ -81,10 +81,11 @@ However, these values are not being properly extracted and mapped to the corresp
 
 ## BUG-002: Greenhouse Jobs Discovery - Job ID Extraction Failing
 
-**Status**: Open
+**Status**: Resolved
 **Severity**: Critical
 **Component**: Job Discovery Pipeline - Greenhouse
 **Date Reported**: 2025-06-06
+**Date Resolved**: 2025-01-06
 
 ### Description
 6,076 Greenhouse job records have `job_id` set to `'None'` instead of the actual job ID from the API response. This causes massive data quality issues and incorrect deduplication.
@@ -100,6 +101,8 @@ The job ID extraction logic in `greenhouse_jobs_discovery.py` is not properly ex
 }
 ```
 But the job_id field is being set to None in the database.
+
+**Root Cause**: The job ID was correctly extracted from the initial job listing (line 266), but was being overwritten on line 314 with `job_details.get("id")` which returns `None` because the detailed job response doesn't contain an "id" field in the expected format.
 
 ### Reproduction Steps
 1. Run greenhouse jobs discovery pipeline
@@ -120,6 +123,22 @@ But the job_id field is being set to None in the database.
 ### Files Affected
 - `pipeline/dagster_betterjobs/dagster_betterjobs/assets/greenhouse_jobs_discovery.py`
 - `pipeline/dagster_betterjobs/dagster_betterjobs/scrapers/greenhouse_scraper.py`
+
+### Resolution
+**Fixed**: Removed the job ID overwrite logic in `greenhouse_jobs_discovery.py` (line 314)
+
+**Issue**: The code flow was:
+1. Correctly extract job_id from initial job listing (line 266)
+2. Convert to string and validate (lines 269-270)
+3. Get detailed job info (line 278)
+4. **Overwrite** job_id with `job_details.get("id")` which returns `None` (line 314) ❌
+
+**Solution**: Removed the problematic line 314 that was overwriting the correctly extracted job_id:
+```python
+# REMOVED: job_id = job_details.get("id")  # This was causing the bug
+```
+
+**Result**: The job_id now preserves the correctly extracted value from the initial job listing, ensuring proper job identification and preventing the mass "None" job_id issue.
 
 ---
 

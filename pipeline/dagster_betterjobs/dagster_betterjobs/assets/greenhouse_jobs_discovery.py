@@ -313,8 +313,7 @@ def greenhouse_company_jobs_discovery(context: AssetExecutionContext, config: Gr
                     finally:
                         cursor.close()
 
-                    # Extract job details
-                    job_id = job_details.get("id")
+
                     job_title = job_details.get("job_title")
                     job_url = job_details.get("job_url")
                     published_at = job_details.get("published_at")
