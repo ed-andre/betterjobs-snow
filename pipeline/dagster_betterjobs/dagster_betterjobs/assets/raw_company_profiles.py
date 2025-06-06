@@ -583,7 +583,7 @@ def handle_profile_duplicates(conn, table_name: str, context: AssetExecutionCont
 
 class RawCompanyProfilesConfig(Config):
     """Configuration for raw company profiles asset."""
-    s3_uri: Optional[str] = "s3://betterjobs-dagster/master_companies_profile/"
+    s3_uri: Optional[str] = os.getenv("S3_URI_COMPANIES_PROFILE")
     stage_name: str = "raw_company_profiles_stage"
     table_name: str = "raw_company_profiles"
 
