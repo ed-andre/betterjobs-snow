@@ -23,6 +23,12 @@ from .language_detection import (
     get_sql_language_detection_query
 )
 
+from .platform_mapping import (
+    PlatformMapper,
+    map_all_platforms,
+    get_platform_field_differences
+)
+
 __all__ = [
     "clean_html_tags",
     "normalize_whitespace",
@@ -35,5 +41,8 @@ __all__ = [
     "detect_text_language",
     "process_job_dataframe",
     "filter_english_jobs",
-    "get_sql_language_detection_query"
+    "get_sql_language_detection_query",
+    "PlatformMapper",
+    "map_all_platforms",
+    "get_platform_field_differences"
 ]

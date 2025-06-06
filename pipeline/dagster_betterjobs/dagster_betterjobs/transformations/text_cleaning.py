@@ -10,6 +10,7 @@ import html
 from typing import Optional, Dict, List
 from urllib.parse import urlparse
 import logging
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -389,7 +390,7 @@ def clean_company_name(company_name: Optional[str]) -> str:
 
 
 # Utility function for batch processing
-def clean_text_fields(data: Dict[str, any]) -> Dict[str, any]:
+def clean_text_fields_dict(data: Dict[str, any]) -> Dict[str, any]:
     """
     Apply text cleaning to all relevant fields in a data dictionary.
 
@@ -426,3 +427,77 @@ def clean_text_fields(data: Dict[str, any]) -> Dict[str, any]:
         cleaned_data['job_url_domain'] = url_info['domain']
 
     return cleaned_data
+
+
+def clean_text_fields_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply text cleaning to all relevant fields in a pandas DataFrame.
+
+    Args:
+        df: DataFrame containing job data fields
+
+    Returns:
+        DataFrame with cleaned text fields added
+    """
+    cleaned_df = df.copy()
+
+    # Apply cleaning functions to relevant fields
+    if 'job_title' in cleaned_df.columns:
+        cleaned_df['job_title_clean'] = cleaned_df['job_title'].apply(
+            lambda x: standardize_job_title(x) if pd.notnull(x) else ""
+        )
+
+    if 'job_description' in cleaned_df.columns:
+        cleaned_df['job_description_clean'] = cleaned_df['job_description'].apply(
+            lambda x: clean_job_description(x) if pd.notnull(x) else ""
+        )
+
+    if 'company_name' in cleaned_df.columns:
+        cleaned_df['company_name_clean'] = cleaned_df['company_name'].apply(
+            lambda x: clean_company_name(x) if pd.notnull(x) else ""
+        )
+
+    if 'location' in cleaned_df.columns:
+        location_results = cleaned_df['location'].apply(
+            lambda x: standardize_location(x) if pd.notnull(x) else {
+                'standardized': '', 'city': None, 'state': None,
+                'country': None, 'is_remote': False
+            }
+        )
+
+        cleaned_df['location_standardized'] = location_results.apply(lambda x: x['standardized'])
+        cleaned_df['location_city'] = location_results.apply(lambda x: x['city'])
+        cleaned_df['location_state'] = location_results.apply(lambda x: x['state'])
+        cleaned_df['location_country'] = location_results.apply(lambda x: x['country'])
+        cleaned_df['is_remote_location'] = location_results.apply(lambda x: x['is_remote'])
+
+    if 'job_url' in cleaned_df.columns:
+        url_results = cleaned_df['job_url'].apply(
+            lambda x: validate_url(x) if pd.notnull(x) else {
+                'is_valid': False, 'normalized_url': '', 'domain': None, 'scheme': None
+            }
+        )
+
+        cleaned_df['job_url_valid'] = url_results.apply(lambda x: x['is_valid'])
+        cleaned_df['job_url_normalized'] = url_results.apply(lambda x: x['normalized_url'])
+        cleaned_df['job_url_domain'] = url_results.apply(lambda x: x['domain'])
+
+    return cleaned_df
+
+
+def clean_text_fields(data):
+    """
+    Apply text cleaning to all relevant fields in data (dict or DataFrame).
+
+    Args:
+        data: Dictionary or DataFrame containing job data fields
+
+    Returns:
+        Cleaned data in the same format as input
+    """
+    if isinstance(data, pd.DataFrame):
+        return clean_text_fields_dataframe(data)
+    elif isinstance(data, dict):
+        return clean_text_fields_dict(data)
+    else:
+        raise ValueError(f"Unsupported data type: {type(data)}. Expected dict or DataFrame.")

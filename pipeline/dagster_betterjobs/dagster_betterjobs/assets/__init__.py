@@ -6,6 +6,7 @@ from dagster_betterjobs.assets.smartrecruiters_jobs_discovery import smartrecrui
 from dagster_betterjobs.assets.workday_jobs_discovery import workday_company_jobs_discovery
 from dagster_betterjobs.assets.raw_company_profiles import raw_company_profiles
 from dagster_betterjobs.assets.job_search import search_jobs
+from dagster_betterjobs.assets.stage_jobs_unified import stage_jobs_unified
 
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
@@ -18,5 +19,6 @@ __all__ = [
     "workday_company_jobs_discovery",
     "raw_company_profiles",
     "search_jobs",
+    "stage_jobs_unified",
     "snowflake_master_company_urls"
 ]

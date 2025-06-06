@@ -37,82 +37,82 @@ class PlatformMapper:
         return {
             'bamboohr': {
                 # Standard fields
-                'job_id': 'JOB_ID',
-                'company_id': 'COMPANY_ID',
-                'job_title': 'JOB_TITLE',
-                'job_description': 'JOB_DESCRIPTION',
-                'job_url': 'JOB_URL',
-                'location': 'LOCATION',
-                'department': 'DEPARTMENT',
-                'date_posted': 'DATE_POSTED',  # BambooHR uses DATE_POSTED
-                'date_retrieved': 'DATE_RETRIEVED',
-                'is_active': 'IS_ACTIVE',
-                'raw_data': 'RAW_DATA',
-                'partition_key': 'PARTITION_KEY',
+                'job_id': 'job_id',
+                'company_id': 'company_id',
+                'job_title': 'job_title',
+                'job_description': 'job_description',
+                'job_url': 'job_url',
+                'location': 'location',
+                'department': 'department',
+                'date_posted': 'date_posted',  # BambooHR uses date_posted
+                'date_retrieved': 'date_retrieved',
+                'is_active': 'is_active',
+                'raw_data': 'raw_data',
+                'partition_key': 'partition_key',
                 # Platform-specific fields
-                'employment_status': 'EMPLOYMENT_STATUS',
-                'compensation': 'COMPENSATION',
-                'work_type': 'WORK_TYPE'
+                'employment_status': 'employment_status',
+                'compensation': 'compensation',
+                'work_type': 'work_type'
             },
             'greenhouse': {
                 # Standard fields
-                'job_id': 'JOB_ID',
-                'company_id': 'COMPANY_ID',
-                'job_title': 'JOB_TITLE',
-                'job_description': 'JOB_DESCRIPTION',
-                'job_url': 'JOB_URL',
-                'location': 'LOCATION',
-                'department': 'DEPARTMENT',
-                'date_posted': 'PUBLISHED_AT',  # Greenhouse uses PUBLISHED_AT
-                'date_retrieved': 'DATE_RETRIEVED',
-                'is_active': 'IS_ACTIVE',
-                'raw_data': 'RAW_DATA',
-                'partition_key': 'PARTITION_KEY',
+                'job_id': 'job_id',
+                'company_id': 'company_id',
+                'job_title': 'job_title',
+                'job_description': 'job_description',
+                'job_url': 'job_url',
+                'location': 'location',
+                'department': 'department',
+                'date_posted': 'published_at',  # Greenhouse uses published_at
+                'date_retrieved': 'date_retrieved',
+                'is_active': 'is_active',
+                'raw_data': 'raw_data',
+                'partition_key': 'partition_key',
                 # Platform-specific fields
-                'department_id': 'DEPARTMENT_ID',
-                'updated_at': 'UPDATED_AT',
-                'requisition_id': 'REQUISITION_ID',
-                'work_type': 'WORK_TYPE',
-                'compensation': 'COMPENSATION'
+                'department_id': 'department_id',
+                'updated_at': 'updated_at',
+                'requisition_id': 'requisition_id',
+                'work_type': 'work_type',
+                'compensation': 'compensation'
             },
             'smartrecruiters': {
                 # Standard fields
-                'job_id': 'JOB_ID',
-                'company_id': 'COMPANY_ID',
-                'job_title': 'JOB_TITLE',
-                'job_description': 'JOB_DESCRIPTION',
-                'job_url': 'JOB_URL',
-                'location': 'LOCATION',
-                'department': 'DEPARTMENT',
-                'date_posted': 'PUBLISHED_AT',  # SmartRecruiters uses PUBLISHED_AT
-                'date_retrieved': 'DATE_RETRIEVED',
-                'is_active': 'IS_ACTIVE',
-                'raw_data': 'RAW_DATA',
-                'partition_key': 'PARTITION_KEY',
+                'job_id': 'job_id',
+                'company_id': 'company_id',
+                'job_title': 'job_title',
+                'job_description': 'job_description',
+                'job_url': 'job_url',
+                'location': 'location',
+                'department': 'department',
+                'date_posted': 'published_at',  # SmartRecruiters uses published_at
+                'date_retrieved': 'date_retrieved',
+                'is_active': 'is_active',
+                'raw_data': 'raw_data',
+                'partition_key': 'partition_key',
                 # Platform-specific fields
-                'requisition_id': 'REQUISITION_ID'
-                # Note: SmartRecruiters lacks COMPENSATION, WORK_TYPE, EMPLOYMENT_STATUS
+                'requisition_id': 'requisition_id'
+                # Note: SmartRecruiters lacks compensation, work_type, employment_status
             },
             'workday': {
                 # Standard fields
-                'job_id': 'JOB_ID',
-                'company_id': 'COMPANY_ID',
-                'job_title': 'JOB_TITLE',
-                'job_description': 'JOB_DESCRIPTION',
-                'job_url': 'JOB_URL',
-                'location': 'LOCATION',
-                'date_posted': 'PUBLISHED_AT',  # Workday uses PUBLISHED_AT
-                'date_retrieved': 'DATE_RETRIEVED',
-                'is_active': 'IS_ACTIVE',
-                'raw_data': 'RAW_DATA',
-                'partition_key': 'PARTITION_KEY',
+                'job_id': 'job_id',
+                'company_id': 'company_id',
+                'job_title': 'job_title',
+                'job_description': 'job_description',
+                'job_url': 'job_url',
+                'location': 'location',
+                'date_posted': 'published_at',  # Workday uses published_at
+                'date_retrieved': 'date_retrieved',
+                'is_active': 'is_active',
+                'raw_data': 'raw_data',
+                'partition_key': 'partition_key',
                 # Platform-specific fields
-                'time_type': 'TIME_TYPE',
-                'employment_status': 'EMPLOYMENT_TYPE',  # Workday uses EMPLOYMENT_TYPE
-                'valid_through': 'VALID_THROUGH',
-                'work_type': 'WORK_TYPE',
-                'compensation': 'COMPENSATION'
-                # Note: Workday lacks DEPARTMENT field
+                'time_type': 'time_type',
+                'employment_status': 'employment_type',  # Workday uses employment_type
+                'valid_through': 'valid_through',
+                'work_type': 'work_type',
+                'compensation': 'compensation'
+                # Note: Workday lacks department field
             }
         }
 
@@ -140,6 +140,12 @@ class PlatformMapper:
             else:
                 # Handle missing fields with null values
                 result_df[stage_field] = None
+
+        # Preserve additional fields that aren't in the mapping (like cleaned fields)
+        mapped_raw_fields = set(mapping.values())
+        for col in df.columns:
+            if col not in mapped_raw_fields and col not in result_df.columns:
+                result_df[col] = df[col]
 
         # Add platform identifier
         result_df['platform'] = platform
@@ -250,29 +256,29 @@ class PlatformMapper:
 
             if platform == 'bamboohr':
                 platform_data = {
-                    'employment_status': row.get('EMPLOYMENT_STATUS'),
-                    'compensation': row.get('COMPENSATION'),
-                    'work_type': row.get('WORK_TYPE')
+                    'employment_status': row.get('employment_status'),
+                    'compensation': row.get('compensation'),
+                    'work_type': row.get('work_type')
                 }
             elif platform == 'greenhouse':
                 platform_data = {
-                    'department_id': row.get('DEPARTMENT_ID'),
-                    'updated_at': str(row.get('UPDATED_AT')) if row.get('UPDATED_AT') else None,
-                    'requisition_id': row.get('REQUISITION_ID'),
-                    'work_type': row.get('WORK_TYPE'),
-                    'compensation': row.get('COMPENSATION')
+                    'department_id': row.get('department_id'),
+                    'updated_at': str(row.get('updated_at')) if row.get('updated_at') else None,
+                    'requisition_id': row.get('requisition_id'),
+                    'work_type': row.get('work_type'),
+                    'compensation': row.get('compensation')
                 }
             elif platform == 'smartrecruiters':
                 platform_data = {
-                    'requisition_id': row.get('REQUISITION_ID')
+                    'requisition_id': row.get('requisition_id')
                 }
             elif platform == 'workday':
                 platform_data = {
-                    'time_type': row.get('TIME_TYPE'),
-                    'employment_type': row.get('EMPLOYMENT_TYPE'),
-                    'valid_through': str(row.get('VALID_THROUGH')) if row.get('VALID_THROUGH') else None,
-                    'work_type': row.get('WORK_TYPE'),
-                    'compensation': row.get('COMPENSATION')
+                    'time_type': row.get('time_type'),
+                    'employment_type': row.get('employment_type'),
+                    'valid_through': str(row.get('valid_through')) if row.get('valid_through') else None,
+                    'work_type': row.get('work_type'),
+                    'compensation': row.get('compensation')
                 }
 
             # Remove None values
