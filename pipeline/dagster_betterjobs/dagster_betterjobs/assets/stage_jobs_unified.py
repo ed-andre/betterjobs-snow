@@ -118,7 +118,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
             location_standardized STRING,
             job_url STRING,
 
-            -- Date fields
+            -- Date fields (using TRY_CAST for robust string-to-timestamp conversion)
             date_posted DATE,
             date_retrieved TIMESTAMP_NTZ,
 
@@ -347,26 +347,34 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         context.log.info(f"Filtered DataFrame columns: {list(filtered_df.columns)}")
 
         # Use write_pandas for efficient bulk loading
-        # Handle data types for Snowflake
+        # Handle data types for Snowflake - NO DATE/TIMESTAMP CONVERSIONS
+        # Let Snowflake handle all date/timestamp conversions natively during write_pandas
         for col in filtered_df.select_dtypes(include=['object']).columns:
             if col not in ['date_posted', 'date_retrieved', 'partition_date']:
                 filtered_df[col] = filtered_df[col].fillna('').astype(str)
 
-        # Handle date columns (DATE type in Snowflake)
-        date_columns = ['date_posted', 'partition_date']
-        for col in date_columns:
-            if col in filtered_df.columns:
-                filtered_df[col] = pd.to_datetime(filtered_df[col], errors='coerce')
-                filtered_df[col] = filtered_df[col].dt.date
-                filtered_df[col] = filtered_df[col].where(pd.notnull(filtered_df[col]), None)
+        # DO NOT CONVERT DATE/TIMESTAMP COLUMNS - preserve as-is from Snowflake
+        # Snowflake's write_pandas will handle DATE and TIMESTAMP_NTZ conversions correctly
+        # Previous pandas datetime conversions were corrupting the timestamp data
 
-        # Handle timestamp columns (TIMESTAMP_NTZ type in Snowflake)
-        timestamp_columns = ['date_retrieved']
-        for col in timestamp_columns:
-            if col in filtered_df.columns:
-                filtered_df[col] = pd.to_datetime(filtered_df[col], errors='coerce')
-                # Keep as datetime for TIMESTAMP_NTZ, don't convert to date
-                filtered_df[col] = filtered_df[col].where(pd.notnull(filtered_df[col]), None)
+        # Set partition_date for today's partition (simple date object)
+        if 'partition_date' in filtered_df.columns:
+            filtered_df['partition_date'] = date.today()
+
+        # Debug: Log sample timestamp values to verify they're preserved correctly
+        if 'date_retrieved' in filtered_df.columns:
+            sample_retrieved = filtered_df['date_retrieved'].dropna().head(3).tolist()
+            context.log.info(f"Sample date_retrieved values before write_pandas: {sample_retrieved}")
+            context.log.info(f"Sample date_retrieved types: {[type(v) for v in sample_retrieved]}")
+
+            # Fix for UNIX timestamp corruption issue - convert to string first
+            # This prevents pandas from misinterpreting the timestamp format
+            context.log.info("Converting date_retrieved to string to prevent timestamp corruption")
+            filtered_df['date_retrieved'] = filtered_df['date_retrieved'].astype(str)
+
+            # Log sample converted values
+            sample_converted = filtered_df['date_retrieved'].dropna().head(3).tolist()
+            context.log.info(f"Sample date_retrieved values after string conversion: {sample_converted}")
 
         # Handle boolean columns
         boolean_columns = ['is_active', 'is_english']
@@ -382,23 +390,71 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                     lambda x: json.dumps(x) if isinstance(x, (dict, list)) else str(x) if pd.notnull(x) else None
                 )
 
-        # Use write_pandas for bulk insert
+        # Alternative approach: Use explicit SQL INSERT with TRY_CAST for robust timestamp handling
+        # This completely avoids pandas timestamp issues and handles UNIX timestamp corruption
+
+        context.log.info("Using explicit SQL INSERT with timestamp casting instead of write_pandas")
+
+        # Create temporary table for bulk insert
+        temp_table_name = f"temp_stage_jobs_{int(datetime.now().timestamp())}"
+
+        # Use write_pandas to load to temporary table first
         success, num_chunks, num_rows, output = write_pandas(
             conn,
             filtered_df,
-            'jobs_unified',
+            temp_table_name,
             database=database_name,
             schema=stage_schema,
-            auto_create_table=False,
-            overwrite=False,
+            auto_create_table=True,
+            overwrite=True,
             quote_identifiers=False
         )
 
-        if success:
-            stats["jobs_loaded"] = num_rows
-            context.log.info(f"Successfully loaded {num_rows} jobs to STAGE.jobs_unified")
-        else:
-            raise Exception(f"Failed to load data to Snowflake: {output}")
+        if not success:
+            raise Exception(f"Failed to load data to temporary table: {output}")
+
+        context.log.info(f"Loaded {num_rows} rows to temporary table {temp_table_name}")
+
+        # Now insert from temp table to final table with explicit timestamp casting
+        insert_sql = f"""
+        INSERT INTO {database_name}.{stage_schema}.jobs_unified
+        SELECT
+            job_id,
+            company_id,
+            platform,
+            job_title_clean,
+            job_description_clean,
+            company_name_clean,
+            location_standardized,
+            job_url,
+            TRY_CAST(date_posted AS DATE) as date_posted,
+            TRY_CAST(date_retrieved AS TIMESTAMP_NTZ) as date_retrieved,
+            is_active,
+            employment_status,
+            department,
+            detected_language,
+            language_confidence,
+            is_english,
+            language_detection_method,
+            TRY_PARSE_JSON(platform_specific_data) as platform_specific_data,
+            CURRENT_TIMESTAMP as transformation_timestamp,
+            data_quality_score,
+            source_raw_table,
+            TRY_PARSE_JSON(raw_data) as raw_data,
+            TRY_CAST(partition_date AS DATE) as partition_date
+        FROM {database_name}.{stage_schema}.{temp_table_name}
+        """
+
+        cursor.execute(insert_sql)
+        final_count = cursor.rowcount
+        conn.commit()
+
+        # Clean up temporary table
+        cursor.execute(f"DROP TABLE {database_name}.{stage_schema}.{temp_table_name}")
+        conn.commit()
+
+        context.log.info(f"Successfully inserted {final_count} jobs with explicit timestamp casting")
+        stats["jobs_loaded"] = final_count
 
         stats["processing_end"] = datetime.now().isoformat()
 

@@ -173,12 +173,10 @@ class PlatformMapper:
         # Create platform-specific data JSON
         df = self._create_platform_specific_data(df, platform, raw_df)
 
-        # Handle date formatting
-        df = self._standardize_dates(df)
-
-        # Add source tracking
+        # Add source tracking - no date standardization needed
+        # Snowflake handles all date/timestamp conversions natively
         df['source_raw_table'] = f"RAW.{platform.upper()}_JOBS"
-        df['partition_date'] = pd.to_datetime(df['date_retrieved']).dt.date
+        df['partition_date'] = datetime.now().date()  # Use current date for partitioning
 
         return df
 
@@ -287,26 +285,6 @@ class PlatformMapper:
             platform_data_list.append(json.dumps(platform_data) if platform_data else None)
 
         df['platform_specific_data'] = platform_data_list
-        return df
-
-    def _standardize_dates(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Standardize date fields to consistent format.
-
-        Args:
-            df: DataFrame with date fields
-
-        Returns:
-            DataFrame with standardized date fields
-        """
-        # Ensure date_posted is in DATE format
-        if 'date_posted' in df.columns:
-            df['date_posted'] = pd.to_datetime(df['date_posted']).dt.date
-
-        # Ensure date_retrieved is in TIMESTAMP format
-        if 'date_retrieved' in df.columns:
-            df['date_retrieved'] = pd.to_datetime(df['date_retrieved'])
-
         return df
 
     def get_unified_schema_fields(self) -> List[str]:

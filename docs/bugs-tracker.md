@@ -381,4 +381,134 @@ if not job_url.startswith('https://boards.greenhouse.io/') and not job_url.start
 
 ---
 
+## BUG-006: Language Detection Method Column Not Being Populated
+
+**Status:** RESOLVED ✅
+**Severity:** Medium
+**Component:** Stage Jobs Unified - Language Detection
+**Date Reported:** 2025-01-06
+**Date Resolved:** 2025-01-06
+
+### Description
+The `language_detection_method` column in `STAGE.jobs_unified` table is not being populated despite the language detection processing working correctly. All records have `NULL` values for this field.
+
+### Root Cause Analysis
+The `language_detection.py` module successfully processes language detection and populates `detected_language`, `language_confidence`, and `is_english` fields. However, the `detect_language_comprehensive()` method doesn't return a `language_detection_method` field, which is expected by the unified table schema.
+
+**Root Cause**: The `detect_language_comprehensive()` method in `LanguageDetector` class was not tracking or returning which detection method was used during the language detection process.
+
+### Resolution
+**Fixed in**: `pipeline/dagster_betterjobs/dagster_betterjobs/transformations/language_detection.py`
+
+**Changes Made**:
+1. **Enhanced `detect_language_comprehensive()` method** to track and return detection method used
+2. **Added `language_detection_method` field** to returned dictionary with values:
+   - `'python_langdetect'` - Primary langdetect library with high confidence
+   - `'sql_pattern_fallback'` - SQL pattern matching with high confidence
+   - `'python_langdetect_low_confidence'` - Primary method with low confidence
+   - `'sql_pattern_low_confidence'` - Fallback method with low confidence
+   - `'insufficient_text'` - Text too short for reliable detection
+3. **Updated `process_dataframe()` method** to extract and populate the language_detection_method column
+4. **Updated documentation** for convenience functions to include new field
+
+**Technical Implementation**:
+```python
+# Enhanced method tracking
+detection_method = None
+if primary_confidence >= self.confidence_threshold:
+    detection_method = 'python_langdetect'
+elif fallback_confidence >= self.confidence_threshold:
+    detection_method = 'sql_pattern_fallback'
+# ... additional logic for low confidence cases
+
+return {
+    'detected_language': detected_language,
+    'language_confidence': round(confidence, 3),
+    'is_english': is_english,
+    'language_detection_method': detection_method  # NEW FIELD
+}
+```
+
+### Impact
+- ✅ All job records now have `language_detection_method` populated
+- ✅ Enables monitoring of detection method reliability and accuracy
+- ✅ Provides metadata for quality analysis and troubleshooting
+- ✅ Facilitates detection method performance comparison
+
+### Files Affected
+- `dagster_betterjobs/transformations/language_detection.py` (BUG-006)
+- `dagster_betterjobs/assets/stage_jobs_unified.py` (BUG-007)
+
+---
+
+## BUG-007: Date Retrieved Field Showing Invalid Date in Unified Table
+
+**Status:** RESOLVED ✅
+**Severity:** High
+**Component:** Stage Jobs Unified - Data Type Conversion
+**Date Reported:** 2025-01-06
+**Date Resolved:** 2025-01-06
+
+### Description
+The `date_retrieved` field in `STAGE.jobs_unified` table was displaying as "Invalid date" for all records, despite the field being properly populated in the RAW layer tables. When cast to VARCHAR, the corrupted values appeared as strange formats like "-408823998-10-13 23:40:00.000".
+
+### Root Cause Analysis - FINAL
+**Root Cause**: Pandas datetime conversions were corrupting valid Snowflake TIMESTAMP_NTZ values. The issue was occurring in the `platform_mapping.py` module's `_standardize_dates()` method, which was unnecessarily calling `pd.to_datetime()` on perfectly valid timestamp data from Snowflake.
+
+**Technical Details**:
+- **RAW Layer**: Uses `date_retrieved TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP` creating perfectly valid timestamps
+- **Platform Mapping**: `_standardize_dates()` method was calling `pd.to_datetime(df['date_retrieved'])` unnecessarily
+- **Data Corruption**: This conversion corrupted the binary timestamp representation, creating values like "-408823998-10-13"
+- **Cascade Effect**: The corruption occurred early in the pipeline, affecting all downstream processing
+
+**Evidence**:
+- Corrupted value in STAGE table: `"-408823998-10-13 23:40:00.000"`
+- Original RAW values were valid TIMESTAMP_NTZ from Snowflake's `CURRENT_TIMESTAMP`
+- Multiple users online reported similar issues with UNIX timestamp conversion requiring string-first approach
+
+### Resolution
+**Fixed in**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/transformations/platform_mapping.py` (Primary fix)
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/stage_jobs_unified.py` (Secondary cleanup)
+
+**Changes Made**:
+1. **Completely eliminated pandas datetime conversions** in `_standardize_dates()` method
+2. **Removed all date/timestamp processing** - let Snowflake handle conversions natively
+3. **Added alternative two-stage loading** with explicit `TRY_CAST(date_retrieved AS TIMESTAMP_NTZ)`
+4. **Preserved string conversion approach** to prevent pandas timestamp misinterpretation
+
+**Primary Fix in platform_mapping.py**:
+```python
+def _standardize_dates(self, df: pd.DataFrame) -> pd.DataFrame:
+    # DO NOT CONVERT TIMESTAMPS - preserve Snowflake TIMESTAMP_NTZ values as-is
+    # Snowflake handles TIMESTAMP_NTZ and DATE conversions natively during write_pandas
+    # Any pandas datetime conversion corrupts the timestamp data
+
+    # date_posted: Let Snowflake handle DATE conversion during insert
+    # date_retrieved: Preserve TIMESTAMP_NTZ as-is from Snowflake
+
+    return df
+```
+
+**Secondary Fix in stage_jobs_unified.py**:
+- Removed all pandas date/timestamp conversions
+- Added explicit string conversion for timestamps: `filtered_df['date_retrieved'] = filtered_df['date_retrieved'].astype(str)`
+- Implemented two-stage loading with SQL `TRY_CAST` for robust timestamp handling
+
+**Key Insight**: The solution followed the pattern mentioned by users online - convert timestamps to string first, then let Snowflake cast back to TIMESTAMP_NTZ using SQL, completely bypassing pandas datetime corruption.
+
+### Impact
+- ✅ `date_retrieved` field now shows valid timestamps (no more "Invalid date")
+- ✅ Fixed pipeline corruption at the source (platform_mapping.py)
+- ✅ Eliminates cascading data corruption from early unnecessary conversions
+- ✅ Preserves original Snowflake TIMESTAMP_NTZ values throughout entire pipeline
+- ✅ Enables accurate temporal analysis and job freshness tracking
+- ✅ Follows proven pattern for handling UNIX timestamp corruption issues
+
+### Files Affected
+- `dagster_betterjobs/transformations/platform_mapping.py` (Primary fix - removed pandas datetime conversions)
+- `dagster_betterjobs/assets/stage_jobs_unified.py` (Secondary cleanup - string conversion + SQL casting)
+
+---
+
 ## Template for New Bugs

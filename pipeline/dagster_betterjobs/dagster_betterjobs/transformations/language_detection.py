@@ -207,13 +207,14 @@ class LanguageDetector:
             text: Input text to analyze
 
         Returns:
-            Dictionary with detected_language, language_confidence, and is_english fields
+            Dictionary with detected_language, language_confidence, is_english, and language_detection_method fields
         """
         if not text or len(text.strip()) < 10:
             return {
                 'detected_language': 'unknown',
                 'language_confidence': 0.0,
-                'is_english': False
+                'is_english': False,
+                'language_detection_method': 'insufficient_text'
             }
 
         # Primary detection using langdetect
@@ -222,21 +223,26 @@ class LanguageDetector:
         # Fallback detection using patterns
         fallback_lang, fallback_confidence = self.detect_language_sql_fallback(text)
 
-        # Combine results
+        # Combine results and track which method was used
+        detection_method = None
         if primary_confidence >= self.confidence_threshold:
             detected_language = primary_lang
             confidence = primary_confidence
+            detection_method = 'python_langdetect'
         elif fallback_confidence >= self.confidence_threshold:
             detected_language = fallback_lang
             confidence = fallback_confidence
+            detection_method = 'sql_pattern_fallback'
         else:
             # Use the method with higher confidence
             if primary_confidence >= fallback_confidence:
                 detected_language = primary_lang
                 confidence = primary_confidence
+                detection_method = 'python_langdetect_low_confidence'
             else:
                 detected_language = fallback_lang
                 confidence = fallback_confidence
+                detection_method = 'sql_pattern_low_confidence'
 
         # Determine if English
         is_english = detected_language == 'en' and confidence >= self.confidence_threshold
@@ -244,7 +250,8 @@ class LanguageDetector:
         return {
             'detected_language': detected_language,
             'language_confidence': round(confidence, 3),
-            'is_english': is_english
+            'is_english': is_english,
+            'language_detection_method': detection_method
         }
 
     def process_dataframe(self, df: pd.DataFrame, text_column: str) -> pd.DataFrame:
@@ -268,6 +275,7 @@ class LanguageDetector:
         df['detected_language'] = results.apply(lambda x: x['detected_language'])
         df['language_confidence'] = results.apply(lambda x: x['language_confidence'])
         df['is_english'] = results.apply(lambda x: x['is_english'])
+        df['language_detection_method'] = results.apply(lambda x: x['language_detection_method'])
 
         return df
 
@@ -350,7 +358,7 @@ def detect_text_language(text: str, confidence_threshold: float = 0.7) -> Dict[s
         confidence_threshold: Minimum confidence score for reliable detection
 
     Returns:
-        Dictionary with detected_language, language_confidence, and is_english fields
+        Dictionary with detected_language, language_confidence, is_english, and language_detection_method fields
     """
     detector = LanguageDetector(confidence_threshold=confidence_threshold)
     return detector.detect_language_comprehensive(text)
