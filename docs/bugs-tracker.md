@@ -226,10 +226,12 @@ This fix ensures proper extraction of numeric job IDs like `3743990008187744` in
 
 ## BUG-004: Deduplication Strategy Too Aggressive
 
-**Status**: Open
+**Status**: Resolved ✅
 **Severity**: High
 **Component**: Data Processing Pipeline - Stage Jobs Unified
 **Date Reported**: 2025-06-06
+**Date Resolved**: 2025-06-06
+**Fixed in Commit**: 4dc31bab9f5132a51860581b353b82454cf848a3
 
 ### Description
 Current deduplication strategy using `job_id + platform` is insufficient. Different companies may use overlapping job ID schemas, requiring `job_id + platform + company_id` for proper deduplication.
@@ -251,10 +253,31 @@ This doesn't account for legitimate cases where different companies on the same 
 **Expected**: Only true duplicates (same job from same company) should be removed
 **Actual**: Jobs with same ID across different companies are incorrectly deduplicated
 
+### Resolution
+**Fixed in**: `pipeline/dagster_betterjobs/dagster_betterjobs/assets/stage_jobs_unified.py`
+**Commit**: 4dc31bab9f5132a51860581b353b82454cf848a3
+
+**Changes Made**:
+Updated deduplication logic to use `job_id + platform + company_id` combination:
+
+```python
+# BEFORE (too aggressive):
+combined_df = combined_df.drop_duplicates(subset=['job_id', 'platform'], keep='first')
+
+# AFTER (precise deduplication):
+combined_df = combined_df.drop_duplicates(subset=['job_id', 'platform', 'company_id'], keep='first')
+```
+
+This ensures that:
+- Only true duplicates (same job_id from same company on same platform) are removed
+- Different companies with overlapping job ID ranges are preserved
+- Data integrity is maintained across the pipeline
+
 ### Impact
-- Over-aggressive duplicate removal
-- Valid jobs from different companies incorrectly filtered out
-- Data loss affecting analytics and reporting
+- ✅ Prevents over-aggressive duplicate removal
+- ✅ Preserves valid jobs from different companies with overlapping ID schemas
+- ✅ Reduces data loss affecting analytics and reporting
+- ✅ Jobs loaded count should now be much closer to jobs processed count
 
 ### Files Affected
 - `pipeline/dagster_betterjobs/dagster_betterjobs/assets/stage_jobs_unified.py`
