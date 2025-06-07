@@ -309,6 +309,16 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                             valid_through = job_details.get("valid_through", "")
                             employment_type = job_details.get("employment_type", "")
 
+                            # Update job_url with the proper externalUrl from jobPostingInfo
+                            if job_details.get("job_url"):
+                                job_url = job_details.get("job_url")
+                                context.log.info(f"Updated job_url for {job_id}: {job_url}")
+
+                            # Update job_id with the reliable job ID from jobPostingInfo if available
+                            if job_details.get("job_id"):
+                                job_id = job_details.get("job_id")
+                                context.log.info(f"Updated job_id from jobPostingInfo: {job_id}")
+
                             if job_details.get("work_type"):
                                 work_type = job_details.get("work_type")
 

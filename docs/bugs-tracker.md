@@ -511,4 +511,133 @@ def _standardize_dates(self, df: pd.DataFrame) -> pd.DataFrame:
 
 ---
 
+## BUG-008: Workday Job ID Extraction Getting Location Instead of Job ID
+
+**Status:** RESOLVED ✅
+**Severity:** Critical
+**Component:** Workday Scraper (`workday_scraper.py`)
+**Date Reported:** 2025-01-06
+**Date Resolved:** 2025-01-06
+
+### Description
+The Workday job ID extraction logic was incorrectly extracting location information instead of actual job IDs from the `bulletFields` array. This caused multiple jobs from the same company to have identical job IDs (like "United States of America"), leading to UID collisions and massive data quality issues in the unified jobs table.
+
+### Root Cause Analysis
+The current job ID extraction logic in `workday_scraper.py` (lines 259-266) assumed the first element in `bulletFields` is always the job ID:
+
+```python
+if bullet_fields and len(bullet_fields) > 0:
+    job_id = bullet_fields[0]  # ❌ WRONG: Gets location, not job ID
+```
+
+**Problem**: Many companies structure their `bulletFields` with location information first, job ID last:
+
+**Example from MRC Global**:
+```json
+"bulletFields": [
+    "United States of America",  // ← Current logic extracts THIS as job_id
+    "New Mexico",
+    "Carlsbad",
+    "JR107387"                   // ← Actual job ID is HERE (last element)
+]
+```
+
+**Result**: Multiple jobs get job_id = "United States of America", causing UID collisions.
+
+### Evidence of Issue
+**UID Collision Example**:
+- Multiple jobs from same company getting identical job_id
+- UID generation creates same hash for different jobs
+- Error: `"UID collision detected across platforms: ['4ca7b9a1a08118736490cc682557d702', ...]"`
+
+**Affected Companies**:
+- MRC Global: job_id becomes "United States of America" for all US jobs
+- Any company that puts location first in bulletFields
+
+### Resolution
+**Fixed in**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/scrapers/workday_scraper.py`
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/workday_jobs_discovery.py`
+
+**Root Cause - FINAL**: The issue had two components:
+1. **Scraper Issue**: `bulletFields[0]` extraction getting location instead of job ID
+2. **Discovery Pipeline Issue**: Placeholder URLs from scraper not being updated with proper URLs from `jobPostingInfo`
+
+**Changes Made**:
+
+**Phase 1 - Scraper Fixes (`workday_scraper.py`)**:
+1. **Removed bulletFields job ID extraction** from `search_jobs()` method - this was causing location extraction
+2. **Enhanced externalPath fallback** extraction with proper logging in `search_jobs()`
+3. **Enhanced `get_job_details()` method** to extract reliable job ID from `jobPostingInfo`:
+   - Primary: `jobPostingInfo.jobReqId` (most reliable, human-readable like "JR107387")
+   - Fallback: `jobPostingInfo.id` (unique identifier)
+4. **Added externalUrl extraction** from `jobPostingInfo.externalUrl` for complete job URLs
+5. **Removed unused URL conversion methods** (`_build_job_detail_url`, `_convert_api_url_to_user_url`)
+6. **Enhanced external_path handling** in `get_job_details()` to properly build API URLs
+
+**Phase 2 - Discovery Pipeline Fixes (`workday_jobs_discovery.py`)**:
+7. **Fixed URL propagation issue**: Added logic to update `job_url` with proper `externalUrl` from `job_details`
+8. **Fixed job ID propagation**: Added logic to update `job_id` with reliable ID from `jobPostingInfo`
+9. **Added comprehensive logging** for URL and job ID updates during processing
+
+**Technical Fix**:
+```python
+# BEFORE (Phase 1 - Scraper):
+if bullet_fields and len(bullet_fields) > 0:
+    job_id = bullet_fields[0]  # Gets location like "United States of America"
+
+# AFTER (Phase 1 - Scraper):
+# In search_jobs(): Only use externalPath as fallback
+if external_path:
+    id_match = re.search(r'_([A-Z0-9\-]+)$', external_path)
+    if id_match:
+        job_id = id_match.group(1)
+
+# In get_job_details(): Extract from reliable jobPostingInfo
+reliable_job_id = job_posting.get("jobReqId") or job_posting.get("id")
+if reliable_job_id:
+    job_details["job_id"] = reliable_job_id
+
+# BEFORE (Phase 2 - Discovery Pipeline):
+job_url = job.get("job_url", "")  # Uses placeholder from scraper
+job_details = scraper.get_job_details(job_url)  # Gets correct URL but doesn't use it
+job_record = {"job_url": job_url}  # Still uses placeholder ❌
+
+# AFTER (Phase 2 - Discovery Pipeline):
+job_details = scraper.get_job_details(job_url)
+# Update with corrected URL and job ID from jobPostingInfo
+if job_details.get("job_url"):
+    job_url = job_details.get("job_url")
+if job_details.get("job_id"):
+    job_id = job_details.get("job_id")
+job_record = {"job_url": job_url}  # Uses correct URL ✅
+```
+
+**Complete Flow After Fix**:
+1. **search_jobs()**: Creates placeholder `job_url = "/job/WVCORP-CHS/Sales-Support-Associate_JR107763"`
+2. **get_job_details()**: Extracts proper URL from `jobPostingInfo.externalUrl` and reliable job ID from `jobPostingInfo.jobReqId`
+3. **workday_jobs_discovery**: Updates variables with corrected values from `job_details`
+4. **Database**: Stores proper URL `"https://mrcglobal.wd1.myworkdayjobs.com/MRC_Global_Careers/job/WVCORP-CHS/Sales-Support-Associate_JR107763"`
+
+### Impact
+- ✅ **Eliminates UID Collisions**: Each job gets unique, proper job ID like "JR107387"
+- ✅ **Reliable Job IDs**: Uses structured `jobPostingInfo` instead of unstructured `bulletFields`
+- ✅ **Complete Job URLs**: Gets full URLs from `jobPostingInfo.externalUrl`
+- ✅ **Future-Proof**: Less dependent on variable `bulletFields` structure
+- ✅ **Pipeline Stability**: No more stage_jobs_unified failures due to UID collisions
+
+### Companies/URLs Fixed
+- **MRC Global**: All US jobs now get proper job IDs like "JR107387" instead of "United States of America"
+- **All Workday companies**: Using `bulletFields` with location-first structure
+- **Future companies**: More reliable extraction from structured data
+
+### Verification Steps
+1. Test with MRC Global and other Workday companies
+2. Check logs for: `"Extracted reliable job_id from jobPostingInfo: JR107387"`
+3. Verify job_id values are unique identifiers (not location names)
+4. Confirm no UID collisions in stage_jobs_unified processing
+5. Validate job URLs are complete and functional from externalUrl
+
+---
+
 ## Template for New Bugs

@@ -88,71 +88,6 @@ class WorkdayScraper(BaseScraper):
         api_url = f"{parsed_url.scheme}://{parsed_url.netloc}/wday/cxs/{self.tenant_id}/{self.site_id}/jobs"
         return api_url
 
-    def _build_job_detail_url(self, external_path: str) -> str:
-        """Build the job detail URL that will be shown to the user in their browser."""
-        if not self.tenant_id or not self.site_id:
-            self.log_message("warning", "Tenant ID or Site ID not available")
-            return None
-
-        parsed_url = urlparse(self.career_url)
-        # Convert the API URL pattern to the user-facing URL pattern
-        # From: {domain}/wday/cxs/{tenant}/{site_id}/job/...
-        # To:   {domain}/{tenant_lowercase}/job/...
-
-        tenant_lowercase = self.tenant_id.lower()
-        return f"{parsed_url.scheme}://{parsed_url.netloc}/{tenant_lowercase}{external_path}"
-
-    def _convert_api_url_to_user_url(self, api_url: str) -> str:
-        """
-        Convert a Workday API URL to a user-facing URL.
-
-        Args:
-            api_url: The API URL to convert
-
-        Returns:
-            The user-facing URL
-        """
-        if not api_url:
-            return api_url
-
-        # Skip conversion if it doesn't look like a Workday API URL
-        if "/wday/cxs/" not in api_url:
-            return api_url
-
-        try:
-            parsed_url = urlparse(api_url)
-            path_parts = parsed_url.path.strip('/').split('/')
-
-            # Extract the necessary parts
-            # Format: /wday/cxs/{tenant}/{site_id}/job/...
-            if len(path_parts) < 5 or path_parts[0] != "wday" or path_parts[1] != "cxs":
-                return api_url
-
-            tenant = path_parts[2]
-            tenant_lowercase = tenant.lower()
-
-            # Find the index of "/job/" in the path
-            job_part_index = -1
-            for i, part in enumerate(path_parts):
-                if part == "job":
-                    job_part_index = i
-                    break
-
-            if job_part_index == -1:
-                return api_url
-
-            # Rebuild the path starting from "/job/"
-            new_path = "/" + tenant_lowercase + "/" + "/".join(path_parts[job_part_index:])
-
-            # Reconstruct the URL
-            new_url = f"{parsed_url.scheme}://{parsed_url.netloc}{new_path}"
-            self.log_message("info", f"Converted API URL to user URL: {api_url} -> {new_url}")
-            return new_url
-
-        except Exception as e:
-            self.log_message("warning", f"Error converting API URL to user URL: {str(e)}")
-            return api_url
-
     def search_jobs(self, keyword: str = "", location: str = "") -> List[Dict]:
         """
         Search for jobs on a Workday career site.
@@ -254,21 +189,21 @@ class WorkdayScraper(BaseScraper):
                     # Extract remote work type if available
                     work_type = job.get("remoteType", "")
 
-                    # Extract job ID from bullet fields (usually the first one) or from externalPath
+                    # Extract job ID from externalPath as fallback (get_job_details will provide reliable job_id)
+                    # DO NOT use bulletFields[0] as it often contains location, not job ID
                     job_id = None
-                    if bullet_fields and len(bullet_fields) > 0:
-                        job_id = bullet_fields[0]
-                    else:
-                        # Try to extract job ID from the path
+                    if external_path:
+                        # Try to extract job ID from the path (e.g., "Service-Center-Manager_JR107387" -> "JR107387")
                         id_match = re.search(r'_([A-Z0-9\-]+)$', external_path)
                         if id_match:
                             job_id = id_match.group(1)
+                            self.log_message("info", f"Extracted fallback job_id from externalPath: {job_id}")
 
-                    # Build the full job URL using the API base pattern
-                    api_job_url = self._build_job_detail_url(external_path) if external_path else None
-
-                    # Convert API URL to user-facing URL
-                    job_url = self._convert_api_url_to_user_url(api_job_url)
+                    # Use external_path as placeholder URL - get_job_details will provide reliable externalUrl
+                    # DO NOT construct URLs here as they are often malformed - let jobPostingInfo.externalUrl handle this
+                    job_url = external_path if external_path else None
+                    if job_url:
+                        self.log_message("info", f"Using externalPath as placeholder URL: {job_url}")
 
                     # Create job record
                     if job_title and job_url:
@@ -299,15 +234,26 @@ class WorkdayScraper(BaseScraper):
         Get detailed information about a specific job.
 
         Args:
-            job_url: URL of the job posting
+            job_url: URL of the job posting or external_path from job listing
 
         Returns:
             Dictionary containing job details
         """
-        # Convert job_url to API URL if needed for fetching
+        # Convert job_url to API URL for fetching
         api_job_url = job_url
-        if "/wday/cxs/" not in job_url:
-            # This is already a user URL, convert it to API URL for fetching
+
+        # If job_url is just an external_path (starts with "/"), build the full API URL
+        if job_url.startswith("/"):
+            # Build API URL from external_path
+            if self.tenant_id and self.site_id:
+                parsed_career_url = urlparse(self.career_url)
+                api_job_url = f"{parsed_career_url.scheme}://{parsed_career_url.netloc}/wday/cxs/{self.tenant_id}/{self.site_id}{job_url}"
+                self.log_message("info", f"Built API URL from external_path: {job_url} -> {api_job_url}")
+            else:
+                self.log_message("error", f"Cannot build API URL: missing tenant_id or site_id")
+                return {"job_url": job_url}
+        elif "/wday/cxs/" not in job_url:
+            # This is a user URL, convert it to API URL for fetching
             try:
                 parsed_url = urlparse(job_url)
                 path_parts = parsed_url.path.strip('/').split('/')
@@ -336,7 +282,7 @@ class WorkdayScraper(BaseScraper):
                 # Continue with original URL
 
         job_details = {
-            "job_url": job_url  # Store original user-facing URL
+            "job_url": job_url  # Store original URL parameter
         }
 
         try:
@@ -373,7 +319,19 @@ class WorkdayScraper(BaseScraper):
                 job_details["job_description"] = job_posting.get("jobDescription", "")
                 job_details["location"] = job_posting.get("location", "")
                 job_details["time_type"] = job_posting.get("timeType", "")
-                job_details["job_id"] = job_posting.get("jobReqId", "")
+
+                # Extract reliable job ID from jobPostingInfo (primary: jobReqId, fallback: id)
+                reliable_job_id = job_posting.get("jobReqId") or job_posting.get("id")
+                if reliable_job_id:
+                    job_details["job_id"] = reliable_job_id
+                    self.log_message("info", f"Extracted reliable job_id from jobPostingInfo: {reliable_job_id}")
+
+                # Use externalUrl from jobPostingInfo if available (more reliable than constructed URL)
+                external_url = job_posting.get("externalUrl")
+                if external_url:
+                    job_details["job_url"] = external_url
+                    self.log_message("info", f"Using externalUrl from jobPostingInfo: {external_url}")
+
                 job_details["date_posted"] = job_posting.get("startDate", "")
                 job_details["valid_through"] = job_posting.get("endDate", "")
 
@@ -402,18 +360,12 @@ class WorkdayScraper(BaseScraper):
 # Testing code (commented out in production)
 """
 if __name__ == "__main__":
-    # Test the URL conversion
+    # Test the WorkdayScraper initialization
     test_scraper = WorkdayScraper(career_url="https://drivetime.wd1.myworkdayjobs.com/DriveTime")
+    print(f"Tenant ID: {test_scraper.tenant_id}")
+    print(f"Site ID: {test_scraper.site_id}")
 
-    # Test API to user URL conversion
-    api_url = "https://drivetime.wd1.myworkdayjobs.com/wday/cxs/drivetime/DriveTime/job/1720-W-Rio-Salado-Pkwy-Tempe-AZ-85281/BI-Engineer---Remote_R11165"
-    user_url = test_scraper._convert_api_url_to_user_url(api_url)
-    print(f"API URL: {api_url}")
-    print(f"User URL: {user_url}")
-    expected = "https://drivetime.wd1.myworkdayjobs.com/drivetime/job/1720-W-Rio-Salado-Pkwy-Tempe-AZ-85281/BI-Engineer---Remote_R11165"
-    print(f"Correct conversion: {user_url == expected}")
-
-    # Test user to API URL conversion for job_details
-    api_url_back = api_url  # This would be the result of conversion in get_job_details
-    print(f"API URL (for fetching): {api_url_back}")
+    # Test API URL building
+    api_url = test_scraper._build_jobs_api_url()
+    print(f"Jobs API URL: {api_url}")
 """
