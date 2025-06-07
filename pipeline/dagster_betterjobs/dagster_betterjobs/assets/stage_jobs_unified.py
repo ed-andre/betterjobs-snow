@@ -32,13 +32,14 @@ from dagster import (
 from dagster_betterjobs.transformations.text_cleaning import clean_text_fields, clean_job_description
 from dagster_betterjobs.transformations.language_detection import LanguageDetector
 from dagster_betterjobs.transformations.platform_mapping import PlatformMapper
+from dagster_betterjobs.transformations.uid_generation import add_job_uids_to_dataframe, validate_uid_uniqueness, get_uid_collision_report
 
 
 class StageJobsUnifiedConfig(Config):
     """Configuration for stage jobs unified processing."""
     process_language_detection: bool = True
     language_confidence_threshold: float = 0.8
-    include_non_english: bool = False
+    include_non_english: bool = True
     batch_size: int = 1000
     max_records: Optional[int] = None
     platforms_to_process: list = ["bamboohr", "greenhouse", "workday", "smartrecruiters"]
@@ -93,6 +94,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         "non_english_jobs": 0,
         "failed_jobs": 0,
         "platforms_processed": [],
+        "uid_validation": {},
         "processing_start": datetime.now().isoformat()
     }
 
@@ -106,8 +108,11 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         # Create unified jobs table if it doesn't exist (don't recreate every time)
         create_unified_table_sql = f"""
         CREATE TABLE IF NOT EXISTS {database_name}.{stage_schema}.jobs_unified (
+            -- Generated unique identifier (replaces composite primary key)
+            job_uid STRING PRIMARY KEY,
+
             -- Core identifiers
-            job_id STRING PRIMARY KEY,
+            job_id STRING,
             company_id STRING,
             platform STRING,
 
@@ -237,6 +242,23 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                 context.log.info("Applying platform field mapping...")
                 unified_df = platform_mapper.map_platform_data(cleaned_df, platform)
 
+                # Generate deterministic UIDs for true uniqueness
+                context.log.info("Generating deterministic UIDs...")
+                unified_df = add_job_uids_to_dataframe(unified_df, uid_column='job_uid')
+
+                # Validate UID uniqueness for this platform
+                uid_validation = validate_uid_uniqueness(unified_df, uid_column='job_uid')
+                stats["uid_validation"][platform] = uid_validation
+
+                if not uid_validation['is_valid']:
+                    context.log.warning(f"UID collisions detected in {platform}: {uid_validation['duplicate_count']} duplicates")
+                    # Log sample collision UIDs
+                    if uid_validation['duplicate_uids']:
+                        sample_collisions = uid_validation['duplicate_uids'][:5]
+                        context.log.warning(f"Sample collision UIDs: {sample_collisions}")
+                else:
+                    context.log.info(f"All {uid_validation['unique_uids']} UIDs are unique for {platform}")
+
                 # Add partition date
                 unified_df['partition_date'] = date.today()
 
@@ -258,6 +280,70 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         combined_df = pd.concat(all_unified_jobs, ignore_index=True)
         context.log.info(f"Combined {len(combined_df)} jobs from all platforms")
 
+        # Cross-platform UID validation
+        context.log.info("Performing cross-platform UID validation...")
+        final_uid_validation = validate_uid_uniqueness(combined_df, uid_column='job_uid')
+        stats["uid_validation"]["cross_platform"] = final_uid_validation
+
+        if not final_uid_validation['is_valid']:
+            context.log.error(f"Cross-platform UID collisions detected: {final_uid_validation['duplicate_count']} duplicates")
+
+            # Add detailed logging to debug the collision
+            context.log.error("=== UID COLLISION DEBUGGING ===")
+
+            # Get collision report
+            collision_report = get_uid_collision_report(combined_df, uid_column='job_uid')
+
+            if not collision_report.empty:
+                context.log.error(f"Collision report shape: {collision_report.shape}")
+
+                # Group by UID to see what records share the same UID
+                for uid in final_uid_validation['duplicate_uids'][:5]:  # Show first 5 collision UIDs
+                    context.log.error(f"\n--- Collision UID: {uid} ---")
+
+                    # Get all records with this UID
+                    collision_records = combined_df[combined_df['job_uid'] == uid]
+
+                    for idx, record in collision_records.iterrows():
+                        # Log the composite key components that generated this UID
+                        job_id = record.get('job_id', 'NULL')
+                        platform = record.get('platform', 'NULL')
+                        company_id = record.get('company_id', 'NULL')
+                        date_posted = record.get('date_posted', 'NULL')
+
+                        # Recreate the composite key to see what generated this UID
+                        job_id_str = str(job_id).strip() if job_id else "NULL_JOB_ID"
+                        platform_str = str(platform).lower().strip() if platform else "NULL_PLATFORM"
+                        company_id_str = str(company_id).strip() if company_id else "NULL_COMPANY"
+
+                        if date_posted:
+                            if isinstance(date_posted, (datetime, date)):
+                                date_str = date_posted.strftime("%Y-%m-%d")
+                            else:
+                                date_str = str(date_posted).strip()
+                        else:
+                            date_str = "NULL_DATE"
+
+                        composite_key = f"JOB_ID:{job_id_str}|PLATFORM:{platform_str}|COMPANY:{company_id_str}|DATE:{date_str}"
+
+                        context.log.error(f"  Record {idx}:")
+                        context.log.error(f"    job_id: '{job_id}' (type: {type(job_id)})")
+                        context.log.error(f"    platform: '{platform}' (type: {type(platform)})")
+                        context.log.error(f"    company_id: '{company_id}' (type: {type(company_id)})")
+                        context.log.error(f"    date_posted: '{date_posted}' (type: {type(date_posted)})")
+                        context.log.error(f"    composite_key: '{composite_key}'")
+
+                        # Also show job title for context
+                        if 'job_title_clean' in record:
+                            context.log.error(f"    job_title: '{record.get('job_title_clean', 'N/A')}'")
+
+            context.log.error("=== END UID COLLISION DEBUGGING ===")
+
+            # This should not happen with deterministic UID generation, so it's an error
+            raise ValueError(f"UID collision detected across platforms: {final_uid_validation['duplicate_uids'][:10]}")
+        else:
+            context.log.info(f"✅ All {final_uid_validation['unique_uids']} cross-platform UIDs are unique")
+
         # Data quality validation
         context.log.info("Performing data quality validation...")
 
@@ -265,7 +351,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         quality_issues = []
 
         # Check for missing critical fields
-        critical_fields = ['job_id', 'job_title_clean', 'platform', 'company_id']
+        critical_fields = ['job_id', 'job_uid', 'job_title_clean', 'platform', 'company_id']
         for field in critical_fields:
             missing_count = combined_df[field].isna().sum()
             if missing_count > 0:
@@ -274,37 +360,58 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         # Detailed duplicate analysis
         context.log.info("Analyzing duplicates...")
 
-        # Check duplicates by platform
+        # Check duplicates by platform (using the same deduplication key we'll use later)
         for platform in config.platforms_to_process:
             platform_data = combined_df[combined_df['platform'] == platform]
-            platform_duplicates = platform_data['job_id'].duplicated().sum()
-            if platform_duplicates > 0:
-                context.log.warning(f"Platform {platform}: {platform_duplicates} duplicate job_ids within platform")
+            if len(platform_data) > 0:
+                # Count duplicates based on actual deduplication logic (job_id + platform + company_id)
+                platform_duplicates = platform_data.duplicated(subset=['job_id', 'platform', 'company_id']).sum()
+                total_platform_jobs = len(platform_data)
+                unique_platform_jobs = len(platform_data.drop_duplicates(subset=['job_id', 'platform', 'company_id']))
 
-        # Check cross-platform duplicates
-        job_id_counts = combined_df['job_id'].value_counts()
-        cross_platform_duplicates = job_id_counts[job_id_counts > 1]
-        if len(cross_platform_duplicates) > 0:
-            context.log.warning(f"Cross-platform duplicates: {len(cross_platform_duplicates)} job_ids appear in multiple platforms")
-            # Log sample of cross-platform duplicates
-            sample_duplicates = cross_platform_duplicates.head(5)
-            for job_id, count in sample_duplicates.items():
+                if platform_duplicates > 0:
+                    context.log.warning(f"Platform {platform}: {platform_duplicates} duplicate jobs (job_id + platform + company_id) out of {total_platform_jobs} total")
+                else:
+                    context.log.info(f"Platform {platform}: No duplicates detected ({total_platform_jobs} unique jobs)")
+
+        # Check for actual cross-platform duplicates (same job_id across different platforms)
+        job_id_platform_counts = combined_df.groupby('job_id')['platform'].nunique()
+        cross_platform_job_ids = job_id_platform_counts[job_id_platform_counts > 1]
+
+        if len(cross_platform_job_ids) > 0:
+            context.log.warning(f"True cross-platform duplicates: {len(cross_platform_job_ids)} job_ids appear across multiple platforms")
+            # Log sample of actual cross-platform duplicates
+            sample_cross_platform = cross_platform_job_ids.head(5)
+            for job_id in sample_cross_platform.index:
                 platforms_with_job = combined_df[combined_df['job_id'] == job_id]['platform'].unique()
-                context.log.warning(f"  job_id '{job_id}' appears {count} times in platforms: {list(platforms_with_job)}")
+                job_count = len(combined_df[combined_df['job_id'] == job_id])
+                if len(platforms_with_job) > 1:  # Only log if truly cross-platform
+                    context.log.warning(f"  job_id '{job_id}' appears {job_count} times across platforms: {list(platforms_with_job)}")
+        else:
+            context.log.info("No cross-platform duplicates detected (good - job_ids are unique across platforms)")
 
-        # Check for duplicate job_ids (total)
-        duplicate_jobs = combined_df['job_id'].duplicated().sum()
-        if duplicate_jobs > 0:
-            quality_issues.append(f"Duplicate job_ids: {duplicate_jobs}")
+        # Check for actual duplicates that will be removed (using our deduplication logic)
+        initial_count = len(combined_df)
+        duplicate_mask = combined_df.duplicated(subset=['job_id', 'platform', 'company_id'])
+        actual_duplicates_to_remove = duplicate_mask.sum()
 
-            # Before removing duplicates, let's understand the impact
-            unique_jobs_count = combined_df['job_id'].nunique()
-            context.log.warning(f"Total jobs: {len(combined_df)}, Unique job_ids: {unique_jobs_count}, Duplicates to remove: {duplicate_jobs}")
+        if actual_duplicates_to_remove > 0:
+            quality_issues.append(f"Duplicate jobs (job_id + platform + company_id): {actual_duplicates_to_remove}")
 
-            # Use job_id + platform + company_id combination for deduplication to handle overlapping job ID schemas
-            # This prevents different companies from having their jobs incorrectly deduplicated
+            context.log.warning(f"Deduplication summary: {initial_count} total jobs, {actual_duplicates_to_remove} duplicates to remove")
+
+            # Perform the actual deduplication
             combined_df = combined_df.drop_duplicates(subset=['job_id', 'platform', 'company_id'], keep='first')
-            context.log.info(f"After deduplication (job_id + platform + company_id): {len(combined_df)} jobs remaining")
+            final_count = len(combined_df)
+
+            context.log.info(f"After deduplication (job_id + platform + company_id): {final_count} jobs remaining")
+
+            # Verify the math
+            expected_final = initial_count - actual_duplicates_to_remove
+            if final_count != expected_final:
+                context.log.error(f"Deduplication math error: expected {expected_final}, got {final_count}")
+        else:
+            context.log.info(f"No duplicates to remove - all {initial_count} jobs are unique by (job_id + platform + company_id)")
 
         # Calculate overall data quality score
         total_fields = len(combined_df.columns)
@@ -333,7 +440,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
 
         # Ensure only expected columns are included
         expected_columns = [
-            'job_id', 'company_id', 'platform', 'job_title_clean', 'job_description_clean',
+            'job_id', 'job_uid', 'company_id', 'platform', 'job_title_clean', 'job_description_clean',
             'company_name_clean', 'location_standardized', 'job_url', 'date_posted', 'date_retrieved',
             'is_active', 'employment_status', 'department', 'detected_language', 'language_confidence',
             'is_english', 'language_detection_method', 'platform_specific_data', 'data_quality_score',
@@ -419,6 +526,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         insert_sql = f"""
         INSERT INTO {database_name}.{stage_schema}.jobs_unified
         SELECT
+            job_uid,
             job_id,
             company_id,
             platform,
@@ -464,6 +572,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
             platform,
             COUNT(*) as job_count,
             COUNT(DISTINCT company_id) as company_count,
+            COUNT(DISTINCT job_uid) as unique_uids,
             AVG(data_quality_score) as avg_quality_score
         FROM {database_name}.{stage_schema}.jobs_unified
         WHERE partition_date = %s
@@ -476,7 +585,8 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
             platform_summary[row[0]] = {
                 "job_count": row[1],
                 "company_count": row[2],
-                "avg_quality_score": float(row[3]) if row[3] else 0.0
+                "unique_uids": row[3],
+                "avg_quality_score": float(row[4]) if row[4] else 0.0
             }
 
         stats["platform_summary"] = platform_summary
@@ -488,6 +598,8 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
             "total_raw_jobs": MetadataValue.int(stats["total_raw_jobs"]),
             "jobs_processed": MetadataValue.int(stats["jobs_processed"]),
             "jobs_loaded": MetadataValue.int(stats["jobs_loaded"]),
+            "unique_uids_generated": MetadataValue.int(final_uid_validation.get('unique_uids', 0)),
+            "uid_collision_free": MetadataValue.bool(final_uid_validation.get('is_valid', False)),
             "english_jobs": MetadataValue.int(stats["english_jobs"]),
             "non_english_jobs": MetadataValue.int(stats["non_english_jobs"]),
             "platforms_processed": MetadataValue.text(", ".join(stats["platforms_processed"])),

@@ -42,10 +42,14 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON FUTURE TABLES IN SCHEMA STAGE TO ROLE BE
 -- Switch to STAGE schema
 USE SCHEMA STAGE;
 
--- Create the unified jobs table (Phase 1 - Basic Transformation)
+-- Create the unified jobs table (Phase 1 - Basic Transformation with UID)
 CREATE TABLE IF NOT EXISTS jobs_unified (
+    -- Generated unique identifier (replaces composite primary key)
+    -- Increased from 16 to 32 characters to prevent hash collisions
+    job_uid STRING(32) PRIMARY KEY,
+
     -- Core identifiers
-    job_id STRING PRIMARY KEY,
+    job_id STRING,
     company_id STRING,
     platform STRING,  -- 'workday', 'greenhouse', 'bamboohr', 'smartrecruiters'
 
@@ -287,3 +291,43 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA STAGE TO ROLE BETTERJOBS_ROLE;
 - **Partitioning**: Use `partition_date` for time-based queries
 - **VARIANT Indexing**: Snowflake automatically indexes VARIANT columns
 - **Search Optimization**: Consider enabling for text search in production
+
+### Key Changes from Previous Schema:
+
+1. **Primary Key Change**: `job_uid STRING PRIMARY KEY` replaces the composite key approach
+2. **UID Generation**: Deterministic UIDs generated from `job_id + platform + company_id + date_posted`
+3. **Simpler Uniqueness**: Single field uniqueness instead of complex composite key logic
+4. **Performance**: Single indexed primary key for faster lookups and joins
+
+### UID Benefits:
+
+- **True Uniqueness**: Single field for unique identification
+- **Deterministic**: Same job always gets same UID across processing runs
+- **Performance**: Single indexed field vs composite key lookups
+- **Future-proof**: Schema changes don't affect uniqueness logic
+- **Simplified Analytics**: Easier downstream joins and references
+
+### UID Implementation Details:
+
+**Generation Algorithm**:
+```python
+# Deterministic UID generation (Updated to prevent collisions)
+composite_key = f"JOB_ID:{job_id}|PLATFORM:{platform}|COMPANY:{company_id}|DATE:{date_posted}"
+job_uid = hashlib.sha256(composite_key.encode()).hexdigest()[:32]  # 32 chars instead of 16
+```
+
+**Example UIDs**:
+- Input: `("12345", "workday", "company_1", "2024-01-15")`
+- Output: `"a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"` (32-character hex string)
+
+**Collision Prevention**:
+- **Hash Length**: Increased from 16 to 32 characters (64-bit to 128-bit hash space)
+- **Collision Probability**: Reduced from ~2^64 to ~2^128 possible values
+- **Explicit Labels**: Added field labels in composite key to prevent ambiguity
+- **Null Handling**: Explicit "NULL_*" values instead of empty strings
+
+### UID Migration Considerations:
+
+- Existing data will be automatically migrated when the asset runs
+- UIDs are generated during data processing, not as database defaults
+- All downstream references should use `job_uid` instead of composite keys
