@@ -27,7 +27,7 @@ def calculate_file_hash(file_path: str) -> str:
     return hash_sha256.hexdigest()
 
 @asset(
-    group_name="adhoc_request",
+    group_name="raw_ingestion_extraction",
     kinds={"python", "sql", "snowflake"},
     deps=["snowflake_master_company_urls"],
     required_resource_keys={"snowflake"}

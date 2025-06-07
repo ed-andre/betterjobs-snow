@@ -200,7 +200,7 @@ from google.cloud.exceptions import NotFound
 Change the required resource from `bigquery` to `snowflake`:
 ```python
 @asset(
-    group_name="job_discovery",
+    group_name="raw_ingestion_extraction",
     kinds={"API", "snowflake", "python"},  # Change from "bigquery" to "snowflake"
     required_resource_keys={"snowflake"},  # Change from {"bigquery"}
     # ... other parameters

@@ -37,7 +37,7 @@ class BambooHRJobsDiscoveryConfig(Config):
     process_all_companies: bool = True
 
 @asset(
-    group_name="job_discovery",
+    group_name="raw_ingestion_extraction",
     kinds={"API", "snowflake", "python"},
     required_resource_keys={"snowflake"},
     deps=["snowflake_master_company_urls"],

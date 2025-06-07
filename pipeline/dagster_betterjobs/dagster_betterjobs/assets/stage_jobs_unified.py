@@ -45,7 +45,7 @@ class StageJobsUnifiedConfig(Config):
 
 
 @asset(
-    group_name="stage_layer",
+    group_name="stage_cleansing_enrichment_validation_transformation",
     kinds={"snowflake", "python", "transformation"},
     required_resource_keys={"snowflake"},
     deps=[
