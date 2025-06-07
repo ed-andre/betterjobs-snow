@@ -224,7 +224,7 @@ def greenhouse_company_jobs_discovery(context: AssetExecutionContext, config: Gr
             career_url = company["career_url"]
             ats_url = company["ats_url"]
 
-            context.log.info(f"Processing {company_name} (ID: {company_id})")
+            context.log.info(f"Processing company: {company_name} (ID: {company_id})")
 
             # Track company results for checkpoint
             company_result = {
@@ -254,10 +254,12 @@ def greenhouse_company_jobs_discovery(context: AssetExecutionContext, config: Gr
                 job_listings = scraper.search_jobs()
 
                 if not job_listings:
+                    context.log.info(f"No jobs found for {company_name}")
                     checkpoint_results.append(company_result)
                     continue
 
                 context.log.info(f"Found {len(job_listings)} jobs for {company_name}")
+
                 company_result["jobs_found"] = len(job_listings)
                 stats["companies_with_jobs"] += 1
                 stats["total_jobs_found"] += len(job_listings)
@@ -266,11 +268,13 @@ def greenhouse_company_jobs_discovery(context: AssetExecutionContext, config: Gr
                 company_jobs_updated = 0
 
                 # Process each job listing
-                for job in job_listings:
+                for idx, job in enumerate(job_listings):
                     job_id = job.get("job_id")
                     job_url = job.get("job_url")
+                    job_title = job.get("job_title")
 
                     if not job_id or not job_url:
+                        context.log.warning(f"Skipping job due to missing ID or URL - ID: {job_id}")
                         continue
 
                     # Ensure job_id is always a string
@@ -279,12 +283,41 @@ def greenhouse_company_jobs_discovery(context: AssetExecutionContext, config: Gr
 
                     # Get detailed job info unless skipped in config
                     job_details = job
-                    if not config.skip_detailed_fetch:
+
+                    # Skip detailed fetch for embedded job boards with custom domains
+                    # since all data is already available from the initial JSON response
+                    should_skip_detailed_fetch = config.skip_detailed_fetch
+
+                    if not should_skip_detailed_fetch and job_url:
+                        # Check if this is an embedded job board with custom domain
+                        if not job_url.startswith('https://boards.greenhouse.io/') and not job_url.startswith('https://job-boards.greenhouse.io/'):
+                            # This is a custom domain URL (like jobs.solarwinds.com)
+                            # Check if we already have the essential data from initial scraping
+                            has_essential_data = (
+                                job.get("job_description") or job.get("content") or
+                                job.get("published_at") or job.get("updated_at") or
+                                job.get("requisition_id") or job.get("department")
+                            )
+
+                            if has_essential_data:
+                                should_skip_detailed_fetch = True
+                                context.log.info(f"Skipping detailed fetch for custom domain job {job_id} - data already available")
+
+                    if not should_skip_detailed_fetch:
                         try:
-                            job_details = scraper.get_job_details(job_url)
+                            detailed_info = scraper.get_job_details(job_url)
+
+                            # Merge detailed info with initial job data, preserving important fields from initial job
+                            job_details = {**job, **detailed_info}
+
+                            # Ensure date fields from initial job are preserved if missing in detailed info
+                            if not job_details.get("published_at") and job.get("published_at"):
+                                job_details["published_at"] = job.get("published_at")
+                            if not job_details.get("updated_at") and job.get("updated_at"):
+                                job_details["updated_at"] = job.get("updated_at")
                             time.sleep(0.5)
                         except Exception as e:
-                            context.log.warning(f"Error getting details for job {job_id}: {str(e)}")
+                            context.log.error(f"Error getting details for job {job_id}: {str(e)}")
                             job_details = job
 
                     # Check if job is recent enough
@@ -312,7 +345,6 @@ def greenhouse_company_jobs_discovery(context: AssetExecutionContext, config: Gr
                         existing_job = []
                     finally:
                         cursor.close()
-
 
                     job_title = job_details.get("job_title")
                     job_url = job_details.get("job_url")
@@ -440,13 +472,30 @@ def greenhouse_company_jobs_discovery(context: AssetExecutionContext, config: Gr
 
                 # Convert date columns properly for Snowflake
                 if 'published_at' in jobs_df.columns:
+                    # Convert to datetime first, then to date string for Snowflake DATE type
                     jobs_df['published_at'] = pd.to_datetime(jobs_df['published_at'], errors='coerce')
-                    jobs_df['published_at'] = jobs_df['published_at'].dt.date
-                    jobs_df['published_at'] = jobs_df['published_at'].where(pd.notnull(jobs_df['published_at']), None)
+                    # Convert to date string format (YYYY-MM-DD) for Snowflake DATE type
+                    jobs_df['published_at'] = jobs_df['published_at'].dt.strftime('%Y-%m-%d')
+                    # Replace 'NaT' string with None for null values
+                    jobs_df['published_at'] = jobs_df['published_at'].replace('NaT', None)
 
                 if 'updated_at' in jobs_df.columns:
+                    # Convert to datetime and handle timezone for Snowflake TIMESTAMP_NTZ
                     jobs_df['updated_at'] = pd.to_datetime(jobs_df['updated_at'], errors='coerce')
-                    jobs_df['updated_at'] = jobs_df['updated_at'].where(pd.notnull(jobs_df['updated_at']), None)
+
+                    # Handle timezone conversion more robustly by applying function to each value
+                    def normalize_datetime_for_snowflake(dt):
+                        if pd.isna(dt):
+                            return None
+                        # If timezone-aware, convert to UTC and remove timezone
+                        if dt.tz is not None:
+                            dt_utc = dt.tz_convert('UTC').tz_localize(None)
+                        else:
+                            dt_utc = dt
+                        # Convert to string format for Snowflake TIMESTAMP_NTZ
+                        return dt_utc.strftime('%Y-%m-%d %H:%M:%S')
+
+                    jobs_df['updated_at'] = jobs_df['updated_at'].apply(normalize_datetime_for_snowflake)
 
                 if 'is_active' in jobs_df.columns:
                     jobs_df['is_active'] = jobs_df['is_active'].astype(bool)

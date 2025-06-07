@@ -35,6 +35,8 @@ class GreenhouseScraper(BaseScraper):
         self.dagster_log = dagster_log
         self.original_url = career_url
 
+        self.log_message("info", f"Initializing GreenhouseScraper with career_url: {career_url}")
+
         # Set cutoff date (default: 14 days ago) and ensure it's timezone-aware
         if cutoff_date:
             # If cutoff_date is already timezone-aware, use it as is
@@ -49,26 +51,38 @@ class GreenhouseScraper(BaseScraper):
 
         self.log_message("info", f"Setting cutoff date for jobs to {self.cutoff_date.strftime('%Y-%m-%d')}")
 
-        # Use direct ATS URL if provided
+        # Use direct ATS URL if provided and it's a Greenhouse URL
         if ats_url and 'greenhouse.io' in ats_url:
             self.log_message("info", f"Using provided ATS URL: {ats_url}")
             parsed = urlparse(ats_url)
             domain = parsed.netloc
             path = parsed.path.strip('/')
+            query = parsed.query
 
-            self.is_embedded = 'embed' in path or 'embed' in domain
+            # Check for embedded job board pattern more specifically
+            self.is_embedded = (
+                'embed' in path or
+                'embed' in domain or
+                'job_board?for=' in ats_url or
+                'embed/job_board' in ats_url
+            )
 
             if domain.endswith('.greenhouse.io'):
                 if self.is_embedded:
                     # Handle embedded job board URL format
                     self.tenant = self._extract_tenant_from_embed_url(ats_url)
                     self.log_message("info", f"Detected embedded Greenhouse board with tenant: {self.tenant}")
-                    self.career_url = f"https://boards.greenhouse.io/embed/job_board?for={self.tenant}"
+
+                    # Fix: Use the correct embedded endpoint format
+                    if 'boards.greenhouse.io' in domain:
+                        self.career_url = ats_url  # Use the provided embedded URL directly
+                    else:
+                        self.career_url = f"https://boards.greenhouse.io/embed/job_board?for={self.tenant}"
+
                     self.is_direct_api = False
                 else:
                     # Direct Greenhouse job board
                     self.tenant = path
-                    self.log_message("info", f"Extracted tenant from ATS URL: {self.tenant}")
                     self.career_url = f"https://job-boards.greenhouse.io/{self.tenant}"
                     self.is_direct_api = True
 
@@ -76,7 +90,7 @@ class GreenhouseScraper(BaseScraper):
                 self._init_session()
                 return
 
-        # Process URL normally if no direct ATS URL provided
+        # Process URL normally if no direct ATS URL provided or ATS URL is not a Greenhouse URL
         self.career_url = self.normalize_url(career_url)
         parsed_url = urlparse(self.career_url)
         domain = parsed_url.netloc
@@ -95,7 +109,6 @@ class GreenhouseScraper(BaseScraper):
             else:
                 # Direct Greenhouse job board
                 self.tenant = path
-                self.log_message("info", f"Set tenant from URL path: {self.tenant}")
                 self.career_url = f"https://job-boards.greenhouse.io/{self.tenant}"
                 self.is_direct_api = True
         else:
@@ -129,12 +142,21 @@ class GreenhouseScraper(BaseScraper):
             tenant = url.split("for=")[1].split("&")[0]
             return tenant
 
-        # Otherwise, try to extract from path
+        # Parse the URL to get query parameters
         parsed = urlparse(url)
+        if parsed.query:
+            query_params = parse_qs(parsed.query)
+            if 'for' in query_params:
+                tenant = query_params['for'][0]
+                return tenant
+
+        # Otherwise, try to extract from path
         path_parts = parsed.path.strip('/').split('/')
         if len(path_parts) > 0:
-            return path_parts[-1]
+            tenant = path_parts[-1]
+            return tenant
 
+        self.log_message("warning", f"Could not extract tenant from URL: {url}")
         return None
 
     def _extract_json_from_response(self, response_text: str) -> Optional[Dict]:
@@ -156,8 +178,9 @@ class GreenhouseScraper(BaseScraper):
 
                 # Check for jobPost in the loaderData
                 if "state" in json_data and "loaderData" in json_data["state"]:
-                    for key, value in json_data["state"]["loaderData"].items():
-                        if "jobPost" in value:
+                    loader_data = json_data["state"]["loaderData"]
+                    for key, value in loader_data.items():
+                        if "jobPost" in str(value):
                             self.log_message("info", f"Found jobPost data in key: {key}")
 
                 return json_data
@@ -347,6 +370,7 @@ class GreenhouseScraper(BaseScraper):
         except Exception as e:
             self.log_message("warning", f"Failed to extract description from HTML: {str(e)}")
 
+        self.log_message("warning", "All JSON extraction patterns failed")
         return None
 
     def make_greenhouse_request(self, url: str, method: str = "GET", **kwargs) -> requests.Response:
@@ -415,12 +439,15 @@ class GreenhouseScraper(BaseScraper):
         """
         jobs = []
 
+        self.log_message("info", f"Starting job search - keyword: {keyword}, location: {location}")
+
         if not self.is_direct_api and not self.is_embedded:
             self.log_message("warning", "This instance is not properly configured for Greenhouse scraping")
             return []
 
         # Direct API implementation
         if self.is_direct_api:
+            self.log_message("info", "Using direct API implementation")
             try:
                 self.log_message("info", f"Requesting job listings from: {self.career_url}")
 
@@ -431,15 +458,14 @@ class GreenhouseScraper(BaseScraper):
                     self.log_message("error", f"Failed to get response from {self.career_url}")
                     return []
 
+                self.log_message("info", f"Response status: {response.status_code}")
+
                 # Extract JSON data from the response
                 json_data = self._extract_json_from_response(response.text)
 
                 if not json_data:
                     self.log_message("error", "Could not extract job data from response")
                     return []
-
-                # Log the JSON data structure
-                self.log_message("info", f"Found JSON data with keys: {list(json_data.keys())}")
 
                 # Navigate to the job posts data
                 job_list = []
@@ -454,8 +480,6 @@ class GreenhouseScraper(BaseScraper):
                             if "data" in job_posts:
                                 job_list = job_posts["data"]
                                 self.log_message("info", f"Found {len(job_list)} job listings via standard pattern")
-                            else:
-                                self.log_message("warning", "No 'data' field in jobPosts")
 
                     # If no jobs found, look for alternate pattern with underscore
                     if not job_list:
@@ -466,7 +490,6 @@ class GreenhouseScraper(BaseScraper):
                                 if isinstance(value, dict) and "jobPost" in value:
                                     job_post = value["jobPost"]
                                     alternate_jobs.append(job_post)
-                                    self.log_message("info", f"Found job in alternate format: {job_post.get('title', 'Unknown')}")
 
                         if alternate_jobs:
                             job_list = alternate_jobs
@@ -479,15 +502,16 @@ class GreenhouseScraper(BaseScraper):
                         job_list = job_posts["data"]
                         self.log_message("info", f"Found {len(job_list)} job listings via jobPosts structure")
                     else:
-                        self.log_message("warning", "No 'data' field in jobPosts")
                         return []
 
                 if not job_list:
                     self.log_message("warning", "Could not locate job posts data in JSON")
                     return []
 
+                self.log_message("info", f"Processing {len(job_list)} jobs from API response")
+
                 # Process each job
-                for job_item in job_list:
+                for idx, job_item in enumerate(job_list):
                     # Log the job structure for the first item
                     if len(jobs) == 0:
                         self.log_message("info", f"First job item keys: {list(job_item.keys())}")
@@ -505,20 +529,16 @@ class GreenhouseScraper(BaseScraper):
                     work_type = None
                     if "employment_type" in job_item:
                         work_type = job_item.get("employment_type")
-                        self.log_message("info", f"Found work type from employment_type: {work_type}")
                     elif "work_type" in job_item:
                         work_type = job_item.get("work_type")
-                        self.log_message("info", f"Found work type from work_type: {work_type}")
                     elif "remote_status" in job_item:
                         work_type = job_item.get("remote_status")
-                        self.log_message("info", f"Found work type from remote_status: {work_type}")
                     elif job_title and ("remote" in job_title.lower() or "hybrid" in job_title.lower()):
                         # Infer work type from job title
                         if "remote" in job_title.lower():
                             work_type = "Remote"
                         elif "hybrid" in job_title.lower():
                             work_type = "Hybrid"
-                        self.log_message("info", f"Inferred work type from job title: {work_type}")
 
                     # Extract compensation from pay_ranges if available
                     compensation = None
@@ -548,13 +568,12 @@ class GreenhouseScraper(BaseScraper):
                                 # Handle non-array format
                                 compensation = str(pay_ranges)
 
-                            self.log_message("info", f"Found compensation: {compensation}")
-
                     # Extract job description/content
                     job_description = job_item.get("content", "")
 
                     # Skip if missing essential fields
                     if not job_id or not job_title or not job_url:
+                        self.log_message("warning", f"Skipping job due to missing essential fields - ID: {job_id}, Title: {job_title}")
                         continue
 
                     # Create department info if available
@@ -587,9 +606,11 @@ class GreenhouseScraper(BaseScraper):
 
                             # Now both dates are timezone-aware
                             is_recent = published_date >= self.cutoff_date
-                            self.log_message("info", f"Job date: {published_date}, Is recent: {is_recent}")
+
+                            # Calculate days difference for better context
+                            days_diff = (self.cutoff_date - published_date).days
                         except Exception as e:
-                            self.log_message("warning", f"Error parsing date {published_at}: {str(e)}")
+                            self.log_message("warning", f"Error parsing date {published_at} for job {job_id}: {str(e)}")
                             # When in doubt, include the job
                             is_recent = True
 
@@ -616,7 +637,6 @@ class GreenhouseScraper(BaseScraper):
                         job_post_loc = job_item.get("job_post_location")
                         if job_post_loc:
                             job["location"] = job_post_loc
-                            self.log_message("info", f"Using job_post_location as location: {job_post_loc}")
 
                     # Filter by keyword if specified
                     if keyword and job_title and keyword.lower() not in job_title.lower():
@@ -628,7 +648,7 @@ class GreenhouseScraper(BaseScraper):
 
                     jobs.append(job)
 
-                self.log_message("info", f"Processed {len(jobs)} jobs after filtering")
+                self.log_message("info", f"Processed {len(jobs)} jobs after filtering via direct API")
                 return jobs
 
             except Exception as e:
@@ -636,15 +656,195 @@ class GreenhouseScraper(BaseScraper):
                 return []
         # Embedded job board implementation
         elif self.is_embedded:
+            self.log_message("info", "Using embedded job board implementation")
             try:
                 self.log_message("info", f"Requesting embedded job board listings from: {self.career_url}")
 
-                # Request the embedded job board page
+                # First, try the original URL
                 response = self.make_greenhouse_request(self.career_url)
 
                 if not response:
                     self.log_message("error", f"Failed to get response from {self.career_url}")
                     return []
+
+                # Try to extract JSON data first - this contains all the detailed job information
+                json_data = self._extract_json_from_response(response.text)
+
+                # Check if we have usable job board data - if not, try the alternate URL
+                should_try_alternate = False
+                if not json_data:
+                    should_try_alternate = True
+                elif "state" in json_data and "loaderData" in json_data["state"]:
+                    loader_data = json_data["state"]["loaderData"]
+                    # Check if we have the proper embedded job board structure
+                    if "routes/embed.job_board" not in loader_data:
+                        should_try_alternate = True
+
+                # If no usable job board data found and this is a boards.greenhouse.io URL, try the job-boards.greenhouse.io variant
+                if should_try_alternate and "boards.greenhouse.io/embed/job_board?for=" in self.career_url:
+                    self.log_message("info", "Trying job-boards.greenhouse.io variant for better job board data")
+
+                    # Transform URL from boards.greenhouse.io to job-boards.greenhouse.io
+                    alternate_url = self.career_url.replace("boards.greenhouse.io/embed/job_board?for=", "job-boards.greenhouse.io/embed/job_board?for=")
+
+                    # Make request to alternate URL
+                    alternate_response = self.make_greenhouse_request(alternate_url)
+
+                    if alternate_response:
+                        # Try to extract JSON from alternate response
+                        alternate_json_data = self._extract_json_from_response(alternate_response.text)
+
+                        if alternate_json_data:
+                            # Check if the alternate response has proper job board data
+                            if ("state" in alternate_json_data and "loaderData" in alternate_json_data["state"] and
+                                "routes/embed.job_board" in alternate_json_data["state"]["loaderData"]):
+                                self.log_message("info", "Successfully found proper job board data from alternate URL")
+                                json_data = alternate_json_data
+                                response = alternate_response  # Use the alternate response going forward
+
+                if json_data:
+                    self.log_message("info", "Successfully extracted JSON data from embedded job board")
+
+                    # Look for job posts in the JSON data structure
+                    job_list = []
+                    if "state" in json_data and "loaderData" in json_data["state"]:
+                        loader_data = json_data["state"]["loaderData"]
+
+                        # Look for the embed.job_board route which contains full job data
+                        if "routes/embed.job_board" in loader_data:
+                            job_board_data = loader_data["routes/embed.job_board"]
+                            if "jobPosts" in job_board_data and "data" in job_board_data["jobPosts"]:
+                                job_list = job_board_data["jobPosts"]["data"]
+                                self.log_message("info", f"Found {len(job_list)} jobs from embedded JSON data")
+
+                        # Alternative: Look for root level data that might contain job posts
+                        if not job_list and "root" in loader_data:
+                            root_data = loader_data["root"]
+                            if isinstance(root_data, dict) and "jobPosts" in root_data:
+                                if "data" in root_data["jobPosts"]:
+                                    job_list = root_data["jobPosts"]["data"]
+                                    self.log_message("info", f"Found {len(job_list)} jobs from root jobPosts data")
+
+                    # Process jobs from JSON data (contains all necessary fields)
+                    for idx, job_item in enumerate(job_list):
+                        try:
+                            # Extract all fields directly from the JSON response
+                            job_id = job_item.get("id")
+                            job_title = job_item.get("title", "")
+                            location = job_item.get("location", "")
+                            job_url = job_item.get("absolute_url", "")
+                            published_at = job_item.get("published_at")
+                            updated_at = job_item.get("updated_at")
+                            requisition_id = job_item.get("requisition_id")
+
+                            # Ensure job_id is a clean string without URL parameters
+                            if job_id:
+                                job_id = str(job_id)
+                                # Remove any URL parameters that might be appended
+                                if '?' in job_id:
+                                    job_id = job_id.split('?')[0]
+                            else:
+                                job_id = ""
+
+                            # Extract job description from content field
+                            job_description = job_item.get("content", "")
+
+                            # Handle escaped HTML content
+                            if job_description and isinstance(job_description, str):
+                                # Unescape HTML entities and unicode escapes
+                                import html
+                                if "\\u003c" in job_description or "&lt;" in job_description:
+                                    # Handle unicode escapes first
+                                    try:
+                                        job_description = bytes(job_description, "utf-8").decode("unicode_escape")
+                                    except:
+                                        pass
+                                    # Then handle HTML entities
+                                    job_description = html.unescape(job_description)
+
+                            # Extract department info
+                            department = None
+                            if "department" in job_item and job_item["department"]:
+                                department_data = job_item["department"]
+                                if isinstance(department_data, dict):
+                                    department = {
+                                        "name": department_data.get("name"),
+                                        "id": department_data.get("id")
+                                    }
+                                elif isinstance(department_data, str):
+                                    department = {"name": department_data}
+
+                            # Check if the job posting is recent enough
+                            is_recent = True
+                            if published_at:
+                                try:
+                                    # Parse the date string and handle timezone
+                                    # Greenhouse uses ISO format with timezone offset
+                                    published_date = None
+
+                                    # Handle the case where timezone info is already in string
+                                    if 'Z' in published_at or '+' in published_at or '-' in published_at:
+                                        if 'Z' in published_at:
+                                            # UTC time indicated by Z
+                                            published_date = datetime.datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                                        else:
+                                            # Already has timezone offset
+                                            published_date = datetime.datetime.fromisoformat(published_at)
+                                    else:
+                                        # No timezone info, assume UTC
+                                        published_date = datetime.datetime.fromisoformat(published_at).replace(tzinfo=timezone.utc)
+
+                                    # Now both dates are timezone-aware
+                                    is_recent = published_date >= self.cutoff_date
+
+                                    # Calculate days difference for better context
+                                    days_diff = (self.cutoff_date - published_date).days
+                                except Exception as e:
+                                    self.log_message("warning", f"Error parsing date {published_at} for job {job_id}: {str(e)}")
+                                    # When in doubt, include the job
+                                    is_recent = True
+
+                            # Skip if missing essential fields
+                            if not job_id or not job_title:
+                                self.log_message("warning", f"Skipping embedded job with missing essential fields: id={job_id}, title={job_title}")
+                                continue
+
+                            # Create comprehensive job record with all data from JSON
+                            job = {
+                                "job_id": job_id,
+                                "job_title": job_title,
+                                "location": location,
+                                "job_url": job_url,
+                                "job_description": job_description,
+                                "content": job_description,  # Add content field with same value for consistency
+                                "published_at": published_at,
+                                "updated_at": updated_at,
+                                "requisition_id": requisition_id,
+                                "department": department,
+                                "is_recent": is_recent,
+                                "raw_data": job_item
+                            }
+
+                            # Filter by keyword if specified
+                            if keyword and job_title and keyword.lower() not in job_title.lower():
+                                continue
+
+                            # Filter by location if specified
+                            if location and job.get("location") and location.lower() not in job["location"].lower():
+                                continue
+
+                            jobs.append(job)
+
+                        except Exception as e:
+                            self.log_message("warning", f"Error processing embedded job from JSON: {str(e)}")
+                            continue
+
+                    if jobs:
+                        self.log_message("info", f"Successfully extracted {len(jobs)} jobs from embedded JSON data")
+                        return jobs
+
+                # Fallback to HTML parsing if JSON extraction fails
+                self.log_message("info", "DEBUG: JSON extraction failed, falling back to HTML parsing")
 
                 # Parse HTML with BeautifulSoup
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -652,7 +852,7 @@ class GreenhouseScraper(BaseScraper):
                 # Find job listings - embedded Greenhouse boards use elements with class="opening"
                 job_elements = soup.select('.opening')
 
-                self.log_message("info", f"Found {len(job_elements)} job listings on embedded board")
+                self.log_message("info", f"Found {len(job_elements)} job listings on embedded board via HTML parsing")
 
                 # Process each job listing
                 for job_element in job_elements:
@@ -672,11 +872,24 @@ class GreenhouseScraper(BaseScraper):
                         # Extract job ID from the URL
                         job_id = None
                         if 'gh_jid=' in job_url:
-                            # Parse the gh_jid parameter from the URL
-                            parsed_url = urlparse(job_url)
-                            query_params = parse_qs(parsed_url.query)
-                            if 'gh_jid' in query_params:
-                                job_id = query_params['gh_jid'][0]
+                            # Handle both normal and malformed URLs with duplicate gh_jid parameters
+                            self.log_message("info", f"DEBUG: Extracting job ID from URL: {job_url}")
+
+                            # First try: Direct regex extraction to handle malformed URLs
+                            gh_jid_match = re.search(r'gh_jid=(\d+)', job_url)
+                            if gh_jid_match:
+                                job_id = gh_jid_match.group(1)
+                                self.log_message("info", f"DEBUG: Extracted job ID via regex: {job_id}")
+                            else:
+                                # Fallback: Try standard URL parsing
+                                try:
+                                    parsed_url = urlparse(job_url)
+                                    query_params = parse_qs(parsed_url.query)
+                                    if 'gh_jid' in query_params:
+                                        job_id = query_params['gh_jid'][0]
+                                        self.log_message("info", f"DEBUG: Extracted job ID via URL parsing: {job_id}")
+                                except Exception as e:
+                                    self.log_message("warning", f"DEBUG: Error parsing URL {job_url}: {str(e)}")
 
                         if not job_id:
                             self.log_message("warning", f"Could not extract job ID from URL: {job_url}")
@@ -702,7 +915,7 @@ class GreenhouseScraper(BaseScraper):
                         jobs.append(job)
 
                     except Exception as e:
-                        self.log_message("warning", f"Error processing job listing: {str(e)}")
+                        self.log_message("warning", f"Error processing job listing from HTML: {str(e)}")
                         continue
 
                 self.log_message("info", f"Processed {len(jobs)} jobs after filtering")
@@ -797,13 +1010,6 @@ class GreenhouseScraper(BaseScraper):
                     self.log_message("error", "Could not extract job detail data from response")
                     return job_details
 
-                # Log the JSON data structure
-                self.log_message("info", f"Found JSON data with keys: {list(json_data.keys())}")
-                if "state" in json_data:
-                    self.log_message("info", f"State keys: {list(json_data['state'].keys())}")
-                    if "loaderData" in json_data["state"]:
-                        self.log_message("info", f"LoaderData keys: {list(json_data['state']['loaderData'].keys())}")
-
                 # Navigate to the job data
                 job_data = None
                 if "state" in json_data and "loaderData" in json_data["state"]:
@@ -813,31 +1019,28 @@ class GreenhouseScraper(BaseScraper):
                     for key, value in loader_data.items():
                         if key.startswith("routes/$url_token/jobs"):
                             job_data = value
-                            self.log_message("info", f"Found job data in standard format key: {key}")
                             break
 
                     # If not found, try the alternative pattern with underscore (routes/$url_token_.jobs_.$job_post_id)
                     if not job_data:
                         for key, value in loader_data.items():
                             if key.startswith("routes/$url_token_") and "jobs_" in key:
-                                self.log_message("info", f"Found job data in alternate format: {key}")
                                 if isinstance(value, dict):
                                     if "jobPost" in value:
                                         # Extract the jobPost object which contains the content
                                         job_data = value["jobPost"]
-                                        self.log_message("info", f"Extracted jobPost data with keys: {list(job_data.keys())}")
                                     else:
                                         # Use the value as is if jobPost is not present
                                         job_data = value
-                                        self.log_message("info", f"Using alternate data with keys: {list(job_data.keys())}")
                                 break
 
-                # If job_data is still None, try to look for jobPost data directly
-                if not job_data and "routes/$url_token_.jobs_.$job_post_id" in json_data.get("state", {}).get("loaderData", {}):
-                    direct_data = json_data["state"]["loaderData"]["routes/$url_token_.jobs_.$job_post_id"]
-                    if isinstance(direct_data, dict) and "jobPost" in direct_data:
-                        job_data = direct_data["jobPost"]
-                        self.log_message("info", f"Extracted direct jobPost data with keys: {list(job_data.keys())}")
+                # Additional specific check for the exact pattern from user's example
+                if not job_data:
+                    exact_key = "routes/$url_token_.jobs_.$job_post_id"
+                    if exact_key in json_data.get("state", {}).get("loaderData", {}):
+                        direct_data = json_data["state"]["loaderData"][exact_key]
+                        if isinstance(direct_data, dict) and "jobPost" in direct_data:
+                            job_data = direct_data["jobPost"]
 
                 if not job_data:
                     self.log_message("warning", "Could not locate job detail data in JSON")
@@ -845,10 +1048,51 @@ class GreenhouseScraper(BaseScraper):
                     found_data = self._find_job_data_anywhere(json_data)
                     if found_data:
                         job_data = found_data
-                        self.log_message("info", f"Found job data with deep search, keys: {list(job_data.keys())}")
                     else:
-                        self.log_message("warning", "Deep search also failed to find job data")
                         return job_details
+
+                # IMMEDIATELY extract dates after job_data is determined - BEFORE other processing
+                # This ensures dates are captured regardless of which pattern was used
+                if job_data:
+                    if "published_at" in job_data:
+                        job_details["published_at"] = job_data["published_at"]
+
+                        # Check if the job posting is recent enough
+                        try:
+                            # Parse the date string and handle timezone
+                            # Greenhouse uses ISO format with timezone offset
+                            published_date = None
+
+                            # Handle the case where timezone info is already in string
+                            if 'Z' in job_data["published_at"] or '+' in job_data["published_at"] or '-' in job_data["published_at"]:
+                                if 'Z' in job_data["published_at"]:
+                                    # UTC time indicated by Z
+                                    published_date = datetime.datetime.fromisoformat(job_data["published_at"].replace('Z', '+00:00'))
+                                else:
+                                    # Already has timezone offset
+                                    published_date = datetime.datetime.fromisoformat(job_data["published_at"])
+                            else:
+                                # No timezone info, assume UTC
+                                published_date = datetime.datetime.fromisoformat(job_data["published_at"]).replace(tzinfo=timezone.utc)
+
+                            # Now both dates are timezone-aware
+                            job_details["is_recent"] = published_date >= self.cutoff_date
+                            self.log_message("info", f"Job published date: {published_date}, Is recent: {job_details['is_recent']}")
+
+                            # Calculate days difference for better context
+                            days_diff = (self.cutoff_date - published_date).days
+                        except Exception as e:
+                            self.log_message("warning", f"Error parsing published_at date {job_data['published_at']}: {str(e)}")
+                            # When in doubt, include the job
+                            job_details["is_recent"] = True
+                    else:
+                        job_details["is_recent"] = True  # Assume recent if no date
+
+                    if "updated_at" in job_data:
+                        job_details["updated_at"] = job_data["updated_at"]
+                else:
+                    self.log_message("error", "job_data is None - cannot extract date fields!")
+                    job_details["is_recent"] = True  # Assume recent if no data
 
                 # Extract job ID from URL if not already present
                 if not job_details.get("job_id") and '/jobs/' in job_url:
@@ -858,26 +1102,22 @@ class GreenhouseScraper(BaseScraper):
                 # Process job detail fields
                 if "title" in job_data:
                     job_details["job_title"] = job_data["title"]
-                    self.log_message("info", f"Found job title: {job_data['title']}")
 
                 # Get location information - correctly handled as location, not work_type
                 if "job_post_location" in job_data:
                     job_details["location"] = job_data["job_post_location"]
-                    self.log_message("info", f"Found location: {job_data['job_post_location']}")
                 elif "location" in job_data:
                     # Handle both string and object formats for location
                     if isinstance(job_data["location"], dict):
                         job_details["location"] = job_data["location"].get("name", "")
                     else:
                         job_details["location"] = job_data["location"]
-                    self.log_message("info", f"Found location: {job_details['location']}")
 
                 # Extract work type if available (correctly separated from location)
                 # Look for any fields that might indicate remote/hybrid work arrangement
                 for field_name in ["employment_type", "work_type", "remote_status", "work_arrangement"]:
                     if field_name in job_data:
                         job_details["work_type"] = job_data[field_name]
-                        self.log_message("info", f"Found work type in '{field_name}' field: {job_data[field_name]}")
                         break
 
                 # Try to infer work type from the job title or description if not found
@@ -885,33 +1125,26 @@ class GreenhouseScraper(BaseScraper):
                     title = job_details["job_title"].lower()
                     if "remote" in title:
                         job_details["work_type"] = "Remote"
-                        self.log_message("info", f"Inferred work type 'Remote' from job title")
                     elif "hybrid" in title:
                         job_details["work_type"] = "Hybrid"
-                        self.log_message("info", f"Inferred work type 'Hybrid' from job title")
 
                 # Try to infer work type from the content/job description if not already found
                 if not job_details.get("work_type") and "content" in job_data:
                     content = job_data["content"].lower()
                     if "remote" in content:
                         job_details["work_type"] = "Remote"
-                        self.log_message("info", f"Inferred work type 'Remote' from job description")
                     elif "hybrid" in content:
                         job_details["work_type"] = "Hybrid"
-                        self.log_message("info", f"Inferred work type 'Hybrid' from job description")
                     elif "onsite" in content or "on-site" in content or "on site" in content:
                         job_details["work_type"] = "On-site"
-                        self.log_message("info", f"Inferred work type 'On-site' from job description")
 
                 # Default to On-site if we couldn't determine work type
                 if not job_details.get("work_type"):
                     job_details["work_type"] = "Unspecified"
-                    self.log_message("info", f"Setting default work type: Unspecified")
 
                 # Extract job description - try multiple possible fields and formats
                 if "job_description" in job_data:
                     job_details["job_description"] = job_data["job_description"]
-                    self.log_message("info", f"Found job description field directly")
                 elif "content" in job_data:
                     # The main content typically contains the job description
                     job_details["job_description"] = job_data["content"]
@@ -947,24 +1180,6 @@ class GreenhouseScraper(BaseScraper):
                         "id": job_data["department"].get("id")
                     }
 
-                # Handle dates
-                if "published_at" in job_data:
-                    job_details["published_at"] = job_data["published_at"]
-
-                    # Check if the job posting is recent enough
-                    try:
-                        # Greenhouse uses ISO format with timezone
-                        published_date = datetime.datetime.fromisoformat(job_data["published_at"].replace('Z', '+00:00'))
-                        job_details["is_recent"] = published_date >= self.cutoff_date
-                    except Exception as e:
-                        self.log_message("warning", f"Error parsing date: {str(e)}")
-                        job_details["is_recent"] = True
-                else:
-                    job_details["is_recent"] = True  # Assume recent if no date
-
-                if "updated_at" in job_data:
-                    job_details["updated_at"] = job_data["updated_at"]
-
                 if "requisition_id" in job_data:
                     job_details["requisition_id"] = job_data["requisition_id"]
 
@@ -984,26 +1199,20 @@ class GreenhouseScraper(BaseScraper):
 
                                 if min_amount and max_amount:
                                     job_details["compensation"] = f"{currency} {min_amount}-{max_amount}/{interval}"
-                                    self.log_message("info", f"Found compensation: {job_details.get('compensation')}")
                                 elif min_amount:
                                     job_details["compensation"] = f"{currency} {min_amount}+/{interval}"
-                                    self.log_message("info", f"Found compensation: {job_details.get('compensation')}")
                                 elif max_amount:
                                     job_details["compensation"] = f"Up to {currency} {max_amount}/{interval}"
-                                    self.log_message("info", f"Found compensation: {job_details.get('compensation')}")
                             else:
                                 # Handle string or other format
                                 job_details["compensation"] = str(pay_range)
-                            self.log_message("info", f"Found compensation: {job_details.get('compensation')}")
                         else:
                             # Handle non-array format
                             job_details["compensation"] = str(pay_ranges)
-                            self.log_message("info", f"Found compensation: {job_details.get('compensation')}")
 
                 # Check for salaryDescription as alternative source
                 if not job_details.get("compensation") and "salaryDescription" in job_data:
                     job_details["compensation"] = job_data["salaryDescription"]
-                    self.log_message("info", f"Found compensation in salaryDescription: {job_details['compensation']}")
 
                 return job_details
 
@@ -1056,15 +1265,12 @@ class GreenhouseScraper(BaseScraper):
                                     # Check for jobPost in this route data
                                     if "jobPost" in route_data:
                                         job_post_data = route_data["jobPost"]
-                                        self.log_message("info", f"Found jobPost data in {route_key}")
 
                                         if "title" in job_post_data and not job_details.get("job_title"):
                                             job_details["job_title"] = job_post_data["title"]
-                                            self.log_message("info", f"Extracted job_title from remixContext: {job_post_data['title']}")
 
                                         if "job_post_location" in job_post_data and not job_details.get("location"):
                                             job_details["location"] = job_post_data["job_post_location"]
-                                            self.log_message("info", f"Extracted location from remixContext: {job_post_data['job_post_location']}")
 
                                         # Extract job description from remixContext
                                         if not job_details.get("job_description"):
@@ -1072,27 +1278,48 @@ class GreenhouseScraper(BaseScraper):
                                             if "content" in job_post_data:
                                                 job_details["job_description"] = job_post_data["content"]
                                                 job_details["content"] = job_post_data["content"]
-                                                self.log_message("info", "Extracted job description from remixContext content field")
                                             # Check for introduction field
                                             elif "introduction" in job_post_data:
                                                 job_details["job_description"] = job_post_data["introduction"]
                                                 job_details["content"] = job_post_data["introduction"]
-                                                self.log_message("info", "Extracted job description from remixContext introduction field")
                                             # Check for conclusion field (often has content too)
                                             elif "conclusion" in job_post_data:
                                                 job_details["job_description"] = job_post_data["conclusion"]
                                                 job_details["content"] = job_post_data["conclusion"]
-                                                self.log_message("info", "Extracted job description from remixContext conclusion field")
 
                                         # Extract department information if available
                                         if "department" in job_post_data and not job_details.get("department"):
                                             department_data = job_post_data["department"]
                                             if isinstance(department_data, dict):
                                                 job_details["department"] = department_data
-                                                self.log_message("info", f"Extracted department from remixContext: {department_data.get('name')}")
                                             elif isinstance(department_data, str):
                                                 job_details["department"] = {"name": department_data}
-                                                self.log_message("info", f"Extracted department name from remixContext: {department_data}")
+
+                                        # Extract published_at and updated_at from remixContext jobPost data
+                                        if "published_at" in job_post_data and not job_details.get("published_at"):
+                                            job_details["published_at"] = job_post_data["published_at"]
+
+                                            # Parse the date for recency check
+                                            try:
+                                                if 'Z' in job_post_data["published_at"] or '+' in job_post_data["published_at"] or '-' in job_post_data["published_at"]:
+                                                    if 'Z' in job_post_data["published_at"]:
+                                                        published_date = datetime.datetime.fromisoformat(job_post_data["published_at"].replace('Z', '+00:00'))
+                                                    else:
+                                                        published_date = datetime.datetime.fromisoformat(job_post_data["published_at"])
+                                                else:
+                                                    published_date = datetime.datetime.fromisoformat(job_post_data["published_at"]).replace(tzinfo=timezone.utc)
+
+                                                job_details["is_recent"] = published_date >= self.cutoff_date
+                                                self.log_message("info", f"Embedded job published date: {published_date}, Is recent: {job_details['is_recent']}")
+
+                                                # Calculate days difference for better context
+                                                days_diff = (self.cutoff_date - published_date).days
+                                            except Exception as e:
+                                                self.log_message("warning", f"Error parsing embedded job published_at date: {str(e)}")
+                                                job_details["is_recent"] = True
+
+                                        if "updated_at" in job_post_data and not job_details.get("updated_at"):
+                                            job_details["updated_at"] = job_post_data["updated_at"]
                 except Exception as remix_error:
                     self.log_message("warning", f"Failed to extract data from remixContext: {str(remix_error)}")
 
@@ -1106,7 +1333,6 @@ class GreenhouseScraper(BaseScraper):
                         if title_match:
                             job_title = title_match.group(1).strip()
                             job_details["job_title"] = job_title
-                            self.log_message("info", f"Extracted job title directly from HTML: {job_title}")
 
                     if not job_details.get("location"):
                         # Extract location from HTML
@@ -1115,7 +1341,6 @@ class GreenhouseScraper(BaseScraper):
                         if location_match:
                             location = location_match.group(1).strip()
                             job_details["location"] = location
-                            self.log_message("info", f"Extracted location directly from HTML: {location}")
                 except Exception as html_error:
                     self.log_message("warning", f"Error extracting fields from HTML: {str(html_error)}")
 
@@ -1127,11 +1352,9 @@ class GreenhouseScraper(BaseScraper):
                     # Extract relevant fields if they're not already set by previous methods
                     if "title" in job_data and not job_details.get("job_title"):
                         job_details["job_title"] = job_data["title"]
-                        self.log_message("info", f"Extracted job_title from JSON: {job_data['title']}")
 
                     if "location" in job_data and not job_details.get("location"):
                         job_details["location"] = job_data["location"]["name"] if isinstance(job_data["location"], dict) else job_data["location"]
-                        self.log_message("info", f"Extracted location from JSON: {job_details['location']}")
 
                     # Extract job description - try multiple possible fields and formats
                     if not job_details.get("job_description"):
@@ -1139,11 +1362,9 @@ class GreenhouseScraper(BaseScraper):
                         if "content" in job_data:
                             job_details["job_description"] = job_data["content"]
                             job_details["content"] = job_data["content"]
-                            self.log_message("info", "Found job description in 'content' field")
                         elif "description" in job_data:
                             job_details["job_description"] = job_data["description"]
                             job_details["content"] = job_data["description"]
-                            self.log_message("info", "Found job description in 'description' field")
 
                         # If not found, check nested fields
                         if not job_details.get("job_description"):
@@ -1154,11 +1375,9 @@ class GreenhouseScraper(BaseScraper):
                                     if "description" in job_posting_data:
                                         job_details["job_description"] = job_posting_data["description"]
                                         job_details["content"] = job_posting_data["description"]
-                                        self.log_message("info", "Found job description in jobPostingData.description")
                                     elif "content" in job_posting_data:
                                         job_details["job_description"] = job_posting_data["content"]
                                         job_details["content"] = job_posting_data["content"]
-                                        self.log_message("info", "Found job description in jobPostingData.content")
 
                             # Check in jobPost
                             if not job_details.get("job_description") and "jobPost" in job_data:
@@ -1167,11 +1386,9 @@ class GreenhouseScraper(BaseScraper):
                                     if "content" in job_post:
                                         job_details["job_description"] = job_post["content"]
                                         job_details["content"] = job_post["content"]
-                                        self.log_message("info", "Found job description in jobPost.content")
                                     elif "description" in job_post:
                                         job_details["job_description"] = job_post["description"]
                                         job_details["content"] = job_post["description"]
-                                        self.log_message("info", "Found job description in jobPost.description")
 
                         # If we still don't have a description, try finding any key ending with "description" or "content"
                         if not job_details.get("job_description"):
@@ -1179,7 +1396,6 @@ class GreenhouseScraper(BaseScraper):
                                 if isinstance(value, str) and (key.lower().endswith("description") or key.lower().endswith("content")):
                                     job_details["job_description"] = value
                                     job_details["content"] = value
-                                    self.log_message("info", f"Found job description in '{key}' field")
                                     break
 
                     # Extract department info
