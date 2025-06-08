@@ -14,6 +14,10 @@ from dagster import (
 )
 
 from dagster_betterjobs.scrapers.smartrecruiters_scraper import SmartRecruitersJobScraper
+from dagster_betterjobs.transformations.dynamic_lookback import (
+    DynamicLookbackConfig,
+    get_batch_lookback_periods
+)
 
 logger = get_dagster_logger()
 
@@ -32,9 +36,16 @@ class SmartRecruitersJobsDiscoveryConfig(Config):
     retry_delay: int = 2
     min_company_id: Optional[int] = None  # For batch processing
     max_company_id: Optional[int] = None  # For batch processing
-    days_to_look_back: int = 7  # Job freshness threshold in days
+    days_to_look_back: int = 7  # Legacy fixed lookback - will be overridden by dynamic lookback
     batch_size: int = 10  # Companies per batch before committing
     process_all_companies: bool = True  # By default, process all companies regardless of checkpoint status
+
+    # ENHANCEMENT-004: Dynamic Lookback Configuration
+    enable_dynamic_lookback: bool = True
+    lookback_cushion_days: int = 2
+    min_lookback_days: int = 2
+    max_lookback_days: int = 90
+    default_lookback_days: int = 15
 
 @asset(
     group_name="raw_ingestion_extraction",
@@ -56,14 +67,25 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
     schema_name = os.getenv("SNOWFLAKE_RAW_SCHEMA", "RAW")
     partition_key = context.partition_key
 
-    # Set job freshness cutoff date
-    cutoff_date = datetime.now() - timedelta(days=config.days_to_look_back)
-    # Make cutoff_date timezone-aware with UTC timezone
-    cutoff_date = cutoff_date.replace(tzinfo=timezone.utc)
-    cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+    # ENHANCEMENT-004: Initialize dynamic lookback configuration
+    dynamic_config = DynamicLookbackConfig(
+        cushion_days=config.lookback_cushion_days,
+        min_lookback_days=config.min_lookback_days,
+        max_lookback_days=config.max_lookback_days,
+        default_lookback_days=config.default_lookback_days,
+        enable_dynamic=config.enable_dynamic_lookback
+    )
+
+    # Basic configuration validation
+    if dynamic_config.min_lookback_days < 1 or dynamic_config.max_lookback_days < dynamic_config.min_lookback_days:
+        context.log.error("Invalid dynamic lookback configuration")
+        return {"error": "Invalid dynamic lookback configuration", "status": "failed"}
 
     context.log.info(f"Processing company name partition {partition_key}")
-    context.log.info(f"Only processing jobs posted after {cutoff_str}")
+    if config.enable_dynamic_lookback:
+        context.log.info(f"Using DYNAMIC lookback")
+    else:
+        context.log.info(f"Using FIXED lookback: {config.days_to_look_back} days")
 
     # Resolve checkpoint directory path
     cwd = Path(os.getcwd())
@@ -171,6 +193,26 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
         companies_to_process = companies_df
         context.log.info(f"Processing all {len(companies_to_process)} SmartRecruiters companies in this partition")
 
+    # ENHANCEMENT-004: Calculate dynamic lookback periods for all companies in partition
+    lookback_map = {}
+
+    if config.enable_dynamic_lookback and not companies_to_process.empty:
+        context.log.info(f"Calculating dynamic lookback periods for {len(companies_to_process)} companies...")
+
+        company_ids = companies_to_process["company_id"].tolist()
+        lookback_map = get_batch_lookback_periods(
+            platform="smartrecruiters",
+            company_ids=company_ids,
+            config=dynamic_config,
+            conn=conn,
+            context=context,
+            date_field="published_at"
+        )
+    else:
+        # Use fixed lookback for all companies
+        company_ids = companies_to_process["company_id"].tolist()
+        lookback_map = {str(cid): config.days_to_look_back for cid in company_ids}
+
     # Load previously failed companies
     if failed_companies_file.exists():
         try:
@@ -233,7 +275,12 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
             career_url = company["career_url"]
             ats_url = company["ats_url"]
 
-            context.log.info(f"Processing jobs for {company_name} (ID: {company_id})")
+            # ENHANCEMENT-004: Get dynamic lookback period for this company
+            company_lookback_days = lookback_map.get(str(company_id), config.days_to_look_back)
+            company_cutoff_date = datetime.now() - timedelta(days=company_lookback_days)
+            company_cutoff_date = company_cutoff_date.replace(tzinfo=timezone.utc)
+
+            context.log.info(f"Processing jobs for {company_name} (ID: {company_id}) - lookback: {company_lookback_days} days")
 
             # Use ATS URL if available, otherwise fall back to career URL
             url_to_use = ats_url if ats_url else career_url
@@ -248,18 +295,19 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
                 "jobs_added": 0,
                 "jobs_updated": 0,
                 "status": "success",
-                "partition_key": partition_key
+                "partition_key": partition_key,
+                "lookback_days": company_lookback_days  # Track lookback period used
             }
 
             try:
-                # Create SmartRecruiters scraper
+                # Create SmartRecruiters scraper with dynamic cutoff date
                 scraper = SmartRecruitersJobScraper(
                     career_url=url_to_use,
                     rate_limit=config.rate_limit,
                     max_retries=config.max_retries,
                     retry_delay=config.retry_delay,
                     dagster_log=context.log,  # Pass Dagster logger to the scraper
-                    cutoff_date=cutoff_date  # Pass the cutoff date to the scraper
+                    cutoff_date=company_cutoff_date  # Use dynamic cutoff date per company
                 )
 
                 # Get all job listings
@@ -567,8 +615,11 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
     # Close Snowflake connection
     conn.close()
 
+    # Add basic lookback information to stats
+    stats["dynamic_lookback_enabled"] = config.enable_dynamic_lookback
+
     # Add metadata to the output
-    context.add_output_metadata({
+    metadata = {
         "total_companies": MetadataValue.int(int(stats["total_companies"])),
         "companies_processed": MetadataValue.int(int(stats["companies_processed"])),
         "companies_with_jobs": MetadataValue.int(int(stats["companies_with_jobs"])),
@@ -576,8 +627,20 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
         "new_jobs_added": MetadataValue.int(int(stats["new_jobs_added"])),
         "jobs_updated": MetadataValue.int(int(stats["updated_jobs"])),
         "partition_key": MetadataValue.text(partition_key),
-        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.smartrecruiters_jobs")
-    })
+        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.smartrecruiters_jobs"),
+        "dynamic_lookback_enabled": MetadataValue.bool(config.enable_dynamic_lookback)
+    }
+
+    # Add basic lookback statistics if dynamic lookback is enabled
+    if config.enable_dynamic_lookback and lookback_map:
+        avg_lookback = sum(lookback_map.values()) / len(lookback_map)
+        metadata.update({
+            "avg_lookback_days": MetadataValue.float(avg_lookback),
+            "min_lookback_days": MetadataValue.int(min(lookback_map.values())),
+            "max_lookback_days": MetadataValue.int(max(lookback_map.values()))
+        })
+
+    context.add_output_metadata(metadata)
 
     return stats
 

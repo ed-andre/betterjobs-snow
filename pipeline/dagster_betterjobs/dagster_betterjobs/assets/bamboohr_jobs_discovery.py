@@ -13,6 +13,10 @@ from dagster import (
 )
 
 from dagster_betterjobs.scrapers.bamboohr_scraper import BambooHRScraper
+from dagster_betterjobs.transformations.dynamic_lookback import (
+    DynamicLookbackConfig,
+    get_batch_lookback_periods
+)
 
 logger = get_dagster_logger()
 
@@ -31,10 +35,17 @@ class BambooHRJobsDiscoveryConfig(Config):
     retry_delay: int = 2
     min_company_id: Optional[int] = None
     max_company_id: Optional[int] = None
-    days_to_look_back: int = 7
+    days_to_look_back: int = 7  # Legacy fixed lookback - will be overridden by dynamic lookback
     batch_size: int = 10
     skip_detailed_fetch: bool = False
     process_all_companies: bool = True
+
+    # ENHANCEMENT-004: Dynamic Lookback Configuration
+    enable_dynamic_lookback: bool = True
+    lookback_cushion_days: int = 2
+    min_lookback_days: int = 2
+    max_lookback_days: int = 90
+    default_lookback_days: int = 15
 
 @asset(
     group_name="raw_ingestion_extraction",
@@ -54,11 +65,24 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
     schema_name = os.getenv("SNOWFLAKE_RAW_SCHEMA", "RAW")
     partition_key = context.partition_key
 
-    # Set job freshness cutoff date
-    cutoff_date = datetime.now() - timedelta(days=config.days_to_look_back)
-    cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+    # ENHANCEMENT-004: Initialize dynamic lookback configuration
+    dynamic_config = DynamicLookbackConfig(
+        cushion_days=config.lookback_cushion_days,
+        min_lookback_days=config.min_lookback_days,
+        max_lookback_days=config.max_lookback_days,
+        default_lookback_days=config.default_lookback_days,
+        enable_dynamic=config.enable_dynamic_lookback
+    )
 
-    context.log.info(f"Processing partition {partition_key} - jobs posted after {cutoff_str}")
+    # Basic configuration validation
+    if dynamic_config.min_lookback_days < 1 or dynamic_config.max_lookback_days < dynamic_config.min_lookback_days:
+        context.log.error("Invalid dynamic lookback configuration")
+        return {"error": "Invalid dynamic lookback configuration", "status": "failed"}
+
+    if config.enable_dynamic_lookback:
+        context.log.info(f"Processing partition {partition_key} - using DYNAMIC lookback")
+    else:
+        context.log.info(f"Processing partition {partition_key} - using FIXED lookback: {config.days_to_look_back} days")
 
     # Resolve checkpoint directory path
     cwd = Path(os.getcwd())
@@ -151,6 +175,25 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
     else:
         companies_to_process = companies_df
 
+    # ENHANCEMENT-004: Calculate dynamic lookback periods for all companies in partition
+    lookback_map = {}
+
+    if config.enable_dynamic_lookback and not companies_to_process.empty:
+        context.log.info(f"Calculating dynamic lookback periods for {len(companies_to_process)} companies...")
+
+        company_ids = companies_to_process["company_id"].tolist()
+        lookback_map = get_batch_lookback_periods(
+            platform="bamboohr",
+            company_ids=company_ids,
+            config=dynamic_config,
+            conn=conn,
+            context=context
+        )
+    else:
+        # Use fixed lookback for all companies
+        company_ids = companies_to_process["company_id"].tolist()
+        lookback_map = {str(cid): config.days_to_look_back for cid in company_ids}
+
     # Load previously failed companies
     if failed_companies_file.exists():
         try:
@@ -210,7 +253,11 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
             career_url = company["career_url"]
             ats_url = company["ats_url"]
 
-            context.log.info(f"Processing {company_name} (ID: {company_id})")
+            # ENHANCEMENT-004: Get dynamic lookback period for this company
+            company_lookback_days = lookback_map.get(str(company_id), config.days_to_look_back)
+            company_cutoff_date = datetime.now() - timedelta(days=company_lookback_days)
+
+            context.log.info(f"Processing {company_name} (ID: {company_id}) - lookback: {company_lookback_days} days")
 
             # Track company results for checkpoint
             company_result = {
@@ -221,11 +268,12 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
                 "jobs_added": 0,
                 "jobs_updated": 0,
                 "status": "success",
-                "partition_key": partition_key
+                "partition_key": partition_key,
+                "lookback_days": company_lookback_days  # Track lookback period used
             }
 
             try:
-                # Create BambooHR scraper
+                # Create BambooHR scraper with dynamic cutoff date
                 scraper = BambooHRScraper(
                     career_url=career_url,
                     rate_limit=config.rate_limit,
@@ -233,7 +281,7 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
                     retry_delay=config.retry_delay,
                     dagster_log=context.log,
                     ats_url=ats_url,
-                    cutoff_date=cutoff_date
+                    cutoff_date=company_cutoff_date  # Use dynamic cutoff date per company
                 )
 
                 # Get all job listings
@@ -269,18 +317,11 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
                             context.log.warning(f"Error getting details for job {job_id}: {str(e)}")
                             job_details = job
 
-                    # Check posting date if available
-                    date_posted = job_details.get("date_posted")
-                    is_recent = True
+                    # Check if job is recent using scraper's determination
+                    # The scraper already applied the dynamic cutoff_date filtering
+                    is_recent = job_details.get("is_recent", True)  # Default to True if not set
 
-                    if date_posted:
-                        try:
-                            posted_date = datetime.strptime(date_posted, "%Y-%m-%d")
-                            is_recent = posted_date >= cutoff_date
-                        except (ValueError, TypeError):
-                            is_recent = True
-
-                    # Skip old jobs
+                    # Skip old jobs based on scraper's filtering
                     if not is_recent:
                         stats["old_jobs_skipped"] += 1
                         continue
@@ -340,7 +381,7 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
                         "location": location_str,
                         "department": department,
                         "employment_status": employment_status,
-                        "date_posted": date_posted,
+                        "date_posted": job_details.get("date_posted"),
                         "is_active": True,
                         "raw_data": raw_data,
                         "partition_key": partition_key,
@@ -525,8 +566,11 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
 
     conn.close()
 
+    # Add basic lookback information to stats
+    stats["dynamic_lookback_enabled"] = config.enable_dynamic_lookback
+
     # Add metadata to the output
-    context.add_output_metadata({
+    metadata = {
         "total_companies": MetadataValue.int(int(stats["total_companies"])),
         "companies_processed": MetadataValue.int(int(stats["companies_processed"])),
         "companies_with_jobs": MetadataValue.int(int(stats["companies_with_jobs"])),
@@ -534,7 +578,19 @@ def bamboohr_company_jobs_discovery(context: AssetExecutionContext, config: Bamb
         "new_jobs_added": MetadataValue.int(int(stats["new_jobs_added"])),
         "jobs_updated": MetadataValue.int(int(stats["updated_jobs"])),
         "partition_key": MetadataValue.text(partition_key),
-        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.bamboohr_jobs")
-    })
+        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.bamboohr_jobs"),
+        "dynamic_lookback_enabled": MetadataValue.bool(config.enable_dynamic_lookback)
+    }
+
+    # Add basic lookback statistics if dynamic lookback is enabled
+    if config.enable_dynamic_lookback and lookback_map:
+        avg_lookback = sum(lookback_map.values()) / len(lookback_map)
+        metadata.update({
+            "avg_lookback_days": MetadataValue.float(avg_lookback),
+            "min_lookback_days": MetadataValue.int(min(lookback_map.values())),
+            "max_lookback_days": MetadataValue.int(max(lookback_map.values()))
+        })
+
+    context.add_output_metadata(metadata)
 
     return stats

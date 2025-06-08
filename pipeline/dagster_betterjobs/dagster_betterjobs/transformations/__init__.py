@@ -3,6 +3,7 @@ Stage layer transformation modules for BetterJobs-Snow pipeline.
 
 This package contains reusable transformation functions for cleaning,
 standardizing, and enriching job data from the RAW layer to the STAGE layer.
+Also includes incremental processing utilities for optimal data discovery.
 """
 
 from .text_cleaning import (
@@ -29,6 +30,12 @@ from .platform_mapping import (
     get_platform_field_differences
 )
 
+from .dynamic_lookback import (
+    DynamicLookbackConfig,
+    get_dynamic_lookback_period,
+    get_batch_lookback_periods,
+)
+
 __all__ = [
     "clean_html_tags",
     "normalize_whitespace",
@@ -44,5 +51,8 @@ __all__ = [
     "get_sql_language_detection_query",
     "PlatformMapper",
     "map_all_platforms",
-    "get_platform_field_differences"
+    "get_platform_field_differences",
+    "DynamicLookbackConfig",
+    "get_dynamic_lookback_period",
+    "get_batch_lookback_periods",
 ]

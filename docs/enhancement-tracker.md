@@ -460,9 +460,14 @@ Implement intelligent incremental processing to avoid full table truncation and 
 - **Resource Optimization**: Better resource utilization across the pipeline
 
 ### Technical Approach
-**Dynamic Lookback for Jobs Discovery:**
+
+The incremental processing strategy has **two major implementation layers** that work together:
+
+## **STEP 1: Jobs Discovery Layer (RAW Data Ingestion)**
+
+**Dynamic Lookback Period Calculation:**
 ```sql
--- Calculate optimal lookback period
+-- Calculate optimal lookback period for each company with configurable parameters
 WITH latest_data AS (
     SELECT
         platform,
@@ -479,19 +484,78 @@ recommended_lookback AS (
         platform,
         company_id,
         GREATEST(
-            days_since_latest + 7,  -- Add 7-day cushion
-            14                      -- Minimum 14 days lookback
+            days_since_latest + %s,  -- Add configurable cushion (default: 2 days)
+            %s                       -- Configurable minimum lookback (default: 14 days)
         ) as recommended_days
     FROM latest_data
 )
 SELECT recommended_days FROM recommended_lookback;
 ```
 
-**Smart Watermarking for Stage Processing:**
+**Jobs Discovery Incremental Logic:**
+```python
+class DynamicLookbackConfig:
+    """Configuration for dynamic lookback calculation."""
+    def __init__(self,
+                 cushion_days: int = 2,          # Safety cushion to add to calculated days
+                 min_lookback_days: int = 2,    # Minimum lookback period
+                 max_lookback_days: int = 90,    # Maximum lookback period
+                 default_lookback_days: int = 15, # Default for new companies
+                 enable_dynamic: bool = True):   # Enable dynamic calculation
+        self.cushion_days = cushion_days
+        self.min_lookback_days = min_lookback_days
+        self.max_lookback_days = max_lookback_days
+        self.default_lookback_days = default_lookback_days
+        self.enable_dynamic = enable_dynamic
+
+def get_dynamic_lookback_period(platform: str, company_id: str,
+                              config: DynamicLookbackConfig, context) -> int:
+    """
+    Calculate optimal lookback period based on actual data freshness.
+
+    This replaces hardcoded 14-day lookback with intelligent calculation
+    based on when the company last posted jobs.
+
+    Args:
+        platform: ATS platform name
+        company_id: Company identifier
+        config: Configuration with cushion and min/max values
+        context: Dagster execution context
+
+    Returns:
+        Optimal lookback period in days
+    """
+    if not config.enable_dynamic:
+        return config.default_lookback_days
+
+    # Query latest job dates using configurable parameters
+    # Return: GREATEST(days_since_latest + cushion_days, min_lookback_days)
+    # Cap at max_lookback_days if needed
+    # Fallback to default_lookback_days if no historical data
+
+def discover_jobs_incremental(platform: str, company_id: str,
+                            config: DynamicLookbackConfig, context):
+    """
+    Discover jobs using dynamic lookback instead of fixed 14-day window.
+
+    Benefits:
+    - Active companies: Short lookback (cushion + recent activity) for faster processing
+    - Inactive companies: Longer lookback (up to max_lookback_days) to catch sporadic posts
+    - New companies: Default lookback for baseline data
+    - Configurable: All parameters can be tuned for different environments
+    """
+```
+
+## **STEP 2: Stage Processing Layer (Data Transformation)**
+
+**Smart Watermarking System:**
 ```python
 def get_incremental_watermark(platform: str, context) -> Optional[datetime]:
     """
     Get the last successful processing watermark for incremental updates.
+
+    This enables processing only newly discovered RAW data instead of
+    full table reprocessing.
     """
     query = f"""
     SELECT MAX(date_retrieved) as last_processed
@@ -510,6 +574,8 @@ def get_incremental_watermark(platform: str, context) -> Optional[datetime]:
 def process_incremental_data(platform: str, watermark: datetime, context):
     """
     Process only jobs added/updated since watermark.
+
+    This replaces full table truncation with selective processing.
     """
     if watermark:
         # Incremental processing
@@ -525,7 +591,7 @@ def process_incremental_data(platform: str, watermark: datetime, context):
 
 **Upsert Strategy for Stage Tables:**
 ```sql
--- Upsert pattern for incremental updates
+-- Replace DELETE + INSERT with MERGE (upsert) pattern
 MERGE INTO STAGE.jobs_unified AS target
 USING (
     SELECT * FROM temp_incremental_jobs
@@ -543,29 +609,86 @@ WHEN NOT MATCHED THEN
 ```
 
 ### Implementation Plan
-**Phase 1: Dynamic Lookback Implementation**
-1. Create dynamic lookback calculation functions
-2. Update jobs discovery assets to use calculated lookback
-3. Add fallback logic for first runs and edge cases
-4. Test with various company data patterns
 
-**Phase 2: Watermark System**
-1. Implement watermark tracking and retrieval
-2. Add incremental processing logic to platform assets
-3. Create upsert patterns for stage tables
-4. Handle edge cases (gaps, reprocessing, etc.)
+## ✅ **STEP 1 Implementation: Jobs Discovery Layer (RAW Data) - COMPLETED**
 
-**Phase 3: Integration and Testing**
-1. Integrate incremental processing with new platform assets
-2. Test incremental vs full refresh scenarios
-3. Validate data consistency and completeness
-4. Performance testing and optimization
+**Phase 1A: Dynamic Lookback Calculation** ✅ **COMPLETED**
+1. ✅ Created `transformations/dynamic_lookback.py` utility module
+2. ✅ Implemented company-specific lookback period calculation with SQL-based batch processing
+3. ✅ Added fallback logic for new companies and edge cases
+4. ✅ Tested lookback calculation with various company activity patterns
 
-**Phase 4: Monitoring and Alerting**
-1. Add incremental processing metrics to Dagster
-2. Monitor processing times and data volumes
-3. Set up alerts for processing anomalies
-4. Create troubleshooting guides
+**Phase 1B: Jobs Discovery Asset Updates** ✅ **COMPLETED**
+1. ✅ Updated `bamboohr_company_jobs_discovery.py` to use dynamic lookback
+2. ✅ Updated `greenhouse_company_jobs_discovery.py` to use dynamic lookback
+3. ✅ Updated `workday_company_jobs_discovery.py` to use dynamic lookback
+4. ✅ Updated `smartrecruiters_company_jobs_discovery.py` to use dynamic lookback
+5. ✅ Added comprehensive configuration options for lookback limits and overrides
+
+**Phase 1C: Discovery Layer Testing** ✅ **COMPLETED**
+1. ✅ Tested dynamic lookback vs fixed lookback performance
+2. ✅ Validated data completeness with various company patterns
+3. ✅ Monitored API call reduction and processing time improvements
+4. ✅ Cleaned up redundant cutoff_date filtering across all discovery assets
+
+### ✅ **STEP 1 Completion Summary**
+
+**Implementation Date:** 2025-01-28
+
+**Key Features Delivered:**
+- **Dynamic Lookback System**: Each company gets optimal lookback period based on actual job posting patterns
+- **Batch Processing**: Efficient SQL-based calculation for all companies in partition
+- **Configurable Parameters**: Cushion days, min/max limits, default values all configurable
+- **Platform Support**: Consistent implementation across BambooHR, Greenhouse, Workday, and SmartRecruiters
+- **Efficient Filtering**: Scrapers handle date filtering where supported, with fallback for manual filtering
+- **Clean Architecture**: Removed legacy cutoff_date cruft and redundant filtering logic
+
+**Performance Benefits Achieved:**
+- **API Call Reduction**: Companies with recent activity use shorter lookback periods (2-5 days vs 30 days)
+- **Processing Time Reduction**: Fewer jobs to process per company on average
+- **Adaptive Behavior**: Inactive companies automatically get longer lookback periods to catch sporadic posts
+- **Resource Optimization**: Different companies can have different resource requirements based on activity
+
+**Technical Implementation:**
+- **Shared Utility Module**: `transformations/dynamic_lookback.py` with reusable functions
+- **Consistent Interface**: All discovery assets use identical configuration and logging patterns
+- **Robust Error Handling**: Graceful fallbacks for edge cases and missing data
+- **Comprehensive Logging**: Per-company lookback periods tracked in asset metadata
+
+## **STEP 2 Implementation: Stage Processing Layer (Transformation)**
+
+**Phase 2A: Watermark System**
+1. Create `transformations/watermark_management.py` utility module
+2. Implement watermark tracking and retrieval functions
+3. Add overlap cushion logic for late-arriving data
+4. Handle edge cases (first run, failed runs, data gaps)
+
+**Phase 2B: Stage Assets Updates**
+1. Update `stage_jobs_bamboohr.py` to use incremental processing
+2. Update `stage_jobs_greenhouse.py` to use incremental processing
+3. Update `stage_jobs_workday.py` to use incremental processing
+4. Update `stage_jobs_smartrecruiters.py` to use incremental processing
+5. Implement MERGE upsert patterns replacing DELETE + INSERT
+
+**Phase 2C: Stage Layer Testing**
+1. Test incremental vs full refresh scenarios
+2. Validate data consistency and deduplication with incremental updates
+3. Performance testing and optimization
+4. Test watermark recovery after failures
+
+## **STEP 3: Integration and Monitoring**
+
+**Phase 3A: End-to-End Integration**
+1. Integrate both layers for complete incremental pipeline
+2. Test full pipeline performance improvements
+3. Validate data quality maintained across incremental runs
+4. Load testing with production data volumes
+
+**Phase 3B: Monitoring and Alerting**
+1. Add incremental processing metrics to Dagster metadata
+2. Monitor processing times and data volume reductions
+3. Set up alerts for watermark drift and processing anomalies
+4. Create troubleshooting guides and runbooks
 
 ### Success Criteria
 - ✅ 80%+ reduction in routine processing time
@@ -585,19 +708,225 @@ WHEN NOT MATCHED THEN
 **Configuration Options:**
 ```python
 class IncrementalConfig(Config):
+    """Comprehensive configuration for incremental processing."""
+
+    # Discovery Layer Configuration
+    enable_dynamic_lookback: bool = True
+    lookback_cushion_days: int = 2         # Safety cushion added to calculated lookback
+    min_lookback_days: int = 2            # Minimum lookback period (configurable)
+    max_lookback_days: int = 90            # Maximum lookback period
+    default_lookback_days: int = 15       # Default for new companies
+
+    # Stage Processing Configuration
     force_full_refresh: bool = False
-    watermark_overlap_hours: int = 2
-    min_lookback_days: int = 14
-    max_lookback_days: int = 90
+    watermark_overlap_hours: int = 2       # Overlap cushion for watermark processing
     enable_incremental: bool = True
+
+    # Quality and Performance Controls
+    enable_quality_checks: bool = True
+    max_processing_time_minutes: int = 60  # Timeout for incremental processing
 ```
 
 ### Files Affected
-- `transformations/incremental_processing.py` (new)
-- `transformations/watermark_management.py` (new)
-- All `assets/stage_jobs_*.py` (add incremental processing)
-- All jobs discovery assets (dynamic lookback)
-- Configuration and schema updates
+
+**STEP 1: Jobs Discovery Layer (RAW Data Ingestion)**
+- `transformations/dynamic_lookback.py` (new) - Dynamic lookback calculation utilities
+- `assets/bamboohr_company_jobs_discovery.py` - Add dynamic lookback logic
+- `assets/greenhouse_company_jobs_discovery.py` - Add dynamic lookback logic
+- `assets/workday_company_jobs_discovery.py` - Add dynamic lookback logic
+- `assets/smartrecruiters_company_jobs_discovery.py` - Add dynamic lookback logic
+
+**STEP 2: Stage Processing Layer (Data Transformation)**
+- `transformations/watermark_management.py` (new) - Watermark tracking utilities
+- `transformations/incremental_processing.py` (new) - Incremental processing logic
+- `assets/stage_jobs_bamboohr.py` - Add incremental processing and MERGE upserts
+- `assets/stage_jobs_greenhouse.py` - Add incremental processing and MERGE upserts
+- `assets/stage_jobs_workday.py` - Add incremental processing and MERGE upserts
+- `assets/stage_jobs_smartrecruiters.py` - Add incremental processing and MERGE upserts
+- `assets/stage_jobs_unified.py` - Update combiner for incremental mode
+
+**Configuration and Monitoring**
+- Configuration classes for incremental settings
+- Dagster metadata and monitoring enhancements
+- Alert definitions and troubleshooting documentation
+
+---
+
+## ENHANCEMENT-005: Job Search Layer Migration - Stage Data Integration
+
+**Status:** Planned
+**Priority:** Medium
+**Component:** Job Search and Analytics
+**Date Planned:** 2025-01-28
+
+### Description
+Migrate the job search functionality from depending on RAW discovery assets to using the cleaned, enriched, and deduplicated data from the STAGE layer. This will significantly improve search result quality and consistency.
+
+### Business Justification
+- **Better Search Quality**: Use cleaned job titles and descriptions instead of raw, inconsistent data
+- **Unified Schema**: Search across standardized data structure with consistent field names
+- **Deduplication Benefits**: Eliminate duplicate results from cross-platform job postings
+- **Enhanced Data**: Leverage language detection, quality scores, and data enrichments
+- **Performance**: Search against processed data instead of multiple raw table queries
+- **Reliability**: Depend on validated, transformed data rather than potentially inconsistent raw feeds
+
+### Technical Approach
+
+**Current Architecture (Raw Data Dependency):**
+```python
+# Current job_search.py dependencies
+deps=["greenhouse_company_jobs_discovery", "bamboohr_company_jobs_discovery",
+      "smartrecruiters_company_jobs_discovery", "workday_company_jobs_discovery"]
+
+# Current approach: Query multiple platform-specific raw tables
+tables_to_query = [
+    f"{dataset_name}.greenhouse_jobs",
+    f"{dataset_name}.bamboohr_jobs",
+    f"{dataset_name}.smartrecruiters_jobs",
+    f"{dataset_name}.workday_jobs"
+]
+```
+
+**New Architecture (Stage Data Dependency):**
+```python
+# New job_search.py dependency
+deps=["stage_jobs_unified"]
+
+# New approach: Single unified table query
+def search_jobs_stage_data(context, config):
+    """
+    Search jobs using cleaned, enriched stage data.
+
+    Benefits:
+    - Unified schema across all platforms
+    - Cleaned job titles and descriptions
+    - Deduplicated results (no cross-platform duplicates)
+    - Quality scores for ranking
+    - Language detection for filtering
+    - Standardized location data
+    """
+    query = f"""
+    SELECT
+        job_uid,
+        job_id,
+        platform,
+        company_id,
+        company_name_clean,
+        job_title_clean,
+        job_description_clean,
+        location_standardized,
+        job_url,
+        date_posted,
+        date_retrieved,
+        is_active,
+        employment_status,
+        department,
+        detected_language,
+        language_confidence,
+        is_english,
+        data_quality_score,
+        transformation_timestamp
+    FROM {database_name}.STAGE.jobs_unified
+    WHERE is_active = TRUE
+    AND partition_date >= CURRENT_DATE - {config.days_back}
+    """
+```
+
+**Enhanced Search Features with Stage Data:**
+```python
+class EnhancedJobSearchConfig(Config):
+    # Existing search parameters
+    keywords: List[str] = []
+    job_titles: List[str] = []
+    excluded_keywords: List[str] = []
+    locations: List[str] = []
+
+    # New stage-data specific filters
+    min_quality_score: float = 0.5  # Filter by data quality
+    language_filter: str = "english"  # Filter by detected language
+    language_confidence_min: float = 0.8  # Minimum language detection confidence
+    platforms: List[str] = ["all"]  # Filter by specific platforms
+
+    # Enhanced ranking options
+    rank_by_quality: bool = True  # Use quality score in ranking
+    rank_by_recency: bool = True  # Prioritize recent postings
+    deduplicate_cross_platform: bool = True  # Remove cross-platform duplicates
+```
+
+**Advanced Search Capabilities:**
+- **Quality-based Filtering**: Use `data_quality_score` to filter out low-quality job postings
+- **Language Intelligence**: Use `detected_language` and `language_confidence` for precise language filtering
+- **Smart Deduplication**: Leverage UID-based deduplication to avoid showing same job multiple times
+- **Enhanced Text Search**: Search on cleaned `job_title_clean` and `job_description_clean` fields
+- **Unified Location Search**: Use standardized `location_standardized` field for consistent location filtering
+
+### Implementation Plan
+
+**Phase 1: Schema Analysis and Mapping**
+1. Analyze current job_search.py query structure and field mappings
+2. Map existing raw data fields to new stage data schema
+3. Identify new opportunities with enriched stage data fields
+4. Document field mapping and transformation requirements
+
+**Phase 2: Search Logic Refactoring**
+1. Refactor job search queries to use single `STAGE.jobs_unified` table
+2. Update field references to use cleaned/standardized field names
+3. Implement quality-based filtering and ranking logic
+4. Add language detection-based filtering capabilities
+5. Leverage UID-based deduplication for result uniqueness
+
+**Phase 3: Enhanced Search Features**
+1. Add data quality score filtering and ranking
+2. Implement language confidence-based filtering
+3. Add platform-specific filtering using unified schema
+4. Enhance location search using standardized location data
+5. Add cross-platform duplicate detection and removal
+
+**Phase 4: Configuration and Testing**
+1. Update JobSearchConfig with new stage-specific options
+2. Implement backward compatibility for existing search parameters
+3. Add comprehensive testing of search quality improvements
+4. Performance testing against stage data vs raw data queries
+5. Validate search result accuracy and completeness
+
+**Phase 5: Migration and Monitoring**
+1. Update asset dependencies from raw discovery to stage_jobs_unified
+2. Deploy search functionality with stage data integration
+3. Monitor search performance and result quality
+4. Add metrics comparing stage-based vs raw-based search results
+5. Update documentation and user guides
+
+### Success Criteria
+- ✅ Job search uses single unified stage table instead of multiple raw tables
+- ✅ Search results show improved quality and consistency
+- ✅ Cross-platform duplicates are eliminated from search results
+- ✅ Enhanced filtering options using quality scores and language detection
+- ✅ Maintained or improved search performance
+- ✅ Backward compatibility with existing search configurations
+- ✅ Comprehensive monitoring of search quality metrics
+
+### Technical Considerations
+**Data Availability:**
+- Ensure stage_jobs_unified processes before job search runs
+- Handle cases where stage data might be temporarily unavailable
+- Implement fallback strategies if needed
+
+**Search Performance:**
+- Index optimization on STAGE.jobs_unified for search queries
+- Query performance comparison between single table vs multi-table approach
+- Caching strategies for frequently accessed search results
+
+**Data Freshness:**
+- Account for stage processing delay vs real-time raw data
+- Balance data quality improvements vs data freshness requirements
+- Monitor and alert on stage data staleness
+
+### Files Affected
+- `assets/job_search.py` - Major refactoring to use stage data
+- `transformations/search_utilities.py` (new) - Stage-specific search logic
+- Search configuration classes and documentation
+- Test suites for enhanced search functionality
+- Monitoring and metrics for search quality tracking
 
 ---
 
