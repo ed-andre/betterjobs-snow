@@ -89,7 +89,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
         for platform in config.platforms_to_validate:
             context.log.info(f"📊 Validating platform: {platform}")
 
-            # Check platform data exists for today
+            # Check platform data exists for today and detect processing mode
             cursor.execute(f"""
             SELECT
                 COUNT(*) as job_count,
@@ -97,13 +97,25 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                 COUNT(DISTINCT job_uid) as unique_uids,
                 AVG(data_quality_score) as avg_quality_score,
                 MIN(transformation_timestamp) as earliest_transform,
-                MAX(transformation_timestamp) as latest_transform
+                MAX(transformation_timestamp) as latest_transform,
+                -- Detect if this was likely incremental processing (recent timestamps within last 2 hours)
+                COUNT(CASE WHEN transformation_timestamp >= CURRENT_TIMESTAMP - INTERVAL '2 hours' THEN 1 END) as recent_jobs,
+                -- Get processing time spread
+                DATEDIFF('minute', MIN(transformation_timestamp), MAX(transformation_timestamp)) as processing_minutes
             FROM {database_name}.{stage_schema}.jobs_unified
             WHERE platform = %s AND partition_date = %s
             """, (platform, date.today()))
 
             result = cursor.fetchone()
             if result and result[0] > 0:
+                # Detect processing mode based on timestamp patterns
+                total_jobs_platform = result[0]
+                recent_jobs_platform = result[6] if result[6] else 0
+                processing_minutes = result[7] if result[7] else 0
+
+                # Heuristic: if >80% of jobs have recent timestamps, likely incremental
+                processing_mode = "incremental" if recent_jobs_platform / total_jobs_platform > 0.8 else "full_refresh"
+
                 platform_stat = {
                     "job_count": result[0],
                     "company_count": result[1],
@@ -111,13 +123,16 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                     "avg_quality_score": float(result[3]) if result[3] else 0.0,
                     "earliest_transform": result[4],
                     "latest_transform": result[5],
+                    "recent_jobs": recent_jobs_platform,
+                    "processing_minutes": processing_minutes,
+                    "detected_processing_mode": processing_mode,
                     "status": "success"
                 }
 
                 total_jobs += result[0]
                 total_companies += result[1]
 
-                context.log.info(f"✅ {platform}: {result[0]} jobs, {result[1]} companies, avg quality: {result[3]:.3f}")
+                context.log.info(f"✅ {platform}: {result[0]} jobs, {result[1]} companies, avg quality: {result[3]:.3f} ({processing_mode})")
                 stats["platforms_validated"].append(platform)
             else:
                 platform_stat = {
@@ -185,7 +200,19 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
 
         # Cross-platform duplicate analysis and deduplication
         if config.enable_cross_platform_deduplication:
-            context.log.info("🔍 Analyzing and removing cross-platform duplicates...")
+            # Detect if this looks like an incremental run
+            incremental_platforms = [p for p in platform_stats.values()
+                                   if p.get("detected_processing_mode") == "incremental" and p.get("status") == "success"]
+            is_likely_incremental = len(incremental_platforms) > 0
+
+            if is_likely_incremental:
+                context.log.info("🔍 Analyzing cross-platform duplicates (incremental mode - focusing on recent data)...")
+                # For incremental runs, focus on conflicts involving recently processed data
+                recent_threshold = "CURRENT_TIMESTAMP - INTERVAL '4 hours'"
+            else:
+                context.log.info("🔍 Analyzing cross-platform duplicates (full refresh mode)...")
+                # For full refresh, check all data for today
+                recent_threshold = "'1900-01-01'"
 
             # First, identify jobs with same job_id across different platforms
             cursor.execute(f"""
@@ -194,11 +221,15 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                     job_id,
                     COUNT(DISTINCT platform) as platform_count,
                     MIN(transformation_timestamp) as earliest_transform,
-                    MIN(platform) as earliest_platform
+                    MIN(platform) as earliest_platform,
+                    -- Track if any involved jobs were recently processed
+                    MAX(CASE WHEN transformation_timestamp >= {recent_threshold} THEN 1 ELSE 0 END) as has_recent_jobs
                 FROM {database_name}.{stage_schema}.jobs_unified
                 WHERE partition_date = %s
                 GROUP BY job_id
                 HAVING COUNT(DISTINCT platform) > 1
+                -- For incremental runs, only process duplicates involving recently processed jobs
+                AND (NOT %s OR MAX(CASE WHEN transformation_timestamp >= {recent_threshold} THEN 1 ELSE 0 END) = 1)
             ),
             duplicates_to_remove AS (
                 SELECT j.job_uid, j.platform, j.job_id
@@ -210,7 +241,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
             )
             SELECT COUNT(*) as duplicates_to_remove_count
             FROM duplicates_to_remove
-            """, (date.today(), date.today()))
+            """, (date.today(), is_likely_incremental, date.today()))
 
             result = cursor.fetchone()
             duplicates_to_remove = result[0] if result else 0
@@ -225,11 +256,13 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                         job_id,
                         COUNT(DISTINCT platform) as platform_count,
                         MIN(transformation_timestamp) as earliest_transform,
-                        MIN(platform) as earliest_platform
+                        MIN(platform) as earliest_platform,
+                        MAX(CASE WHEN transformation_timestamp >= {recent_threshold} THEN 1 ELSE 0 END) as has_recent_jobs
                     FROM {database_name}.{stage_schema}.jobs_unified
                     WHERE partition_date = %s
                     GROUP BY job_id
                     HAVING COUNT(DISTINCT platform) > 1
+                    AND (NOT %s OR MAX(CASE WHEN transformation_timestamp >= {recent_threshold} THEN 1 ELSE 0 END) = 1)
                 ),
                 duplicates_to_remove AS (
                     SELECT j.job_uid, j.platform, j.job_id, j.job_title_clean
@@ -242,7 +275,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                 SELECT platform, job_id, job_title_clean
                 FROM duplicates_to_remove
                 LIMIT 10
-                """, (date.today(), date.today()))
+                """, (date.today(), is_likely_incremental, date.today()))
 
                 sample_removals = cursor.fetchall()
                 context.log.warning("Sample jobs being removed (keeping earliest by timestamp, then platform name):")
@@ -256,11 +289,13 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                         job_id,
                         COUNT(DISTINCT platform) as platform_count,
                         MIN(transformation_timestamp) as earliest_transform,
-                        MIN(platform) as earliest_platform
+                        MIN(platform) as earliest_platform,
+                        MAX(CASE WHEN transformation_timestamp >= {recent_threshold} THEN 1 ELSE 0 END) as has_recent_jobs
                     FROM {database_name}.{stage_schema}.jobs_unified
                     WHERE partition_date = %s
                     GROUP BY job_id
                     HAVING COUNT(DISTINCT platform) > 1
+                    AND (NOT %s OR MAX(CASE WHEN transformation_timestamp >= {recent_threshold} THEN 1 ELSE 0 END) = 1)
                 ),
                 duplicates_to_remove AS (
                     SELECT j.job_uid
@@ -272,7 +307,7 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                 )
                 DELETE FROM {database_name}.{stage_schema}.jobs_unified
                 WHERE job_uid IN (SELECT job_uid FROM duplicates_to_remove)
-                """, (date.today(), date.today()))
+                """, (date.today(), is_likely_incremental, date.today()))
 
                 removed_count = cursor.rowcount
                 conn.commit()
@@ -309,11 +344,19 @@ def stage_jobs_unified(context: AssetExecutionContext, config: StageJobsUnifiedC
                 # Add Dagster metadata
         final_job_count = stats["unified_statistics"].get("total_jobs_after_deduplication", total_jobs)
 
+        # Calculate incremental processing metrics
+        incremental_platforms = [p for p in platform_stats.values()
+                               if p.get("detected_processing_mode") == "incremental" and p.get("status") == "success"]
+        total_recent_jobs = sum(p.get("recent_jobs", 0) for p in platform_stats.values() if p.get("status") == "success")
+
         context.add_output_metadata({
             "total_jobs_initial": MetadataValue.int(total_jobs),
             "total_jobs_final": MetadataValue.int(final_job_count),
             "total_companies": MetadataValue.int(total_companies),
             "platforms_processed": MetadataValue.int(successful_platforms),
+            "incremental_platforms": MetadataValue.int(len(incremental_platforms)),
+            "recent_jobs_processed": MetadataValue.int(total_recent_jobs),
+            "processing_mode_detected": MetadataValue.text("incremental" if len(incremental_platforms) > 0 else "full_refresh"),
             "cross_platform_uid_valid": MetadataValue.bool(stats["cross_platform_validation"].get("is_valid", False)),
             "unique_uids": MetadataValue.int(stats["cross_platform_validation"].get("unique_uids", 0)),
             "cross_platform_duplicates_removed": MetadataValue.int(stats.get("cross_platform_duplicates_removed", 0)),
