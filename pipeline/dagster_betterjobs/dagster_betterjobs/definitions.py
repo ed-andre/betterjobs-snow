@@ -38,6 +38,7 @@ from dagster_betterjobs.assets.raw_company_profiles import (
 from dagster_betterjobs.io import BetterJobsIOManager
 from dagster_betterjobs.jobs import (
     data_engineering_job,
+    enhanced_data_engineering_job,
     full_jobs_discovery_job,
     bamboohr_jobs_discovery_job,
     greenhouse_jobs_discovery_job,
@@ -149,6 +150,7 @@ defs = Definitions(
     resources=resources,
     jobs=[
         data_engineering_job,
+        enhanced_data_engineering_job,
         full_jobs_discovery_job,
         bamboohr_jobs_discovery_job,
         greenhouse_jobs_discovery_job,

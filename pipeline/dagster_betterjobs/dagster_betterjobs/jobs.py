@@ -1,3 +1,19 @@
+"""
+Job Definitions for BetterJobs Pipeline
+
+ENHANCEMENT-005 COMPATIBILITY NOTES:
+The search_jobs asset has been migrated from RAW to STAGE data dependency.
+- Enhanced search capabilities with quality scoring and language detection
+- Better performance using single unified table
+- Cross-platform deduplication built-in
+- Cleaned and standardized data for improved search accuracy
+
+Job Updates:
+- data_engineering_job: Updated with enhanced STAGE parameters
+- enhanced_data_engineering_job: New job showcasing full STAGE capabilities
+- full_jobs_discovery_and_search_job: Updated to include full pipeline from RAW to STAGE to SEARCH
+"""
+
 from dagster import (
     AssetSelection,
     define_asset_job,
@@ -168,14 +184,14 @@ full_jobs_discovery_except_icims_job = define_asset_job(
 data_engineering_job = define_asset_job(
     name="data_engineering_job",
     selection=AssetSelection.assets("search_jobs"),
-    description="Job that searches for SQL Developer, Database Developer, and Data Engineer positions in NY, NJ, or remote",
+    description="Job that searches for SQL Developer, Database Developer, and Data Engineer positions in NY, NJ, or remote using enhanced STAGE data",
     config=RunConfig(
         ops={
             "search_jobs": {
                 "config": {
-                    "keywords": ["SQL", "database", "ETL", "pipeline", "data engineer"],
+                    "keywords": ["SQL", "database", "Data", "ETL", "pipeline", "data engineer", "snowflake", "dbt", "airflow", "dagster", "BigQuery", "SQL Server", "SSIS"],
                     "job_titles": ["SQL", "Database", "Data", "Software", "BI ", "Developer", "Engineer", "Analyst"],
-                    "excluded_keywords": ["overseas only", "non-US", "offshore"],
+                    "excluded_keywords": ["overseas only", "non-US", "offshore", "India"],
                     "locations": ["New York", "New Jersey", "NY", "NJ", "Location", ""],
                     "remote": True,
                     "days_back": 10,
@@ -184,7 +200,46 @@ data_engineering_job = define_asset_job(
                     "platforms": ["greenhouse", "bamboohr", "smartrecruiters", "workday"],
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "data_engineering_jobs_{date}.html"),
-                    "include_descriptions": True
+                    "include_descriptions": True,
+                    # Enhanced STAGE data parameters for better results
+                    "min_quality_score": 0.3,  # Lower than default to avoid filtering too aggressively
+                    "language_filter": "english",  # Focus on English jobs for US market
+                    "language_confidence_min": 0.7,  # Slightly lower confidence threshold
+                    "rank_by_quality": True,  # Prioritize high-quality job postings
+                    "rank_by_recency": True  # Also prioritize recent postings
+                }
+            }
+        }
+    )
+)
+
+# Define a job for enhanced data engineering position search using existing STAGE data
+enhanced_data_engineering_job = define_asset_job(
+    name="enhanced_data_engineering_job",
+    selection=AssetSelection.assets("search_jobs"),
+    description="Enhanced job search using cleaned STAGE data for SQL Developer, Database Developer, and Data Engineer positions - no discovery needed",
+    config=RunConfig(
+        ops={
+            "search_jobs": {
+                "config": {
+                    "keywords": ["SQL", "database", "Data", "ETL", "pipeline", "data engineer", "snowflake", "dbt", "airflow", "dagster", "BigQuery", "SQL Server", "SSIS"],
+                    "job_titles": ["SQL", "Database", "Data", "Software", "BI ", "Developer", "Engineer", "Analyst", "Scientist"],
+                    "excluded_keywords": ["overseas only", "non-US", "offshore", "intern", "unpaid", "India"],
+                    "locations": ["New York", "New Jersey", "NY", "NJ", "Location", ""],
+                    "remote": True,
+                    "days_back": 14,
+                    "max_results": 1000,
+                    "min_match_score": 0.2,
+                    "platforms": ["all"],  # Search all available platforms
+                    "output_format": "html",
+                    "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "enhanced_data_engineering_jobs_{date}.html"),
+                    "include_descriptions": True,
+                    # Take full advantage of STAGE data enhancements
+                    "min_quality_score": 0.4,  # Higher quality threshold for better results
+                    "language_filter": "english",  # English jobs for US market
+                    "language_confidence_min": 0.8,  # High confidence in language detection
+                    "rank_by_quality": True,  # Prioritize high-quality job postings
+                    "rank_by_recency": True  # Prioritize recent postings
                 }
             }
         }
@@ -218,6 +273,7 @@ def full_jobs_discovery_and_search_partitioned_config(partition_key: str):
             "greenhouse_company_jobs_discovery": {"config": {}},
             "workday_company_jobs_discovery": {"config": {}},
             "smartrecruiters_company_jobs_discovery": {"config": {}},
+            "bamboohr_company_jobs_discovery": {"config": {}},
             "search_jobs": {
                 "config": {
                     "keywords": ["SQL", "database", "ETL", "pipeline", "data engineer"],
@@ -231,7 +287,13 @@ def full_jobs_discovery_and_search_partitioned_config(partition_key: str):
                     "platforms": ["greenhouse", "workday", "bamboohr", "smartrecruiters"],
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "data_engineering_jobs_{date}.html"),
-                    "include_descriptions": True
+                    "include_descriptions": True,
+                    # Enhanced STAGE data parameters for better results
+                    "min_quality_score": 0.3,  # Lower than default to avoid filtering too aggressively
+                    "language_filter": "english",  # Focus on English jobs for US market
+                    "language_confidence_min": 0.7,  # Slightly lower confidence threshold
+                    "rank_by_quality": True,  # Prioritize high-quality job postings
+                    "rank_by_recency": True  # Also prioritize recent postings
                 }
             }
         }
@@ -244,9 +306,14 @@ full_jobs_discovery_and_search_job = define_asset_job(
         "workday_company_jobs_discovery",
         "smartrecruiters_company_jobs_discovery",
         "bamboohr_company_jobs_discovery",
+        "stage_jobs_bamboohr",
+        "stage_jobs_greenhouse",
+        "stage_jobs_workday",
+        "stage_jobs_smartrecruiters",
+        "stage_jobs_unified",
         "search_jobs"
     ],
-    description="Job that discovers and collects job listings from all supported platforms plus job search",
+    description="Job that discovers and collects job listings from all supported platforms, processes them through STAGE layer, and performs enhanced job search",
     partitions_def=alpha_partitions,
     config=full_jobs_discovery_and_search_partitioned_config
 )

@@ -2,7 +2,6 @@ import os
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set, Any
-from google.cloud import bigquery
 from pathlib import Path
 import re
 import html
@@ -14,7 +13,7 @@ from dagster import (
 logger = get_dagster_logger()
 
 class JobSearchConfig(Config):
-    """Configuration parameters for job search."""
+    """Configuration parameters for job search using enhanced STAGE data."""
     # Search parameters
     keywords: List[str] = []  # List of keywords to search for
     job_titles: List[str] = []  # Specific job titles to search for
@@ -23,12 +22,22 @@ class JobSearchConfig(Config):
     remote: bool = None  # Include remote jobs (None = don't filter)
 
     # ATS platforms to include
-    platforms: List[str] = ["all"]  # Options: "all", "greenhouse", "bamboohr", etc.
+    platforms: List[str] = ["all"]  # Options: "all", "greenhouse", "bamboohr", "workday", "smartrecruiters"
 
     # Date range
     days_back: int = 3  # Default to last 3 days
     date_from: Optional[str] = None  # Format: "YYYY-MM-DD"
     date_to: Optional[str] = None  # Format: "YYYY-MM-DD"
+
+    # Enhanced stage-data specific filters
+    min_quality_score: float = 0.5  # Filter by data quality
+    language_filter: str = "english"  # Filter by detected language ("english", "all")
+    language_confidence_min: float = 0.8  # Minimum language detection confidence
+
+    # Enhanced ranking options
+    rank_by_quality: bool = True  # Use quality score in ranking
+    rank_by_recency: bool = True  # Prioritize recent postings
+    deduplicate_cross_platform: bool = True  # Remove cross-platform duplicates (already done in STAGE)
 
     # Results control
     max_results: int = 500  # Limit number of results
@@ -42,20 +51,29 @@ class JobSearchConfig(Config):
 
 @asset(
     group_name="job_search",
-    kinds={"bigquery", "python"},
-    required_resource_keys={"bigquery"},
-    deps=["greenhouse_company_jobs_discovery", "bamboohr_company_jobs_discovery", "smartrecruiters_company_jobs_discovery", "workday_company_jobs_discovery"]
+    kinds={"snowflake", "python"},
+    required_resource_keys={"snowflake"},
+    deps=["stage_jobs_unified"]  # Changed from multiple RAW discovery assets to single STAGE asset
 )
 def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.DataFrame:
     """
-    Search for jobs across multiple platforms with flexible filtering options.
+    Search for jobs using cleaned, enriched, and deduplicated data from the STAGE layer.
 
-    This asset can search across different job tables (Greenhouse, BambooHR, SmartRecruiters, etc.)
-    with filtering by keywords, job titles, locations, and date ranges.
+    This enhanced version provides:
+    - Unified schema across all platforms
+    - Cleaned job titles and descriptions
+    - Deduplicated results (no cross-platform duplicates)
+    - Quality scores for filtering and ranking
+    - Language detection for filtering
+    - Standardized location data
+    - Enhanced search capabilities
+
+    ENHANCEMENT-005: Job Search Layer Migration - Stage Data Integration
     """
-    # Initialize BigQuery client
-    client = context.resources.bigquery
-    dataset_name = os.getenv("GCP_DATASET_ID")
+    # Initialize Snowflake connection
+    conn = context.resources.snowflake.get_connection()
+    database_name = "BETTERJOBS_DB"
+    stage_schema = "STAGE"
 
     # Track execution stats
     stats = {
@@ -67,283 +85,283 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
             "keywords": config.keywords,
             "job_titles": config.job_titles,
             "locations": config.locations,
+            "language_filter": config.language_filter,
+            "min_quality_score": config.min_quality_score,
             "date_range": f"{config.days_back} days" if not config.date_from else f"{config.date_from} to {config.date_to or 'now'}"
         }
     }
 
     # Log search parameters
-    context.log.info(f"Searching for jobs with parameters: {stats['search_params']}")
+    context.log.info(f"🔍 Searching STAGE data with parameters: {stats['search_params']}")
 
-    # Determine which tables to query based on platforms
-    tables_to_query = []
-    if "all" in config.platforms or "greenhouse" in config.platforms:
-        tables_to_query.append(f"{dataset_name}.greenhouse_jobs")
-    if "all" in config.platforms or "bamboohr" in config.platforms:
-        tables_to_query.append(f"{dataset_name}.bamboohr_jobs")
-    if "all" in config.platforms or "smartrecruiters" in config.platforms:
-        tables_to_query.append(f"{dataset_name}.smartrecruiters_jobs")
-    if "all" in config.platforms or "workday" in config.platforms:
-        tables_to_query.append(f"{dataset_name}.workday_jobs")
-    # Add additional platform tables as they become available
-
-    context.log.info(f"Querying tables: {tables_to_query}")
-
-    # Prepare date filters
-    date_from = None
-    date_to = datetime.now().strftime("%Y-%m-%d")
-
-    if config.date_from:
-        date_from = config.date_from
-    elif config.days_back > 0:
-        date_from = (datetime.now() - timedelta(days=config.days_back)).strftime("%Y-%m-%d")
-
-    if config.date_to:
-        date_to = config.date_to
-
-    # Build the combined search results
-    combined_results = pd.DataFrame()
+    cursor = conn.cursor()
     start_time = datetime.now()
 
-    # Process each table
-    for table in tables_to_query:
-        platform = table.split(".")[-1].replace("_jobs", "")
-        context.log.info(f"Searching {platform} jobs...")
+    try:
+        # Prepare date filters
+        date_from = None
+        date_to = datetime.now().strftime("%Y-%m-%d")
 
-        # Determine date column based on platform
-        if platform == "greenhouse" or platform == "smartrecruiters" or platform == "workday":
-            date_col = "published_at"
-        else:
-            date_col = "date_posted"
+        if config.date_from:
+            date_from = config.date_from
+        elif config.days_back > 0:
+            date_from = (datetime.now() - timedelta(days=config.days_back)).strftime("%Y-%m-%d")
 
-        # Determine if department column exists for this platform
-        include_department = platform in ["greenhouse", "bamboohr", "smartrecruiters"]
-        department_col = "j.department," if include_department else ""
+        if config.date_to:
+            date_to = config.date_to
 
-        # Start building query
+        # Build the unified search query using STAGE.jobs_unified
         query = f"""
         SELECT
-            '{platform}' as platform,
-            j.job_id,
-            j.company_id,
-            c.company_name,
-            j.job_title,
-            {"j.job_description," if config.include_descriptions else ""}
-            j.job_url,
-            j.location,
-            {department_col}
-            {date_col} as posting_date,
-            j.date_retrieved,
-            {"j.raw_data," if config.include_raw_data else ""}
-            j.is_active
-        FROM {table} j
-        LEFT JOIN {dataset_name}.master_company_urls c ON j.company_id = c.company_id
-        WHERE j.is_active = TRUE
+            job_uid,
+            job_id,
+            platform,
+            company_id,
+            company_name_clean as company_name,
+            job_title_clean as job_title,
+            {"job_description_clean as job_description," if config.include_descriptions else ""}
+            location_standardized as location,
+            job_url,
+            date_posted as posting_date,
+            date_retrieved,
+            is_active,
+            employment_status,
+            department,
+            detected_language,
+            language_confidence,
+            is_english,
+            data_quality_score,
+            {"raw_data," if config.include_raw_data else ""}
+            transformation_timestamp
+        FROM {database_name}.{stage_schema}.jobs_unified
+        WHERE is_active = TRUE
         """
 
         # Add date filters
         if date_from:
-            query += f" AND {date_col} >= '{date_from}'"
+            query += f" AND date_posted >= '{date_from}'"
         if date_to:
-            query += f" AND {date_col} <= '{date_to}'"
+            query += f" AND date_posted <= '{date_to}'"
+
+        # Add platform filters
+        if config.platforms and "all" not in config.platforms:
+            platform_list = "', '".join(config.platforms)
+            query += f" AND platform IN ('{platform_list}')"
+
+        # Add language filters using enhanced STAGE data
+        if config.language_filter == "english":
+            query += f" AND is_english = TRUE"
+            if config.language_confidence_min > 0:
+                query += f" AND language_confidence >= {config.language_confidence_min}"
+        elif config.language_filter != "all":
+            query += f" AND detected_language = '{config.language_filter}'"
+            if config.language_confidence_min > 0:
+                query += f" AND language_confidence >= {config.language_confidence_min}"
+
+        # Add quality score filter
+        if config.min_quality_score > 0:
+            query += f" AND data_quality_score >= {config.min_quality_score}"
 
         # Add keyword filters
         if config.keywords:
-            # We want to match ANY keyword in EITHER title OR description
-            keyword_title_conditions = []
-            keyword_desc_conditions = []
-
+            # Search in cleaned title and description fields
+            keyword_conditions = []
             for keyword in config.keywords:
-                keyword_title_conditions.append(f"LOWER(job_title) LIKE LOWER('%{keyword}%')")
+                keyword_conditions.append(f"LOWER(job_title_clean) LIKE LOWER('%{keyword}%')")
                 if config.include_descriptions:
-                    keyword_desc_conditions.append(f"LOWER(job_description) LIKE LOWER('%{keyword}%')")
+                    keyword_conditions.append(f"LOWER(job_description_clean) LIKE LOWER('%{keyword}%')")
 
-            # Combine title and description conditions with OR
-            all_keyword_conditions = keyword_title_conditions + keyword_desc_conditions
-            query += f" AND ({' OR '.join(all_keyword_conditions)})"
+            # Combine with OR (any keyword match)
+            query += f" AND ({' OR '.join(keyword_conditions)})"
+            context.log.info(f"Applied keyword conditions: {len(keyword_conditions)} total")
 
-            # Debug info
-            context.log.info(f"Keyword conditions: {' OR '.join(all_keyword_conditions)}")
-
-        # Add job title filters - at least one must match
+        # Add job title filters
         if config.job_titles:
             title_conditions = []
             for title in config.job_titles:
-                title_conditions.append(f"LOWER(job_title) LIKE LOWER('%{title}%')")
+                title_conditions.append(f"LOWER(job_title_clean) LIKE LOWER('%{title}%')")
 
-            # We want an OR between all job title conditions (any match is good)
             query += f" AND ({' OR '.join(title_conditions)})"
+            context.log.info(f"Applied job title conditions: {len(title_conditions)} total")
 
-            # Debug info
-            context.log.info(f"Title conditions: {' OR '.join(title_conditions)}")
-
-        # Add location filters - at least one must match
+        # Add location filters using standardized location data
         location_or_remote_conditions = []
 
         if config.locations:
             for location in config.locations:
-                # Properly escape single quotes in location names
+                # Use standardized location field for better matching
                 safe_location = location.replace("'", "''")
-
-                # Special case for empty string - use equality check
                 if location == "":
-                    location_or_remote_conditions.append("LOWER(location) = ''")
+                    location_or_remote_conditions.append("LOWER(location_standardized) = ''")
                 else:
-                    # Add "Location" as a match and handle multiple locations indicator
-                    location_or_remote_conditions.extend([
-                        f"LOWER(location) LIKE LOWER('%{safe_location}%')",
-                        f"LOWER(location) LIKE LOWER('%Location%')",
-                        f"LOWER(location) LIKE LOWER('%locations%')"
-                    ])
+                    location_or_remote_conditions.append(f"LOWER(location_standardized) LIKE LOWER('%{safe_location}%')")
 
         # Add remote filter
         if config.remote is not None and config.remote:
             # Include jobs that mention remote in title or location
-            location_or_remote_conditions.append("LOWER(location) LIKE LOWER('%remote%')")
-            location_or_remote_conditions.append("LOWER(job_title) LIKE LOWER('%remote%')")
+            location_or_remote_conditions.extend([
+                "LOWER(location_standardized) LIKE LOWER('%remote%')",
+                "LOWER(job_title_clean) LIKE LOWER('%remote%')"
+            ])
             context.log.info("Adding remote filter: Include remote jobs")
         elif config.remote is not None and not config.remote:
             # Exclude jobs that mention remote in title or location
-            query += f" AND NOT (LOWER(location) LIKE LOWER('%remote%') OR LOWER(job_title) LIKE LOWER('%remote%'))"
+            query += f" AND NOT (LOWER(location_standardized) LIKE LOWER('%remote%') OR LOWER(job_title_clean) LIKE LOWER('%remote%'))"
             context.log.info("Adding remote filter: Exclude remote jobs")
 
-        # Combine location and remote conditions with OR if we have any
+        # Apply location/remote conditions
         if location_or_remote_conditions:
             query += f" AND ({' OR '.join(location_or_remote_conditions)})"
-            context.log.info(f"Location or remote conditions: {' OR '.join(location_or_remote_conditions)}")
+            context.log.info(f"Applied location/remote conditions: {len(location_or_remote_conditions)} total")
 
-        # Add exclusion filters - exclude jobs that match ANY excluded keyword
+        # Add exclusion filters
         if config.excluded_keywords:
             exclusion_conditions = []
             for keyword in config.excluded_keywords:
-                # Combine job title and description exclusions
-                exclusion_title = f"LOWER(job_title) LIKE LOWER('%{keyword}%')"
+                exclusion_title = f"LOWER(job_title_clean) LIKE LOWER('%{keyword}%')"
                 if config.include_descriptions:
-                    exclusion_desc = f"LOWER(job_description) LIKE LOWER('%{keyword}%')"
-                    # Exclude if keyword appears in EITHER title OR description
+                    exclusion_desc = f"LOWER(job_description_clean) LIKE LOWER('%{keyword}%')"
                     exclusion_conditions.append(f"({exclusion_title} OR {exclusion_desc})")
                 else:
                     exclusion_conditions.append(exclusion_title)
 
-            # Add NOT condition - exclude jobs that match ANY exclusion condition
             if exclusion_conditions:
                 query += f" AND NOT ({' OR '.join(exclusion_conditions)})"
-                context.log.info(f"Exclusion conditions: NOT ({' OR '.join(exclusion_conditions)})")
+                context.log.info(f"Applied exclusion conditions: {len(exclusion_conditions)} total")
+
+        # Add ordering based on configuration
+        order_clauses = []
+        if config.rank_by_quality:
+            order_clauses.append("data_quality_score DESC")
+        if config.rank_by_recency:
+            order_clauses.append("date_posted DESC")
+
+        if not order_clauses:
+            order_clauses.append("date_posted DESC")  # Default ordering
+
+        query += f" ORDER BY {', '.join(order_clauses)}"
 
         # Add result limit
-        query += f" ORDER BY {date_col} DESC LIMIT {config.max_results}"
+        query += f" LIMIT {config.max_results}"
 
-        # Print the full query for debugging
-        context.log.info(f"Full query for {platform}:\n{query}")
+        # Execute the query
+        context.log.info("📊 Executing unified stage data query...")
+        context.log.debug(f"Query: {query}")
 
-        try:
-            # Execute query
-            context.log.info(f"Executing query for {platform}...")
-            query_job = client.query(query)
-            results_df = query_job.to_dataframe()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        column_names = [desc[0].lower() for desc in cursor.description]
 
-            context.log.info(f"Found {len(results_df)} results from {platform}")
+        # Convert to DataFrame
+        combined_results = pd.DataFrame(results, columns=column_names)
 
-            # Add platform column and combine with other results
-            results_df["platform"] = platform
-            combined_results = pd.concat([combined_results, results_df], ignore_index=True)
+        context.log.info(f"✅ Found {len(combined_results)} results from unified stage data")
 
-        except Exception as e:
-            context.log.error(f"Error querying {platform} jobs: {str(e)}")
+        # Calculate execution time
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+        stats["execution_time_ms"] = int(execution_time)
 
-    # Calculate execution time
-    execution_time = (datetime.now() - start_time).total_seconds() * 1000
-    stats["execution_time_ms"] = int(execution_time)
+        # Calculate relevance scores if keywords are provided
+        if config.keywords and not combined_results.empty:
+            combined_results["relevance_score"] = combined_results.apply(
+                lambda row: calculate_relevance_score(row, config.keywords, config.job_titles, config.locations),
+                axis=1
+            )
 
-    # Sort combined results by date
-    if not combined_results.empty:
-        combined_results = combined_results.sort_values(by="posting_date", ascending=False)
+            # Filter by minimum score if needed
+            if config.min_match_score > 0:
+                prev_count = len(combined_results)
+                combined_results = combined_results[combined_results["relevance_score"] >= config.min_match_score]
+                context.log.info(f"Filtered {prev_count - len(combined_results)} results below minimum relevance score")
 
-    # Calculate relevance scores if keywords are provided
-    if config.keywords and not combined_results.empty:
-        combined_results["relevance_score"] = combined_results.apply(
-            lambda row: calculate_relevance_score(row, config.keywords, config.job_titles, config.locations),
-            axis=1
-        )
+        # Update stats
+        stats["total_results"] = len(combined_results)
 
-        # Filter by minimum score if needed
-        if config.min_match_score > 0:
-            prev_count = len(combined_results)
-            combined_results = combined_results[combined_results["relevance_score"] >= config.min_match_score]
-            context.log.info(f"Filtered {prev_count - len(combined_results)} results below minimum relevance score")
+        # Limit results if needed (additional safeguard)
+        if len(combined_results) > config.max_results:
+            combined_results = combined_results.head(config.max_results)
 
-    # Update stats
-    stats["total_results"] = len(combined_results)
+        stats["filtered_results"] = len(combined_results)
 
-    # Limit results if needed
-    if len(combined_results) > config.max_results:
-        combined_results = combined_results.head(config.max_results)
+        # Save to file if requested
+        if config.output_file:
+            try:
+                # Create the output directory if it doesn't exist
+                output_file = config.output_file
 
-    stats["filtered_results"] = len(combined_results)
+                # Replace {date} placeholder with current date if present
+                if "{date}" in output_file:
+                    current_date = datetime.now().strftime("%Y%m%d")
+                    output_file = output_file.replace("{date}", current_date)
 
-    # Save to file if requested
-    if config.output_file:
-        try:
-            # Create the output directory if it doesn't exist
-            output_file = config.output_file
+                # Ensure directory exists
+                output_dir = os.path.dirname(output_file)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                    context.log.info(f"Created directory: {output_dir}")
 
-            # Replace {date} placeholder with current date if present
-            if "{date}" in output_file:
-                current_date = datetime.now().strftime("%Y%m%d")
-                output_file = output_file.replace("{date}", current_date)
+                # Save in the appropriate format
+                if config.output_format.lower() == "csv":
+                    combined_results.to_csv(output_file, index=False)
+                    context.log.info(f"Saved results to CSV: {output_file}")
+                elif config.output_format.lower() == "html":
+                    context.log.info(f"Generating HTML report for {len(combined_results)} results")
+                    # Create a nicely formatted HTML file
+                    html_content = generate_html_report(combined_results, stats)
 
-            # Ensure directory exists
-            output_dir = os.path.dirname(output_file)
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
-                context.log.info(f"Created directory: {output_dir}")
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        f.write(html_content)
+                    context.log.info(f"Saved results to HTML: {output_file}")
+                elif config.output_format.lower() == "json":
+                    combined_results.to_json(output_file, orient="records", indent=2)
+                    context.log.info(f"Saved results to JSON: {output_file}")
+                else:
+                    # Default to CSV
+                    combined_results.to_csv(output_file, index=False)
+                    context.log.info(f"Saved results to {output_file}")
 
-            # Save in the appropriate format
-            if config.output_format.lower() == "csv":
-                combined_results.to_csv(output_file, index=False)
-                context.log.info(f"Saved results to CSV: {output_file}")
-            elif config.output_format.lower() == "html":
-                context.log.info(f"Generating HTML report for {len(combined_results)} results")
-                # Create a nicely formatted HTML file
-                html_content = generate_html_report(combined_results, stats)
+                # Add file path to metadata
+                stats["output_file"] = output_file
 
-                # Log the first 100 chars of the HTML to verify content
-                context.log.info(f"HTML report generated, length: {len(html_content)} characters")
-                context.log.info(f"HTML preview: {html_content[:100]}...")
+            except Exception as e:
+                context.log.error(f"Error saving results to file: {str(e)}")
+                import traceback
+                context.log.error(f"Traceback: {traceback.format_exc()}")
 
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    f.write(html_content)
-                context.log.info(f"Saved results to HTML: {output_file}")
-            elif config.output_format.lower() == "json":
-                combined_results.to_json(output_file, orient="records", indent=2)
-                context.log.info(f"Saved results to JSON: {output_file}")
-            else:
-                # Default to CSV
-                combined_results.to_csv(output_file, index=False)
-                context.log.info(f"Saved results to {output_file}")
+        # Enhanced metadata with stage data benefits
+        metadata = {
+            "total_results": MetadataValue.int(stats["total_results"]),
+            "filtered_results": MetadataValue.int(stats["filtered_results"]),
+            "platforms_searched": MetadataValue.json(stats["query_platforms"]),
+            "execution_time_ms": MetadataValue.int(stats["execution_time_ms"]),
+            "data_source": MetadataValue.text("STAGE.jobs_unified (cleaned & deduplicated)"),
+            "language_filter": MetadataValue.text(config.language_filter),
+            "min_quality_score": MetadataValue.float(config.min_quality_score),
+            "preview": MetadataValue.md(generate_results_preview(combined_results))
+        }
 
-            # Add file path to metadata
-            stats["output_file"] = output_file
+        # Add quality metrics if available
+        if not combined_results.empty and 'data_quality_score' in combined_results.columns:
+            avg_quality = combined_results['data_quality_score'].mean()
+            metadata["avg_quality_score"] = MetadataValue.float(float(avg_quality))
 
-        except Exception as e:
-            context.log.error(f"Error saving results to file: {str(e)}")
-            context.log.error(f"Error details: {type(e).__name__}")
-            import traceback
-            context.log.error(f"Traceback: {traceback.format_exc()}")
+        context.add_output_metadata(metadata)
 
-    # Add metadata
-    context.add_output_metadata({
-        "total_results": MetadataValue.int(stats["total_results"]),
-        "filtered_results": MetadataValue.int(stats["filtered_results"]),
-        "platforms_searched": MetadataValue.json(stats["query_platforms"]),
-        "execution_time_ms": MetadataValue.int(stats["execution_time_ms"]),
-        "preview": MetadataValue.md(generate_results_preview(combined_results))
-    })
+        # Return in requested format
+        if config.output_format == "dict":
+            return combined_results.to_dict(orient="records")
+        else:  # Default to dataframe
+            return combined_results
 
-    # Return in requested format
-    if config.output_format == "dict":
-        return combined_results.to_dict(orient="records")
-    else:  # Default to dataframe
-        return combined_results
+    except Exception as e:
+        context.log.error(f"Error executing job search: {str(e)}")
+        raise
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 def calculate_relevance_score(row: pd.Series, keywords: List[str], job_titles: List[str], locations: List[str]) -> float:
     """
@@ -606,8 +624,8 @@ def generate_html_report(results: pd.DataFrame, stats: Dict) -> str:
     </head>
     <body>
         <div class="header">
-            <h1>Data Engineering Job Search Results</h1>
-            <p>Search performed on {today}</p>
+            <h1>Enhanced Job Search Results (STAGE Data)</h1>
+            <p>Search performed on {today} | Using cleaned, deduplicated, and enriched data</p>
         </div>
 
         <div class="filters">
@@ -631,6 +649,14 @@ def generate_html_report(results: pd.DataFrame, stats: Dict) -> str:
             <div class="filter-group">
                 <div class="filter-title">Platforms:</div>
                 <div class="filter-content">{platforms}</div>
+            </div>
+            <div class="filter-group">
+                <div class="filter-title">Language Filter:</div>
+                <div class="filter-content">{stats['search_params'].get('language_filter', 'english')}</div>
+            </div>
+            <div class="filter-group">
+                <div class="filter-title">Min Quality Score:</div>
+                <div class="filter-content">{stats['search_params'].get('min_quality_score', 0.5)}</div>
             </div>
         </div>
     """
@@ -687,9 +713,16 @@ def generate_html_report(results: pd.DataFrame, stats: Dict) -> str:
             score = job.get('relevance_score', 0)
             score_pct = int(score * 100)
 
+            # Quality score formatting
+            quality_score = job.get('data_quality_score', 0)
+            quality_pct = int(quality_score * 100) if quality_score else 0
+
             html += f"""
             <div class="job-card" style="position: relative;">
                 <div class="relevance">{score_pct}%</div>
+                <div style="position: absolute; right: 20px; top: 60px; background-color: #28a745; color: white; padding: 3px 8px; border-radius: 15px; font-size: 12px;">
+                    Quality: {quality_pct}%
+                </div>
                 <h3 class="job-title">{job.get('job_title', 'Unknown title')}{f" - {job.get('company_name')}" if job.get('company_name') else ""}</h3>
                 <div class="job-meta">
                     <span>
@@ -723,6 +756,8 @@ def generate_html_report(results: pd.DataFrame, stats: Dict) -> str:
                 <div>
                     {f'<span class="tag remote-tag">Remote</span>' if is_remote else ''}
                     {f'<span class="tag">{job.get("department", "")}</span>' if job.get("department") else ''}
+                    {f'<span class="tag" style="background-color: #f0f8ff; color: #1e90ff;">{job.get("detected_language", "").title()}</span>' if job.get("detected_language") else ''}
+                    {f'<span class="tag" style="background-color: #e8f5e9; color: #388e3c;">UID: {job.get("job_uid", "")[:8]}...</span>' if job.get("job_uid") else ''}
                 </div>
                 <p><a href="{job.get('job_url', '#')}" target="_blank">Apply on company website</a></p>
                 <div class="job-description">
