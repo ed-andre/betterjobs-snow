@@ -43,13 +43,33 @@ Analytics & Reporting
 
 **Note**: The initial CSV files with verified ATS URLs were generated from a previous version of this project that included automated URL discovery and extraction processes.
 
+### Job Search & Reporting
+
+The pipeline includes an advanced job search capability that generates modern, interactive HTML reports for analyzing job market data. The search functionality leverages the cleaned and enriched STAGE data to provide high-quality results with advanced filtering capabilities.
+
+#### Features:
+- **Interactive Filtering**: Client-side filtering by keywords, job titles, locations, and platforms
+- **Quality Scoring**: Filter jobs by data quality scores and language detection confidence
+- **Modern UI**: Responsive design with professional styling suitable for stakeholder presentations
+- **Smart Deduplication**: Cross-platform duplicate removal ensures unique job listings
+- **Shareable URLs**: Bookmark and share filtered search results with URL parameters
+- **Real-time Updates**: Dynamic job counts and filter states update instantly
+
+![Job Search HTML Report](media/searchjobhtmlreport.png)
+
+The job search reports show:
+- **Header Stats**: Total results, platforms searched, date range, and data freshness
+- **Filter Panel**: Interactive tags for keywords, job titles, locations, and platforms
+- **Job Cards**: Clean, professional job listing cards with relevance and quality scores
+- **Detailed Information**: Company details, posting dates, locations, and full job descriptions
+
 ### Dagster Pipeline Visualization (IN PROGRESS)
 
 The following diagram shows the structure of our Dagster pipeline assets, including URL discovery, job discovery, and data transport components:
 
 NOTE: This is not the final diagram. This section will be updated with the latest architecture once fully implemented
 
-![Dagster Pipeline Structure](dagsterpipeline.png)
+![Dagster Pipeline Structure](media/dagsterpipeline.png)
 
 ### Analytics & Reporting
 - **Job Market Trends**: Track hiring patterns across industries and companies
