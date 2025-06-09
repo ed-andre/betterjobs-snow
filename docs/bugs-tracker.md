@@ -96,11 +96,11 @@ if "updated_at" in job_post_data and not job_details.get("updated_at"):
 
 ## BUG-002: Greenhouse Jobs Discovery - Job ID Extraction Failing
 
-**Status**: Resolved
+**Status**: RESOLVED ✅
 **Severity**: Critical
 **Component**: Job Discovery Pipeline - Greenhouse
 **Date Reported**: 2025-06-06
-**Date Resolved**: 2025-01-06
+**Date Resolved**: 2025-06-06
 
 ### Description
 6,076 Greenhouse job records have `job_id` set to `'None'` instead of the actual job ID from the API response. This causes massive data quality issues and incorrect deduplication.
@@ -159,11 +159,11 @@ But the job_id field is being set to None in the database.
 
 ## BUG-003: SmartRecruiters Job ID Extraction Logic Incorrect
 
-**Status**: Resolved
+**Status**: RESOLVED ✅
 **Severity**: Critical
 **Component**: Job Discovery Pipeline - SmartRecruiters
 **Date Reported**: 2025-06-06
-**Date Resolved**: 2025-01-06
+**Date Resolved**: 2025-06-06
 
 ### Description
 SmartRecruiters job ID extraction is extracting company names instead of actual job IDs from URLs, causing massive duplication issues.
@@ -226,7 +226,7 @@ This fix ensures proper extraction of numeric job IDs like `3743990008187744` in
 
 ## BUG-004: Deduplication Strategy Too Aggressive
 
-**Status**: Resolved ✅
+**Status**: RESOLVED ✅
 **Severity**: High
 **Component**: Data Processing Pipeline - Stage Jobs Unified
 **Date Reported**: 2025-06-06
@@ -289,8 +289,8 @@ This ensures that:
 **Status:** RESOLVED ✅
 **Priority:** High
 **Component:** Greenhouse Scraper (`greenhouse_scraper.py`)
-**Reported Date:** 2024-12-19
-**Resolved Date:** 2024-12-19
+**Reported Date:** 2025-06-06
+**Resolved Date:** 2025-06-06
 
 ### Problem Description
 Companies using embedded Greenhouse job boards with custom domains (like SolarWinds) were not getting complete job data extracted. Issues included:
@@ -386,8 +386,8 @@ if not job_url.startswith('https://boards.greenhouse.io/') and not job_url.start
 **Status:** RESOLVED ✅
 **Severity:** Medium
 **Component:** Stage Jobs Unified - Language Detection
-**Date Reported:** 2025-01-06
-**Date Resolved:** 2025-01-06
+**Date Reported:** 2025-06-06
+**Date Resolved:** 2025-06-06
 
 ### Description
 The `language_detection_method` column in `STAGE.jobs_unified` table is not being populated despite the language detection processing working correctly. All records have `NULL` values for this field.
@@ -446,8 +446,8 @@ return {
 **Status:** RESOLVED ✅
 **Severity:** High
 **Component:** Stage Jobs Unified - Data Type Conversion
-**Date Reported:** 2025-01-06
-**Date Resolved:** 2025-01-06
+**Date Reported:** 2025-06-06
+**Date Resolved:** 2025-06-06
 
 ### Description
 The `date_retrieved` field in `STAGE.jobs_unified` table was displaying as "Invalid date" for all records, despite the field being properly populated in the RAW layer tables. When cast to VARCHAR, the corrupted values appeared as strange formats like "-408823998-10-13 23:40:00.000".
@@ -642,10 +642,11 @@ job_record = {"job_url": job_url}  # Uses correct URL ✅
 
 ## BUG-009: Location Standardization Incorrectly Assigning "United States" to Non-US Locations
 
-**Status:** Open
+**Status:** RESOLVED ✅
 **Severity:** High
 **Component:** Text Processing - Location Standardization (`text_cleaning.py`)
-**Date Reported:** 2025-01-06
+**Date Reported:** 2025-06-08
+**Date Resolved:** 2025-06-09
 
 ### Description
 The `standardize_location()` function in `text_cleaning.py` is incorrectly assigning "United States" as the country for locations that are clearly not in the US. This results in Canadian provinces and other countries' administrative divisions being mislabeled as US locations.
@@ -705,38 +706,62 @@ if us_match:
 **Expected**: Only assign "United States" country when location can be **definitively confirmed** as US-based
 **Actual**: Assigns "United States" to any location matching "City, Something" pattern
 
-### Proposed Solution Strategy
-**Conservative Approach**: Only assign "United States" country when state can be **positively confirmed** as a US state
+### Resolution
+**Fixed in**: `pipeline/dagster_betterjobs/dagster_betterjobs/transformations/text_cleaning.py`
 
-**Recommended Fix**:
-1. **Validate State First**: Check if the "state" component matches known US states/codes before assigning US country
-2. **Separate US Pattern**: Create distinct pattern matching for confirmed US locations only
-3. **Fallback Logic**: For unconfirmed locations, leave country as None or use original text
-4. **Canadian Province Detection**: Add logic to detect and properly handle Canadian provinces
-5. **International Format Support**: Support other country location formats without defaulting to US
+**Root Cause - FINAL**: The `standardize_location()` function was using an overly broad regex pattern that automatically assigned `country = 'United States'` for any "City, State-like-string" format without validating if the state component was actually a US state.
 
-**Example Fix Logic**:
+**Changes Made**:
+1. **Conservative State Validation**: Only assign "United States" country when state can be **positively confirmed** as a US state
+2. **Explicit Country Handling**: When country is explicitly mentioned (e.g., "Austin, TX, United States"), preserve it
+3. **International Location Preservation**: Non-US locations like Canadian provinces are preserved as-is without country assignment
+4. **US State Database Validation**: Check both state codes (e.g., "NY") and full names (e.g., "New York") against comprehensive US states list
+
+**Technical Fix**:
 ```python
-# Only assign US country if state is confirmed US state
-if state_raw.upper() in us_states or any(name.lower() == state_raw.lower() for name in us_states.values()):
-    country = 'United States'
-    # ... process as US location
-else:
-    # Handle as international/unknown location without assuming country
-    country = None  # or attempt other country detection
+# BEFORE (problematic logic):
+if us_match:
+    city = us_match.group(1).strip()
+    state_raw = us_match.group(2).strip()
+    country = 'United States'  # ❌ Automatically assigned regardless of state validity
+
+# AFTER (fixed logic):
+if location_match:
+    city = location_match.group(1).strip()
+    state_raw = location_match.group(2).strip()
+    explicit_country = location_match.group(3)
+
+    if explicit_country:
+        country = 'United States'  # ✅ Only when explicitly mentioned
+    else:
+        # ✅ Only assign US if state is confirmed US state
+        if state_raw.upper() in us_states or any(name.lower() == state_raw.lower() for name in us_states.values()):
+            country = 'United States'
+        else:
+            country = None  # ✅ Leave as international/unknown
 ```
 
-### Files Affected
-- `dagster_betterjobs/transformations/text_cleaning.py` (lines 127-250)
-- Any downstream processing that relies on `standardized_location` output
+**Test Results - All Passing**:
+- ✅ Input: `"Brantford, Ontario"` → Output: `"Brantford, Ontario"` (Country: None)
+- ✅ Input: `"Saskatoon, Saskatchewan"` → Output: `"Saskatoon, Saskatchewan"` (Country: None)
+- ✅ Input: `"New York, NY"` → Output: `"New York, NY, United States"` (Country: United States)
+- ✅ Input: `"Los Angeles, California"` → Output: `"Los Angeles, CA, United States"` (Country: United States)
+- ✅ Input: `"Austin, TX, United States"` → Output: `"Austin, TX, United States"` (Country: United States)
 
-### Priority
-**High**: This bug actively corrupts location data quality across the entire dataset, affecting analytics and user experience. Should be addressed before location-based features are heavily utilized.
+### Impact
+- ✅ **Data Quality Restored**: Canadian provinces and international locations no longer mislabeled as US
+- ✅ **Accurate Country Assignment**: Only confirmed US states get "United States" country
+- ✅ **Preserved Functionality**: All existing US location processing remains intact
+- ✅ **International Support**: Non-US locations preserved correctly for future enhancement
+- ✅ **Zero False Positives**: Conservative approach eliminates incorrect US assignments
+
+### Files Affected
+- ✅ `dagster_betterjobs/transformations/text_cleaning.py` (lines 177-217) - Fixed location parsing logic
 
 ### Additional Notes
-- This is a **data integrity** issue that compounds over time
-- Consider implementing **comprehensive location validation** with reliable geographic databases
-- May need to **reprocess existing data** after fix to correct historical mislabelings
+- **Backward Compatible**: Existing US location processing behavior preserved
+- **Future Enhancement Ready**: Foundation laid for comprehensive international location support
+- **Data Reprocessing**: Existing stage data should be reprocessed to correct historical mislabelings
 
 ---
 

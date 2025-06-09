@@ -193,27 +193,51 @@ def standardize_location(location: Optional[str]) -> Dict[str, Optional[str]]:
     state = None
     country = None
 
-    # Common patterns for US locations
-    # "City, State" or "City, State Code"
-    us_pattern = r'^(.+?),\s*([A-Z]{2}|[A-Za-z\s]+)(?:,\s*(United States|USA|US))?'
-    us_match = re.search(us_pattern, clean_loc.strip())
+    # Parse "City, State" or "City, State Code" pattern
+    # Only assign US country if state can be positively confirmed as US state
+    location_pattern = r'^(.+?),\s*([A-Z]{2}|[A-Za-z\s]+)(?:,\s*(United States|USA|US))?'
+    location_match = re.search(location_pattern, clean_loc.strip())
 
-    if us_match:
-        city = us_match.group(1).strip()
-        state_raw = us_match.group(2).strip()
-        country = 'United States'
+    if location_match:
+        city = location_match.group(1).strip()
+        state_raw = location_match.group(2).strip()
+        explicit_country = location_match.group(3)
 
-        # Standardize state
-        if state_raw.upper() in us_states:
-            state = state_raw.upper()
+        # If country is explicitly mentioned, use it
+        if explicit_country:
+            country = 'United States'
+            # Standardize state for confirmed US locations
+            if state_raw.upper() in us_states:
+                state = state_raw.upper()
+            else:
+                # Try to find state by full name
+                for code, name in us_states.items():
+                    if name.lower() == state_raw.lower():
+                        state = code
+                        break
+                if not state:
+                    state = state_raw  # Keep as is if not found
         else:
-            # Try to find state by full name
-            for code, name in us_states.items():
-                if name.lower() == state_raw.lower():
-                    state = code
-                    break
-            if not state:
-                state = state_raw  # Keep as is if not found
+            # No explicit country - only assign US if state is confirmed US state
+            state = None
+            country = None
+
+            # Check if state_raw is a valid US state
+            if state_raw.upper() in us_states:
+                state = state_raw.upper()
+                country = 'United States'
+            else:
+                # Try to find state by full name
+                for code, name in us_states.items():
+                    if name.lower() == state_raw.lower():
+                        state = code
+                        country = 'United States'
+                        break
+
+                # If not a US state, treat as international location
+                if not country:
+                    state = state_raw  # Keep original value (could be province, etc.)
+                    # Don't assign any country - let it remain None
     else:
         # Try international or other formats
         parts = [part.strip() for part in clean_loc.split(',')]
