@@ -640,4 +640,324 @@ job_record = {"job_url": job_url}  # Uses correct URL ✅
 
 ---
 
+## BUG-009: Location Standardization Incorrectly Assigning "United States" to Non-US Locations
+
+**Status:** Open
+**Severity:** High
+**Component:** Text Processing - Location Standardization (`text_cleaning.py`)
+**Date Reported:** 2025-01-06
+
+### Description
+The `standardize_location()` function in `text_cleaning.py` is incorrectly assigning "United States" as the country for locations that are clearly not in the US. This results in Canadian provinces and other countries' administrative divisions being mislabeled as US locations.
+
+### Root Cause Analysis
+The function uses an overly broad regex pattern that assumes any "City, State-like-string" format is a US location:
+
+```python
+us_pattern = r'^(.+?),\s*([A-Z]{2}|[A-Za-z\s]+)(?:,\s*(United States|USA|US))?'
+us_match = re.search(us_pattern, clean_loc.strip())
+
+if us_match:
+    city = us_match.group(1).strip()
+    state_raw = us_match.group(2).strip()
+    country = 'United States'  # ❌ WRONG: Automatically assigns US regardless of actual location
+```
+
+**Problem**: The regex `([A-Z]{2}|[A-Za-z\s]+)` matches:
+- Any 2-letter code (including Canadian provinces like "ON", "BC", "QC")
+- Any alphabetic string (including full province names like "Ontario", "Saskatchewan")
+
+**Logic Flaw**: The function assumes that if it finds a "City, Something" pattern, it must be US format, when many countries use similar formats.
+
+### Evidence of Issue
+**Incorrect Standardizations**:
+- Input: `"Brantford, Ontario"` → Output: `"Brantford, Ontario, United States"` ❌
+- Input: `"Hamilton Area, Ontario"` → Output: `"Hamilton Area, Ontario, United States"` ❌
+- Input: `"Saskatoon, Saskatchewan"` → Output: `"Saskatoon, Saskatchewan, United States"` ❌
+
+**These are clearly Canadian locations** but are being mislabeled as US locations.
+
+### Impact
+- **Data Quality Degradation**: Incorrect country assignments affect location-based analytics
+- **Geographic Accuracy**: Jobs appearing in wrong countries for location filtering
+- **User Experience**: Misleading location information for job seekers
+- **Analytics Corruption**: Location-based reports and dashboards show false data
+
+### Root Cause Technical Details
+**File**: `pipeline/dagster_betterjobs/dagster_betterjobs/transformations/text_cleaning.py`
+**Method**: `standardize_location()` (lines 127-250)
+**Issue**: Lines 177-186 in the US pattern matching logic
+
+**Current Logic Flow**:
+1. Regex finds "City, Province/State" pattern
+2. **Automatically assumes** it's US format
+3. Sets `country = 'United States'` without validation
+4. Attempts to standardize "province" as US state (fails, but keeps US country assignment)
+
+**Missing Validation**: No check to verify if the "state" component is actually a US state before assigning US country.
+
+### Reproduction Steps
+1. Call `standardize_location("Brantford, Ontario")`
+2. Observe output: `{'standardized': 'Brantford, Ontario, United States', 'country': 'United States'}`
+3. Input is clearly Canadian but incorrectly labeled as US
+
+### Expected vs Actual Behavior
+**Expected**: Only assign "United States" country when location can be **definitively confirmed** as US-based
+**Actual**: Assigns "United States" to any location matching "City, Something" pattern
+
+### Proposed Solution Strategy
+**Conservative Approach**: Only assign "United States" country when state can be **positively confirmed** as a US state
+
+**Recommended Fix**:
+1. **Validate State First**: Check if the "state" component matches known US states/codes before assigning US country
+2. **Separate US Pattern**: Create distinct pattern matching for confirmed US locations only
+3. **Fallback Logic**: For unconfirmed locations, leave country as None or use original text
+4. **Canadian Province Detection**: Add logic to detect and properly handle Canadian provinces
+5. **International Format Support**: Support other country location formats without defaulting to US
+
+**Example Fix Logic**:
+```python
+# Only assign US country if state is confirmed US state
+if state_raw.upper() in us_states or any(name.lower() == state_raw.lower() for name in us_states.values()):
+    country = 'United States'
+    # ... process as US location
+else:
+    # Handle as international/unknown location without assuming country
+    country = None  # or attempt other country detection
+```
+
+### Files Affected
+- `dagster_betterjobs/transformations/text_cleaning.py` (lines 127-250)
+- Any downstream processing that relies on `standardized_location` output
+
+### Priority
+**High**: This bug actively corrupts location data quality across the entire dataset, affecting analytics and user experience. Should be addressed before location-based features are heavily utilized.
+
+### Additional Notes
+- This is a **data integrity** issue that compounds over time
+- Consider implementing **comprehensive location validation** with reliable geographic databases
+- May need to **reprocess existing data** after fix to correct historical mislabelings
+
+---
+
+## BUG-010: Job Description Text Cleaning Too Aggressive - Removing Natural Line Breaks and Concatenating Words
+
+**Status:** Open
+**Severity:** High
+**Component:** Text Processing - Job Description Cleaning (`text_cleaning.py`)
+**Date Reported:** 2025-01-06
+
+### Description
+The job description cleaning process is overly aggressive in removing line breaks and whitespace, resulting in words from different lines being concatenated together without proper spacing. This creates nonsensical merged words that degrade text readability and searchability. Additionally, the cleaning process improperly handles HTML structure (lists, paragraphs) and fails to address character encoding issues.
+
+### Root Cause Analysis
+The text cleaning functions have multiple issues:
+1. **Line Break Removal**: Removing newlines and line breaks without ensuring proper word separation
+2. **HTML Structure Destruction**: Improper handling of `<li>`, `<p>`, `<ul>`, `<ol>` tags that provide meaningful content structure
+3. **Character Encoding Failures**: Not properly handling character encoding issues that result in malformed characters
+
+**Problems**:
+- The cleaning process treats line breaks as unnecessary whitespace to be removed, rather than recognizing them as meaningful text structure
+- HTML list and paragraph structure is stripped without preserving the logical separation
+- Character encoding issues (like UTF-8 problems) are not detected or corrected, leading to corrupted text
+
+### Evidence of Issue
+
+**Issue 1: Line Break Concatenation**:
+```
+Original (with line breaks):
+React etc.
+N-tier application architecture
+Strong background in multiple disciplines with an engineering mindset
+In-depth knowledge of one of the following RDBMS: Oracle or MS SQL Server
+Experience working in an agile environment...
+
+After Cleaning (corrupted):
+"React etc.N-tier application architectureStrong background in multiple disciplines with an engineering mindsetIn-depth knowledge of one of the following RDBMS: Oracle or MS SQL ServerExperience working in an agile environment..."
+```
+
+**Issue 2: HTML Structure Destruction**:
+```
+Original HTML:
+<ul>
+<li>Perform qualitative and quantitative analysis</li>
+<li>Work with editorial tools to classify web pages</li>
+<li>Collaborate with data scientists</li>
+</ul>
+
+After Cleaning (corrupted):
+"Perform qualitative and quantitative analysisWork with editorial tools to classify web pagesCollaborate with data scientists"
+
+Should be:
+"Perform qualitative and quantitative analysis. Work with editorial tools to classify web pages. Collaborate with data scientists."
+```
+
+**Issue 3: Character Encoding Problems**:
+```
+Corrupted text examples (from screenshots):
+- "â" characters appearing instead of proper punctuation
+- "â€™" instead of apostrophes (')
+- "â€œ" and "â€" instead of proper quotes and dashes
+- Malformed HTML entities not being decoded properly
+```
+
+**Specific Word Concatenation Issues**:
+- `"SQL Server\nExperience"` → `"SQLServerExperience"` or `"SQLExperience"` ❌
+- `"React etc.\nN-tier"` → `"React etc.N-tier"` ❌
+- `"</li><li>Work with"` → `"analysisWork with"` ❌
+- Natural paragraph and list structure lost entirely
+
+### Impact
+- **Text Readability**: Job descriptions become difficult to read and understand
+- **Search Functionality**: Concatenated words don't match search queries (e.g., searching "SQL Server" won't find "SQLServerExperience")
+- **NLP Processing**: Downstream text analysis fails on malformed words and corrupted characters
+- **User Experience**: Poor job description presentation with encoding artifacts affects candidate experience
+- **Data Quality**: Text becomes less meaningful for analytics and ML processing
+- **Content Structure**: Loss of logical organization from lists and paragraphs makes content harder to parse
+
+### Technical Details
+**File**: `pipeline/dagster_betterjobs/dagster_betterjobs/transformations/text_cleaning.py`
+**Methods**: Likely affecting `clean_html_tags()`, `normalize_whitespace()`, or job description specific cleaning functions
+
+**Root Cause Patterns**:
+```python
+# Problematic patterns (likely current implementation):
+text = re.sub(r'\s+', ' ', text)  # Treats all whitespace (including \n) as single space
+# OR
+text = text.replace('\n', '').replace('\r', '')  # Removes line breaks without replacement
+
+# HTML tag removal without structure preservation:
+text = re.sub(r'<[^>]+>', '', text)  # Strips tags without converting structure to text
+
+# Missing character encoding handling:
+# No UTF-8 normalization or HTML entity decoding
+```
+
+**Missing Logic**: The cleaning process doesn't handle:
+- **Meaningful line breaks** (between sentences, bullet points, paragraphs)
+- **HTML structure semantics** (lists should become bullet points or numbered items)
+- **Character encoding normalization** (UTF-8 issues, HTML entities)
+- **Proper HTML entity decoding** (converting `&quot;` to `"`, etc.)
+
+### Reproduction Steps
+1. Take job description with natural line breaks between sentences/concepts
+2. Include HTML with `<ul><li>` structure and `<p>` tags
+3. Include text with character encoding issues (UTF-8 problems)
+4. Run through current text cleaning pipeline
+5. Observe multiple issues: concatenated words, lost structure, corrupted characters
+
+### Expected vs Actual Behavior
+**Expected**:
+- Line breaks between sentences/concepts should become spaces
+- HTML lists should become properly formatted bullet points or numbered lists
+- HTML paragraphs should maintain paragraph separation
+- Character encoding should be properly normalized
+- Text should remain readable and searchable
+- Natural word boundaries should be preserved
+
+**Actual**:
+- Line breaks are removed without replacement spaces
+- HTML structure is stripped leaving concatenated content
+- Character encoding issues remain uncorrected
+- Words from different lines/elements get concatenated
+- Text becomes malformed and less meaningful
+
+### Proposed Solution Strategy
+**Comprehensive Text Processing Pipeline**: Handle structure, encoding, and formatting properly
+
+**Recommended Fix**:
+1. **Character Encoding Normalization**: Fix UTF-8 issues and decode HTML entities first
+2. **HTML Structure Preservation**: Convert HTML structure to readable text format
+3. **Smart Line Break Handling**: Convert line breaks to spaces appropriately
+4. **Final Whitespace Normalization**: Clean up excess whitespace last
+
+**Example Fix Logic**:
+```python
+def clean_job_description(text):
+    if not text:
+        return ""
+
+    # Step 1: Fix character encoding issues
+    text = fix_character_encoding(text)  # Handle UTF-8 problems, â€™ → ', etc.
+    text = html.unescape(text)  # Decode HTML entities like &quot; → "
+
+    # Step 2: Convert HTML structure to readable text
+    text = convert_html_structure(text)  # <li> → "• ", <p> → "\n\n"
+
+    # Step 3: Convert remaining HTML line breaks to newlines
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+
+    # Step 4: Clean remaining HTML tags
+    text = clean_html_tags(text)
+
+    # Step 5: Convert line breaks to spaces BEFORE normalizing whitespace
+    text = text.replace('\n', ' ').replace('\r', ' ')
+
+    # Step 6: Now normalize whitespace (multiple spaces become single space)
+    text = re.sub(r'\s+', ' ', text)
+
+    return text.strip()
+
+def convert_html_structure(text):
+    # Convert lists to bullet points
+    text = re.sub(r'<li[^>]*>', '• ', text, flags=re.IGNORECASE)
+    text = re.sub(r'</li>', '. ', text, flags=re.IGNORECASE)
+
+    # Convert paragraphs to double line breaks
+    text = re.sub(r'<p[^>]*>', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</p>', '', text, flags=re.IGNORECASE)
+
+    return text
+
+def fix_character_encoding(text):
+    # Fix common UTF-8 encoding issues
+    replacements = {
+        'â€™': "'",  # Right single quotation mark
+        'â€œ': '"',  # Left double quotation mark
+        'â€': '"',   # Right double quotation mark
+        'â€"': '–',  # En dash
+        'â€"': '—',  # Em dash
+        'â€¢': '•',  # Bullet point
+        # Add more as needed
+    }
+
+    for corrupted, correct in replacements.items():
+        text = text.replace(corrupted, correct)
+
+    return text
+```
+
+### Files Affected
+- `dagster_betterjobs/transformations/text_cleaning.py`
+- Any job description processing pipelines
+- Downstream text analysis and search functionality
+
+### Priority
+**High**: This bug affects the readability and searchability of all job descriptions, directly impacting user experience and search functionality. The character encoding issues make content appear unprofessional and broken.
+
+### Additional Considerations
+- **HTML Context**: Job descriptions from web scraping may have complex HTML structure
+- **Character Set Detection**: May need to detect and handle different character encodings
+- **List Formatting**: Consider different list styles (bullets vs. numbers vs. custom formatting)
+- **Paragraph Breaks**: Preserve meaningful paragraph separation for readability
+- **Performance**: Ensure encoding fixes don't significantly impact processing speed
+- **Reprocessing**: Existing job descriptions may need to be reprocessed after fix
+
+### Examples of Other Potential Issues
+**Concatenation Problems**:
+- `"JavaScript\nDeveloper"` → `"JavaScriptDeveloper"` (should be `"JavaScript Developer"`)
+- `"5+ years\nExperience"` → `"5+ yearsExperience"` (should be `"5+ years Experience"`)
+- `"</li><li>Bachelor's degree"` → `"RequiredBachelor's degree"` (should be `"Required. Bachelor's degree"`)
+
+**HTML Structure Problems**:
+- `"<ul><li>Skill A</li><li>Skill B</li></ul>"` → `"Skill ASkill B"` (should be `"• Skill A. • Skill B."`)
+- `"<p>Paragraph 1</p><p>Paragraph 2</p>"` → `"Paragraph 1Paragraph 2"` (should be `"Paragraph 1  Paragraph 2"`)
+
+**Character Encoding Problems**:
+- `"We're looking"` → `"Weâ€™re looking"` (corrupted apostrophe)
+- `"Bachelor's degree"` → `"Bachelorâ€™s degree"` (corrupted apostrophe)
+- `"10+ years"` → `"10â€+ years"` (corrupted plus sign)
+
+---
+
 ## Template for New Bugs

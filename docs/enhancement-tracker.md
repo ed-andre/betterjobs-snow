@@ -881,8 +881,8 @@ class IncrementalConfig(Config):
 **Priority:** Medium
 **Component:** Job Search and Analytics
 **Date Planned:** 2025-06-08
-**Date Started:** 2025-01-28
-**Date Completed:** 2025-01-28
+**Date Started:** 2025-06-08
+**Date Completed:** 2025-06-08
 
 ### Description
 Migrate the job search functionality from depending on RAW discovery assets to using the cleaned, enriched, and deduplicated data from the STAGE layer. This will significantly improve search result quality and consistency.
@@ -1250,6 +1250,457 @@ metadata["avg_quality_score"] = MetadataValue.float(float(avg_quality))
 - ✅ `transformations/search_utilities.py` - New stage-specific search utilities
 - ✅ Enhanced configuration classes and HTML report generation
 - ✅ Updated asset dependencies and metadata
+
+---
+
+## ENHANCEMENT-006: Interactive HTML Job Search Reports - Client-Side Filtering
+
+**Status:** ✅ **Completed**
+**Priority:** Medium
+**Component:** Job Search HTML Output
+**Date Planned:** 2025-06-08
+**Date Started:** 2025-06-08
+
+### Description
+Enhance the HTML job search reports with modern, interactive client-side filtering capabilities and improved presentation. Users should be able to filter jobs by keywords, platforms, locations, and other criteria without requiring backend queries.
+
+### Business Justification
+- **Improved User Experience**: Fast, responsive filtering without page reloads or backend calls
+- **Better Job Discovery**: Users can quickly narrow down results to find relevant positions
+- **Offline Capability**: Filtering works even when disconnected from the backend
+- **Reduced Backend Load**: All filtering happens client-side using JavaScript
+- **Professional Presentation**: Modern, clean interface improves report usability
+- **Self-Contained Reports**: HTML files become fully functional standalone applications
+
+### Technical Approach
+
+**Client-Side Filtering Architecture:**
+```javascript
+// Filter system using vanilla JavaScript (no external dependencies)
+class JobSearchFilter {
+    constructor(jobs) {
+        this.allJobs = jobs;           // Complete job dataset
+        this.filteredJobs = jobs;      // Currently visible jobs
+        this.activeFilters = {};       // Current filter state
+    }
+
+    // Apply multiple filters simultaneously
+    applyFilters() {
+        this.filteredJobs = this.allJobs.filter(job => {
+            return this.matchesKeywords(job) &&
+                   this.matchesPlatforms(job) &&
+                   this.matchesLocations(job) &&
+                   this.matchesDateRange(job);
+        });
+        this.updateDisplay();
+    }
+}
+```
+
+**Enhanced HTML Template Features:**
+1. **Modern CSS Framework**: Clean, responsive design with CSS Grid/Flexbox
+2. **Interactive Filter Panel**: Collapsible sidebar with multiple filter types
+3. **Real-time Search**: Instant filtering as user types or clicks
+4. **Filter Chips**: Visual representation of active filters with remove buttons
+5. **Results Summary**: Dynamic count updates and filter status
+6. **Mobile Responsive**: Works well on all device sizes
+
+**Filter Types to Implement:**
+- **Keyword Filtering**: Search within job titles and descriptions
+- **Platform Selection**: Checkboxes for each ATS platform
+- **Location Filtering**: Multi-select location options
+- **Date Range**: Posted date filtering with preset ranges
+- **Quality Score**: Slider for minimum quality threshold
+- **Employment Status**: Full-time, part-time, contract filters
+
+### Implementation Plan
+
+**Phase 1: Modern HTML Template Design** ✅ **COMPLETED**
+1. ✅ Create new responsive CSS framework for job reports
+2. ✅ Implement clean, card-based layout for job listings
+3. ✅ Add professional typography and color scheme
+4. ✅ Ensure mobile responsiveness and accessibility
+
+### ✅ **Phase 1 Implementation Summary**
+
+**Completion Date:** 2025-06-08
+
+**Key Features Delivered:**
+- **Modern CSS Framework**: CSS custom properties (variables), flexbox/grid layouts, modern typography
+- **Professional Design**: Clean, card-based layout with gradient backgrounds and subtle shadows
+- **Enhanced Layout**: Two-column layout with dedicated filter panel and job results area
+- **Responsive Design**: Mobile-first approach with breakpoints for tablets and phones
+- **Improved Typography**: Modern font stack (-apple-system, etc.) with proper spacing and hierarchy
+- **Visual Enhancements**: Color-coded badges, icons, hover effects, and smooth transitions
+- **Better UX**: Professional appearance suitable for sharing with stakeholders and executives
+
+**Technical Implementation:**
+- **CSS Variables**: Centralized design system with consistent colors, spacing, and shadows
+- **Grid Layout**: Modern CSS Grid for main content areas and job metadata
+- **Responsive Breakpoints**: 768px and 480px breakpoints for mobile optimization
+- **Modern Icons**: SVG icons for better scalability and performance
+- **Enhanced Cards**: Improved job cards with badges, metadata, and action buttons
+- **Better Content Structure**: Semantic HTML with proper accessibility considerations
+
+**Files Modified:**
+- ✅ `assets/job_search.py` - Added `generate_enhanced_html_report()` function
+- ✅ Updated asset to use enhanced HTML generation by default
+- ✅ Added logging and metadata for enhanced report type
+
+**Design System Features:**
+- **Color Palette**: Blue primary (#2563eb), success green (#059669), warning orange (#d97706)
+- **Typography**: System fonts with proper weight hierarchy and letter spacing
+- **Shadows**: Layered shadow system (sm, md, lg) for depth perception
+- **Border Radius**: Consistent radius scale (sm: 0.375rem, md: 0.5rem, lg: 0.75rem, xl: 1rem)
+- **Spacing**: Consistent rem-based spacing following 0.25rem base unit
+- **Transitions**: Smooth 0.2s ease-in-out transitions for interactive elements
+
+**Mobile Responsiveness:**
+- **Desktop (>1024px)**: Full two-column layout with sidebar and main content
+- **Tablet (768px-1024px)**: Compressed layout with smaller sidebar
+- **Mobile (<768px)**: Single-column stacked layout, collapsible filter panel
+- **Mobile Small (<480px)**: Optimized padding and typography for small screens
+
+**Accessibility Improvements:**
+- **Semantic HTML**: Proper header, main, aside, section elements
+- **Color Contrast**: WCAG compliant color combinations
+- **Focus States**: Visible focus indicators for keyboard navigation
+- **Screen Reader**: Proper heading hierarchy and alt text for icons
+
+**Key Visual Improvements Over Previous Version:**
+- **Header**: Modern gradient background with glassmorphism stats cards and better typography
+- **Layout**: Professional two-column grid layout replacing simple stacked content
+- **Job Cards**: Enhanced cards with badges, hover effects, and better information hierarchy
+- **Filter Panel**: Dedicated sidebar with organized filter sections and visual tags
+- **Typography**: Modern system font stack with improved readability and spacing
+- **Icons**: SVG icons for better scalability and visual consistency
+- **Mobile Experience**: Responsive design that adapts gracefully to all screen sizes
+- **Professional Appeal**: Design suitable for executive presentations and stakeholder sharing
+
+**Performance Optimizations:**
+- **CSS Variables**: Centralized theming system for consistent styling
+- **Efficient Layouts**: CSS Grid and Flexbox for optimal rendering performance
+- **SVG Icons**: Vector graphics for crisp display at all resolutions
+- **Minimal Dependencies**: Self-contained HTML with embedded CSS (no external assets)
+
+**Phase 2: JavaScript Filter Framework**
+1. Build vanilla JavaScript filtering engine (no external dependencies)
+2. Implement keyword search with fuzzy matching
+3. Add platform and location multi-select functionality
+4. Create date range filtering with presets
+
+**Phase 3: Interactive UI Components**
+1. Design collapsible filter panel with smooth animations
+2. Implement filter chips showing active selections
+3. Add clear-all and preset filter combinations
+4. Create results summary with dynamic counts
+
+**Phase 4: Advanced Features**
+1. Add export functionality (filtered results to CSV)
+2. Implement bookmark/permalink for filter states
+3. Add sorting options (relevance, date, quality score)
+4. Include job favoriting/bookmarking capability
+
+**Phase 5: Performance Optimization**
+1. Optimize for large datasets (virtual scrolling if needed)
+2. Implement debounced search for smooth typing experience
+3. Add loading states and smooth transitions
+4. Ensure fast initial page load
+
+### Technical Implementation Details
+
+**HTML Structure Enhancement:**
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Job Search Results - Data Engineering Positions</title>
+    <style>
+        /* Modern CSS with CSS Grid, Flexbox, and responsive design */
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header class="search-header">
+            <h1>Job Search Results</h1>
+            <div class="results-summary"></div>
+        </header>
+
+        <div class="main-content">
+            <aside class="filter-panel">
+                <div class="filter-section" data-filter="keywords">
+                    <h3>Keywords</h3>
+                    <input type="text" class="keyword-search" placeholder="Search within results...">
+                    <div class="keyword-tags"></div>
+                </div>
+
+                <div class="filter-section" data-filter="platforms">
+                    <h3>Platforms</h3>
+                    <div class="platform-checkboxes"></div>
+                </div>
+
+                <div class="filter-section" data-filter="locations">
+                    <h3>Locations</h3>
+                    <div class="location-filters"></div>
+                </div>
+            </aside>
+
+            <main class="job-results">
+                <div class="active-filters"></div>
+                <div class="job-grid"></div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        // Embedded job data and filtering logic
+        const jobData = [/* Generated from Python */];
+        const filterSystem = new JobSearchFilter(jobData);
+    </script>
+</body>
+</html>
+```
+
+**Filter Implementation Strategy:**
+```python
+def generate_interactive_html_report(results: pd.DataFrame, stats: Dict) -> str:
+    """Generate enhanced HTML report with client-side filtering capabilities."""
+
+    # Prepare job data for JavaScript
+    job_data = prepare_job_data_for_js(results)
+
+    # Extract filter options from data
+    filter_options = extract_filter_options(results)
+
+    # Generate HTML with embedded data and filtering logic
+    html_template = render_interactive_template(
+        job_data=job_data,
+        filter_options=filter_options,
+        stats=stats
+    )
+
+    return html_template
+
+def prepare_job_data_for_js(results: pd.DataFrame) -> List[Dict]:
+    """Prepare job data in JavaScript-friendly format."""
+    return results.apply(lambda row: {
+        'id': row.get('job_uid', ''),
+        'title': row.get('job_title', ''),
+        'description': row.get('job_description', ''),
+        'platform': row.get('platform', ''),
+        'location': row.get('location', ''),
+        'company': row.get('company_name', ''),
+        'date_posted': row.get('posting_date', ''),
+        'quality_score': row.get('data_quality_score', 0),
+        'relevance_score': row.get('relevance_score', 0),
+        'keywords': extract_keywords_from_job(row),  # For filtering
+        'url': row.get('job_url', '')
+    }, axis=1).tolist()
+```
+
+### Success Criteria
+
+**Phase 1 Success Criteria (Design & Layout):** ✅ **ALL COMPLETED**
+- ✅ Modern, responsive design works on all devices (desktop, tablet, mobile)
+- ✅ Professional appearance suitable for sharing with stakeholders and executives
+- ✅ Accessibility compliant (WCAG 2.1 guidelines) - semantic HTML, color contrast, focus states
+- ✅ Enhanced visual hierarchy with modern typography and spacing
+- ✅ Card-based layout with improved readability and visual appeal
+- ✅ HTML reports are self-contained (no external dependencies)
+
+**Phase 2 Success Criteria (Interactive Features):** ✅ **COMPLETED**
+- ✅ Client-side filtering works without backend queries
+- ✅ All major filter types implemented (keywords, platforms, locations)
+- ✅ Filtering performance is smooth for datasets up to 1000+ jobs
+- ✅ Real-time search and filter updates
+- ✅ Bookmark/permalink capability for filter states
+
+**Phase 3-5 (Advanced Features):** ❌ **CANCELLED**
+- Advanced features (export, sorting, bookmarking) will be handled by BI platform instead of HTML reports
+- Current implementation provides sufficient functionality for job search reporting needs
+
+### 🔄 **Phase 2 Redesign: URL Parameter-Based Filtering** ✅ **COMPLETED**
+
+**Issue Identified**: The current tag-based filtering system is overengineered and lacks user-friendly features like shareable URLs and browser history support.
+
+**New Approach**: URL Parameter-Based Filtering System
+- **Problem**: Current tag-based filtering is not shareable, lacks browser history, and uses complex client-side string matching
+- **Solution**: Use URL query parameters with pre-computed job matching for clean, shareable filtering
+- **Benefits**: Shareable URLs, bookmarkable searches, browser history support, simpler JavaScript, better performance
+
+**Technical Implementation**:
+```javascript
+// URL Structure: report.html?kw=sql&kw=database&jt=engineer&platform=greenhouse&location=remote
+// Pre-computed job matching in Python for reliable filtering
+// Simple array operations instead of runtime string processing
+```
+
+**Key Features**:
+- **Shareable URLs**: Users can bookmark and share filtered job searches
+- **Browser History**: Back/forward buttons work naturally with filter states
+- **Pre-computed Matching**: Keywords and job title matches calculated in Python during data processing
+- **Simple JavaScript**: Clean URL parameter parsing with array-based filtering
+- **Self-contained**: Still works in single HTML file with no external dependencies
+- **Performance Optimized**: Boolean operations instead of runtime text searching
+
+**Implementation Steps**:
+1. ✅ Add derived fields (`matched_keywords`, `matched_job_titles`) in Python job processing
+2. ✅ Remove current tag-based filtering while preserving layout and styling
+3. ✅ Implement URL parameter parsing and filtering logic
+4. ✅ Add interactive filter UI that updates URL parameters
+5. ✅ Shareable URL functionality and browser history integration implemented
+
+### ✅ **Implementation Summary**
+
+**Completion Date:** 2025-01-28
+
+**Key Features Delivered:**
+- **Shareable URLs**: Complete URL parameter system (`?kw=sql&kw=database&jt=engineer&platform=greenhouse&location=remote`)
+- **Pre-computed Matching**: Keywords and job title matches calculated in Python for reliable filtering
+- **Simple JavaScript**: Clean, efficient filtering logic with no overengineering
+- **Browser History**: Back/forward buttons work naturally with filter states
+- **Interactive UI**: Click filter tags to add/remove from URL, visual active/inactive states
+- **Clear Filters**: One-click button to remove all filters
+- **Performance**: Fast boolean operations instead of runtime text searching
+- **Job Name Display**: HTML reports show specific job names from configuration (e.g., "Data Engineering Job Results")
+- **Date Range Information**: Reports display search period and latest stage data materialization date
+
+**Technical Benefits:**
+- **25-30 lines of clean JavaScript** vs 100+ lines of complex tag-based filtering
+- **Deterministic filtering** using pre-computed matches instead of runtime string searching
+- **Standard web behavior** that users expect and understand
+- **Bookmarkable searches** for improved user experience
+- **Self-contained** - still works in single HTML file with no external dependencies
+- **Context-aware reports** with clear job identification and data freshness indicators
+
+**URL Structure Examples:**
+```
+# Single keyword filter
+report.html?kw=sql
+
+# Multiple filters
+report.html?kw=sql&kw=database&jt=engineer&platform=greenhouse&location=remote
+
+# Platform-specific search
+report.html?platform=workday&platform=greenhouse
+
+# Location-based search
+report.html?location=remote&location=california
+```
+
+**Success Criteria Met:**
+- ✅ Clean, shareable URLs that preserve filter state
+- ✅ Browser history integration (back/forward buttons work)
+- ✅ Simple, maintainable JavaScript code
+- ✅ Fast, reliable filtering with pre-computed matches
+- ✅ Visual feedback for active/inactive filter states
+- ✅ Self-contained HTML with no external dependencies
+- ✅ Word boundary filtering for keywords (prevents "SSIS" matching "assisting")
+- ✅ Multi-word phrase support ("data engineer" filtering works correctly)
+- ✅ State abbreviation word boundaries ("NY" doesn't match "Kilkenny")
+- ✅ Special location filters ("Various Locations", "No Location", "Remote")
+- ✅ Clear all filters functionality
+- ✅ Job-specific report titles and headers from configuration
+- ✅ Complete date range information including latest stage data availability
+
+### Technical Considerations
+
+**Performance Optimization:**
+- Use efficient DOM manipulation techniques
+- Implement virtual scrolling for large datasets
+- Debounce search input to prevent excessive filtering
+- Cache filter results for common combinations
+
+**Browser Compatibility:**
+- Support modern browsers (ES6+ features)
+- Graceful degradation for older browsers
+- Progressive enhancement approach
+
+**Data Security:**
+- All data embedded in HTML (no external API calls)
+- Sanitize job descriptions to prevent XSS
+- No sensitive data persistence in browser
+
+### Files Affected
+
+**Phase 1 (Completed):**
+- ✅ `assets/job_search.py` - Added `generate_enhanced_html_report()` function with modern CSS framework
+- ✅ Updated job search asset to use enhanced HTML generation by default
+
+**Phase 2 (Completed):**
+- ✅ Enhanced JavaScript filtering logic embedded in HTML output
+- ✅ Interactive UI components and filter framework
+- ✅ URL parameter-based filtering system with smart word boundaries
+
+**Additional Enhancements:**
+- ✅ `assets/job_search.py` - Added job_name configuration parameter and date range information
+- ✅ `jobs.py` - Updated all job configurations with job_name parameters for clear report identification
+- ✅ Enhanced HTML headers with dynamic job names and stage data freshness indicators
+
+---
+
+## ENHANCEMENT-007: Location Data Standardization - "No Location Found" Normalization
+
+**Status:** Planned
+**Priority:** Medium
+**Component:** Stage Jobs Data Quality
+**Date Planned:** 2025-01-28
+
+### Description
+Standardize empty and null location fields to a consistent "No Location Found" value during stage processing to improve data quality and filtering reliability.
+
+### Business Justification
+- **Improved Data Quality**: Replace inconsistent empty/null location values with standardized text
+- **Better User Experience**: Clear indication when location information is unavailable
+- **Consistent Filtering**: Reliable filtering for jobs without location data
+- **Analytics Clarity**: Better reporting and analytics with standardized missing data handling
+
+### Technical Approach
+**Location Standardization Logic:**
+```python
+def standardize_location(location_raw: str) -> str:
+    """Standardize location field for consistency."""
+    if not location_raw or location_raw.strip() == '':
+        return "No Location Found"
+    if location_raw.strip().lower() in ['null', 'none', 'n/a']:
+        return "No Location Found"
+    return location_raw.strip()
+```
+
+**Stage Processing Updates:**
+- Add location standardization to `transformations/stage_processing.py`
+- Apply during job processing in individual platform assets
+- Update existing data through migration script
+
+### Implementation Plan
+**Phase 1: Stage Processing Enhancement**
+1. Add location standardization function to stage processing utilities
+2. Integrate into all platform asset processing pipelines
+3. Update schema documentation
+
+**Phase 2: Data Migration**
+1. Create migration script to update existing empty location records
+2. Run migration on historical data
+3. Validate data consistency
+
+**Phase 3: Filtering Updates**
+1. Update job search filtering logic to handle "No Location Found"
+2. Update HTML report generation
+3. Test filtering functionality
+
+### Success Criteria
+- ✅ All empty/null locations standardized to "No Location Found"
+- ✅ Consistent location filtering in job search reports
+- ✅ Improved data quality metrics for location field
+- ✅ No breaking changes to existing functionality
+
+### Files Affected
+- `transformations/stage_processing.py` - Add standardization function
+- All `assets/stage_jobs_*.py` - Apply standardization during processing
+- `assets/job_search.py` - Update filtering logic for standardized values
+- Migration script for existing data
 
 ---
 

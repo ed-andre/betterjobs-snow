@@ -201,6 +201,7 @@ data_engineering_job = define_asset_job(
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "data_engineering_jobs_{date}.html"),
                     "include_descriptions": True,
+                    "job_name": "Data Engineering Job",
                     # Enhanced STAGE data parameters for better results
                     "min_quality_score": 0.3,  # Lower than default to avoid filtering too aggressively
                     "language_filter": "english",  # Focus on English jobs for US market
@@ -234,6 +235,7 @@ enhanced_data_engineering_job = define_asset_job(
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "enhanced_data_engineering_jobs_{date}.html"),
                     "include_descriptions": True,
+                    "job_name": "Enhanced Data Engineering Job",
                     # Take full advantage of STAGE data enhancements
                     "min_quality_score": 0.4,  # Higher quality threshold for better results
                     "language_filter": "english",  # English jobs for US market
@@ -288,6 +290,7 @@ def full_jobs_discovery_and_search_partitioned_config(partition_key: str):
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "data_engineering_jobs_{date}.html"),
                     "include_descriptions": True,
+                    "job_name": "Full Jobs Discovery and Search",
                     # Enhanced STAGE data parameters for better results
                     "min_quality_score": 0.3,  # Lower than default to avoid filtering too aggressively
                     "language_filter": "english",  # Focus on English jobs for US market
