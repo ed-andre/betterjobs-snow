@@ -277,8 +277,14 @@ class GreenhouseScraper(BaseScraper):
             content_match = re.search(content_pattern, response_text, re.DOTALL)
             if content_match:
                 content_text = content_match.group(1)
-                # Unescape unicode escape sequences
-                content_text = bytes(content_text, "utf-8").decode("unicode_escape")
+                # Only unescape unicode escape sequences if they are actually HTML tags (\\u003c = <)
+                # Don't apply unicode_escape to general text as it corrupts UTF-8 characters
+                if "\\u003c" in content_text:
+                    try:
+                        content_text = bytes(content_text, "utf-8").decode("unicode_escape")
+                    except Exception as e:
+                        self.log_message("warning", f"Failed to decode unicode escapes, using raw content: {str(e)}")
+                        # Keep the original content if decoding fails
 
                 # Create a simple structure with just the content
                 constructed_json = {
@@ -304,9 +310,13 @@ class GreenhouseScraper(BaseScraper):
             html_match = re.search(html_pattern, response_text, re.DOTALL)
             if html_match:
                 html_content = html_match.group(1)
-                # Unescape if it contains escaped HTML
+                # Only unescape if it contains escaped HTML tags, not general text
                 if "\\u003c" in html_content:
-                    html_content = bytes(html_content, "utf-8").decode("unicode_escape")
+                    try:
+                        html_content = bytes(html_content, "utf-8").decode("unicode_escape")
+                    except Exception as e:
+                        self.log_message("warning", f"Failed to decode HTML unicode escapes, using raw content: {str(e)}")
+                        # Keep the original content if decoding fails
 
                 constructed_json = {
                     "state": {
@@ -749,17 +759,20 @@ class GreenhouseScraper(BaseScraper):
                             # Extract job description from content field
                             job_description = job_item.get("content", "")
 
-                            # Handle escaped HTML content
+                            # Handle escaped HTML content carefully to preserve original characters
                             if job_description and isinstance(job_description, str):
-                                # Unescape HTML entities and unicode escapes
                                 import html
-                                if "\\u003c" in job_description or "&lt;" in job_description:
-                                    # Handle unicode escapes first
+                                # Only handle unicode escapes if they are actually HTML tags (\\u003c = <)
+                                # Don't apply unicode_escape to general text as it corrupts UTF-8 characters
+                                if "\\u003c" in job_description:
                                     try:
                                         job_description = bytes(job_description, "utf-8").decode("unicode_escape")
-                                    except:
-                                        pass
-                                    # Then handle HTML entities
+                                    except Exception as e:
+                                        self.log_message("warning", f"Failed to decode unicode escapes in job description, using raw content: {str(e)}")
+                                        # Keep the original content if decoding fails
+
+                                # Only unescape HTML entities if they are common HTML entities, not general text
+                                if "&lt;" in job_description or "&gt;" in job_description or "&amp;" in job_description or "&quot;" in job_description:
                                     job_description = html.unescape(job_description)
 
                             # Extract department info

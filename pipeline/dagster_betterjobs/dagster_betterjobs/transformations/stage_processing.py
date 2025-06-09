@@ -199,7 +199,32 @@ def process_platform_jobs(
     # Apply language detection if enabled
     if config.process_language_detection:
         context.log.info(f"[{platform}] Performing language detection...")
-        cleaned_df = language_detector.process_dataframe(cleaned_df, 'job_description_clean')
+
+        # Use multi-field detection for better accuracy and debug logging
+        # This will trigger debug logging for target jobs if they exist
+        def detect_language_row(row):
+            job_id = str(row.get('job_id', ''))
+            company_id = str(row.get('company_id', ''))
+            job_title = str(row.get('job_title', '') or row.get('job_title_clean', ''))
+            job_description = str(row.get('job_description_clean', ''))
+
+            return language_detector.detect_language_multi_field(
+                job_title=job_title,
+                job_description=job_description,
+                job_id=job_id,
+                company_id=company_id,
+                platform=platform
+            )
+
+        context.log.info(f"[{platform}] Applying multi-field language detection with debug logging...")
+        language_results = cleaned_df.apply(detect_language_row, axis=1)
+
+        # Extract results into separate columns
+        cleaned_df['detected_language'] = [result['detected_language'] for result in language_results]
+        cleaned_df['language_confidence'] = [result['language_confidence'] for result in language_results]
+        cleaned_df['is_english'] = [result['is_english'] for result in language_results]
+        cleaned_df['language_detection_method'] = [result['language_detection_method'] for result in language_results]
+        cleaned_df['detection_source'] = [result['detection_source'] for result in language_results]
 
         # Filter English jobs if configured
         if not config.include_non_english:

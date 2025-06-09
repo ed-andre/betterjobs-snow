@@ -1840,4 +1840,212 @@ generate_company_platform_id("Google Inc", "PROFILE")    # → "m5n6o7p8q9r0"
 
 ---
 
+## ENHANCEMENT-009: Multi-Field Language Detection - Include Job Title in Detection Process
+
+**Status:** Planned
+**Priority:** High
+**Component:** Language Detection (`language_detection.py`)
+**Date Planned:** 2025-06-09
+
+### Description
+Enhance the language detection process to include job_title as an additional text source alongside job_description. This will improve language detection accuracy, especially when job descriptions are corrupted or contain garbled text, but job titles still provide clear language indicators.
+
+### Business Justification
+- **Improved Detection Accuracy**: Job titles often contain clear language indicators even when descriptions are corrupted
+- **Fallback Mechanism**: When job descriptions fail language detection, job titles can provide reliable backup
+- **Data Quality Enhancement**: Better handling of corrupted job descriptions with garbled text encoding
+- **International Job Support**: Better detection of non-English jobs where titles are in native languages
+- **Reduced English False Positives**: Prevents defaulting to English when text is corrupted but title indicates another language
+
+### Problem Analysis
+**Current Issue Example:**
+- **Job Title**: `[쿠팡] 광고 컨설턴트 (계약직, 전환 가능)` (clearly Korean)
+- **Job Description**: Corrupted with garbled encoding: `íì¬ìê°`, `ì¿ í¡ì ê³ ê° ê°ë`, etc.
+- **Current Result**: Language detection fails on corrupted description → defaults to English ❌
+- **Expected Result**: Should detect Korean from job title → correctly identify as Korean ✅
+
+**Root Cause**: Language detection only uses `job_description` field, ignoring the often cleaner and more reliable `job_title` field.
+
+### Technical Approach
+
+**Enhanced Language Detection Pipeline:**
+```python
+def detect_language_multi_field(job_title: str, job_description: str, confidence_threshold: float = 0.7) -> Dict:
+    """
+    Enhanced language detection using multiple text fields with smart fallback logic.
+
+    Detection Priority:
+    1. Primary: Analyze job_description (existing logic)
+    2. Fallback: Analyze job_title if description detection fails
+    3. Combined: Use both fields for confidence boosting
+    """
+
+    # Phase 1: Standard job description detection
+    desc_result = detect_language_comprehensive(job_description, confidence_threshold)
+
+    # Phase 2: Job title detection (especially for corrupted descriptions)
+    title_result = detect_language_comprehensive(job_title, confidence_threshold)
+
+    # Phase 3: Smart decision logic
+    if desc_result['language_confidence'] >= confidence_threshold:
+        # High confidence from description - use it
+        final_result = desc_result
+        final_result['detection_source'] = 'job_description'
+    elif title_result['language_confidence'] >= confidence_threshold:
+        # Low confidence from description, high confidence from title - use title
+        final_result = title_result
+        final_result['detection_source'] = 'job_title'
+    else:
+        # Both low confidence - use combined analysis or fallback logic
+        combined_text = f"{job_title} {job_description}"
+        combined_result = detect_language_comprehensive(combined_text, confidence_threshold)
+
+        if combined_result['language_confidence'] >= confidence_threshold:
+            final_result = combined_result
+            final_result['detection_source'] = 'combined'
+        else:
+            # All methods failed - choose best available
+            if title_result['language_confidence'] > desc_result['language_confidence']:
+                final_result = title_result
+                final_result['detection_source'] = 'job_title_fallback'
+            else:
+                final_result = desc_result
+                final_result['detection_source'] = 'job_description_fallback'
+
+    return final_result
+```
+
+**Enhanced Processing Function:**
+```python
+def process_dataframe_multi_field(df: pd.DataFrame,
+                                 title_column: str = 'job_title',
+                                 description_column: str = 'job_description',
+                                 confidence_threshold: float = 0.7) -> pd.DataFrame:
+    """Process DataFrame using multi-field language detection."""
+
+    def detect_language_row(row):
+        return detect_language_multi_field(
+            job_title=row[title_column] or "",
+            job_description=row[description_column] or "",
+            confidence_threshold=confidence_threshold
+        )
+
+    # Apply multi-field detection
+    language_data = df.apply(detect_language_row, axis=1)
+
+    # Extract results into separate columns
+    df['detected_language'] = [result['detected_language'] for result in language_data]
+    df['language_confidence'] = [result['language_confidence'] for result in language_data]
+    df['is_english'] = [result['is_english'] for result in language_data]
+    df['language_detection_method'] = [result['language_detection_method'] for result in language_data]
+    df['detection_source'] = [result['detection_source'] for result in language_data]  # NEW FIELD
+
+    return df
+```
+
+**SQL Implementation for Snowflake:**
+```sql
+-- Enhanced SQL language detection with job_title fallback
+CASE
+    -- High confidence from job_description
+    WHEN job_description_confidence >= 0.7 THEN job_description_language
+    -- High confidence from job_title
+    WHEN job_title_confidence >= 0.7 THEN job_title_language
+    -- Combined analysis fallback
+    WHEN combined_confidence >= 0.7 THEN combined_language
+    -- Best available fallback
+    WHEN job_title_confidence > job_description_confidence THEN job_title_language
+    ELSE job_description_language
+END as detected_language
+```
+
+### Implementation Plan
+
+**Phase 1: Core Function Enhancement**
+1. Add `detect_language_multi_field()` function to `language_detection.py`
+2. Add `process_dataframe_multi_field()` function with title + description support
+3. Add comprehensive unit tests for multi-field detection scenarios
+4. Update SQL generation function for multi-field detection
+
+**Phase 2: Integration with Stage Processing**
+1. Update `transformations/stage_processing.py` to use multi-field detection
+2. Modify all platform assets to provide both job_title and job_description
+3. Add `detection_source` column to stage table schema
+4. Test with Korean, Chinese, and other non-English job examples
+
+**Phase 3: Validation and Migration**
+1. Compare multi-field vs single-field detection accuracy on sample data
+2. Create migration script to reprocess existing jobs with multi-field detection
+3. Update documentation and add examples of improved detection
+4. Deploy to production with monitoring
+
+**Phase 4: Monitoring and Optimization**
+1. Add detection source metrics to asset metadata
+2. Monitor improvement in non-English job detection rates
+3. Fine-tune confidence thresholds based on real-world performance
+4. Document best practices for multi-field language detection
+
+### Success Criteria
+- ✅ Jobs with corrupted descriptions but clear non-English titles correctly detect language from title
+- ✅ Overall language detection accuracy improved by at least 15%
+- ✅ Korean, Chinese, Japanese, and other non-English jobs properly identified
+- ✅ Reduced false positives where corrupted text defaults to English
+- ✅ New `detection_source` field provides visibility into detection method used
+- ✅ Backward compatibility maintained for existing single-field detection
+
+### Files Affected
+- `transformations/language_detection.py` - Core multi-field detection functions
+- `transformations/stage_processing.py` - Integration with stage processing pipeline
+- All `assets/stage_jobs_*.py` - Updated to use multi-field detection
+- `assets/stage_jobs_unified.py` - Schema updates for detection_source column
+- Migration script for existing data reprocessing
+
+### Test Cases
+**Primary Test Cases:**
+1. **Korean Job with Corrupted Description**: Title in Korean, description garbled → Should detect Korean from title
+2. **English Job with Clean Text**: Both title and description in English → Should detect English with high confidence
+3. **Mixed Language Job**: English title, non-English description → Should detect dominant language
+4. **Short Title + Long Description**: Brief title, detailed description → Should prioritize description
+5. **Empty/Null Fields**: Handle missing title or description gracefully → Should use available field
+
+**Edge Cases:**
+1. **Both Fields Corrupted**: Neither title nor description readable → Graceful fallback to default
+2. **Conflicting Languages**: Title in one language, description in another → Smart resolution logic
+3. **Very Short Text**: Single word titles, brief descriptions → Combined analysis
+4. **HTML in Titles**: Job titles with HTML tags or special characters → Proper cleaning
+5. **Encoding Issues**: Various character encoding problems → Robust handling
+
+### Examples of Improved Detection
+
+**Example 1: Korean Job (from user's issue)**
+```
+Input:
+- job_title: "[쿠팡] 광고 컨설턴트 (계약직, 전환 가능)"
+- job_description: "íì¬ìê°... ì¿ í¡ì ê³ ê°..." (corrupted)
+
+Current Result:
+- detected_language: "en" (incorrect)
+- detection_source: "job_description_fallback"
+- language_confidence: 0.3
+
+Enhanced Result:
+- detected_language: "ko" (correct!)
+- detection_source: "job_title"
+- language_confidence: 0.95
+```
+
+**Example 2: Chinese Job**
+```
+Input:
+- job_title: "招聘 - 软件开发工程师 (北京)"
+- job_description: "我们正在寻找有经验的..." (clean)
+
+Enhanced Result:
+- detected_language: "zh"
+- detection_source: "combined" (both fields reinforce)
+- language_confidence: 0.98
+```
+
+---
+
 ## Template for New Enhancements

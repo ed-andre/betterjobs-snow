@@ -70,8 +70,9 @@ def fix_character_encoding(text: str) -> str:
     if not text:
         return ""
 
-    # Fix common UTF-8 encoding issues
+        # Fix common UTF-8 encoding issues
     encoding_fixes = {
+        # Multi-byte corruptions
         'â€™': "'",  # Right single quotation mark
         'â€œ': '"',  # Left double quotation mark
         'â€': '"',   # Right double quotation mark
@@ -85,6 +86,23 @@ def fix_character_encoding(text: str) -> str:
         'â€ž': '"',  # Double low-9 quotation mark
         'â€º': '›',  # Single right-pointing angle quotation mark
         'â€¹': '‹',  # Single left-pointing angle quotation mark
+        'Ã¼': 'ü',   # u with umlaut (TÃ¼rkiye -> Türkiye)
+        'Ã¡': 'á',   # a with acute accent
+        'Ã©': 'é',   # e with acute accent
+        'Ã­': 'í',   # i with acute accent
+        'Ã³': 'ó',   # o with acute accent
+        'Ãº': 'ú',   # u with acute accent
+        'Ã±': 'ñ',   # n with tilde
+        'Ã§': 'ç',   # c with cedilla
+        'Ã ': 'à',   # a with grave accent
+        'Ã¨': 'è',   # e with grave accent
+        'Ã¬': 'ì',   # i with grave accent
+        'Ã²': 'ò',   # o with grave accent
+        'Ã¹': 'ù',   # u with grave accent
+        'Ã¤': 'ä',   # a with diaeresis
+        'Ã«': 'ë',   # e with diaeresis
+        'Ã¯': 'ï',   # i with diaeresis
+        'Ã¶': 'ö',   # o with diaeresis
     }
 
     for corrupted, correct in encoding_fixes.items():
