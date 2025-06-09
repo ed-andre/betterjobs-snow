@@ -1,3 +1,5 @@
+.cursor/rules/current-date.mdc
+
 project-scope-internal.md
 repo-structure-internal.md
 .venv
@@ -164,4 +166,5 @@ job_sample
 .cursor/rules/custom-rule-react-router.mdc
 bamboohr_company_urls.csv
 greenhouse_company_urls.csv
+
 

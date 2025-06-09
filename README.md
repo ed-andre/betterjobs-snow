@@ -43,11 +43,11 @@ Analytics & Reporting
 
 **Note**: The initial CSV files with verified ATS URLs were generated from a previous version of this project that included automated URL discovery and extraction processes.
 
-### Dagster Pipeline Visualization (OUTDATED)
+### Dagster Pipeline Visualization (IN PROGRESS)
 
 The following diagram shows the structure of our Dagster pipeline assets, including URL discovery, job discovery, and data transport components:
 
-NOTE: This is an outdated diagram. This section will be updated with the latest architecture once fully implemented
+NOTE: This is not the final diagram. This section will be updated with the latest architecture once fully implemented
 
 ![Dagster Pipeline Structure](dagsterpipeline.png)
 
