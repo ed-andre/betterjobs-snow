@@ -9,37 +9,57 @@ from typing import List, Dict, Optional, Tuple
 from dagster import asset, AssetExecutionContext, Config, MetadataValue
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
+from ..transformations.uid_generation import generate_company_platform_id
 
 
-def generate_company_id(company_name: str) -> str:
+def generate_company_id(company_name: str, platform: str) -> str:
     """
-    Generate a stable, unique company ID from company name.
-    Uses first 8 characters of SHA-256 hash to create a compact ID.
+    Generate a stable, unique company ID from company name + platform composite.
+
+    ENHANCEMENT-008: Updated to use composite name + platform ID generation
+    to eliminate hash collisions across different ATS platforms.
+
+    Args:
+        company_name: Company name
+        platform: ATS platform name
+
+    Returns:
+        12-character hexadecimal company ID
     """
-    # Normalize company name (lowercase, remove extra spaces)
-    normalized_name = " ".join(company_name.lower().split())
-    # Generate hash
-    hash_object = hashlib.sha256(normalized_name.encode())
-    # Take first 8 characters for a compact but still unique ID
-    return hash_object.hexdigest()[:8]
+    return generate_company_platform_id(company_name, platform)
 
 
 def handle_company_id_duplicates(conn, table_name: str, context: AssetExecutionContext) -> Dict:
     """
-    Handle potential company_id duplicates by first attempting deduplication of identical records,
-    then resolving true hash collisions gracefully.
+    Handle company_id duplicates by distinguishing between legitimate duplicates and hash collisions.
+
+    Distinguishes between:
+    1. Legitimate duplicates (same company+platform, multiple records) -> Keep best record
+    2. Hash collisions (different company+platform combinations, same company_id) -> Remove all but one, log collision
+    3. Data entry variations (slight company name differences) -> Normalize and deduplicate
     """
     cursor = conn.cursor()
-    stats = {"duplicates_found": 0, "duplicates_resolved": 0, "records_deduplicated": 0}
+    stats = {
+        "duplicates_found": 0,
+        "legitimate_duplicates_resolved": 0,
+        "hash_collisions_found": 0,
+        "hash_collision_records_removed": 0,
+        "data_variations_found": 0,
+        "data_variation_records_resolved": 0
+    }
 
     try:
         cursor.execute("USE DATABASE BETTERJOBS_DB")
         cursor.execute("USE SCHEMA RAW")
 
-        # Check for company_id duplicates
+        # Check for company_id duplicates with detailed analysis
         cursor.execute(f"""
-        SELECT company_id, COUNT(*) as count,
-               LISTAGG(DISTINCT company_name, ', ') as company_names
+        SELECT
+            company_id,
+            COUNT(*) as total_records,
+            COUNT(DISTINCT TRIM(UPPER(company_name)) || '|' || TRIM(UPPER(platform))) as unique_company_platform_pairs,
+            LISTAGG(DISTINCT TRIM(company_name) || ' (' || platform || ')', ' | ') as company_details,
+            ARRAY_AGG(DISTINCT TRIM(UPPER(company_name)) || '|' || TRIM(UPPER(platform))) as unique_pairs_list
         FROM {table_name}
         GROUP BY company_id
         HAVING COUNT(*) > 1
@@ -52,112 +72,144 @@ def handle_company_id_duplicates(conn, table_name: str, context: AssetExecutionC
             context.log.warning(f"Found {len(duplicates)} company_id duplicates")
 
             for dup in duplicates:
-                company_id, count, company_names = dup
-                context.log.info(f"Analyzing duplicate company_id {company_id} for companies: {company_names}")
+                company_id, total_records, unique_pairs, company_details_str, unique_pairs_list = dup
 
-                # Get all records with this duplicate ID with detailed comparison fields
-                cursor.execute(f"""
-                SELECT company_name, company_industry, platform, ats_url, career_url,
-                       url_verified, date_added, last_updated, source_file, file_hash,
-                       ingested_at,
-                       -- Create a signature for comparing record content (excluding metadata)
-                       SHA2(CONCAT(
-                           COALESCE(UPPER(TRIM(company_name)), ''),
-                           COALESCE(UPPER(TRIM(company_industry)), ''),
-                           COALESCE(UPPER(TRIM(platform)), ''),
-                           COALESCE(LOWER(TRIM(ats_url)), ''),
-                           COALESCE(LOWER(TRIM(career_url)), ''),
-                           COALESCE(url_verified::STRING, '')
-                       ), 256) as content_signature
-                FROM {table_name}
-                WHERE company_id = %s
-                ORDER BY url_verified DESC, last_updated DESC, ingested_at DESC
-                """, (company_id,))
+                if unique_pairs == 1:
+                    # Legitimate duplicate - same company+platform, multiple records
+                    context.log.info(f"Legitimate duplicate: company_id {company_id} for: {company_details_str}")
 
-                duplicate_records = cursor.fetchall()
-
-                if len(duplicate_records) > 1:
-                    # Group records by content signature to identify truly identical records
-                    content_groups = {}
-                    for record in duplicate_records:
-                        content_sig = record[11]  # content_signature is at index 11
-                        if content_sig not in content_groups:
-                            content_groups[content_sig] = []
-                        content_groups[content_sig].append(record)
-
-                    if len(content_groups) == 1:
-                        # All records have the same content - this is true duplication (e.g., same CSV from S3 and local)
-                        context.log.info(f"Found {len(duplicate_records)} identical records for {duplicate_records[0][0]} - deduplicating")
-
-                        # Keep the best record (first one based on our ORDER BY)
-                        best_record = duplicate_records[0]
-                        records_to_remove = duplicate_records[1:]
-
-                        context.log.info(f"Keeping best record: {best_record[0]} from {best_record[8]} (verified: {best_record[5]})")
-
-                        # Remove duplicate records
-                        for record in records_to_remove:
-                            cursor.execute(f"""
-                            DELETE FROM {table_name}
+                    # Remove duplicates, keeping the best record based on quality criteria
+                    deduplicate_sql = f"""
+                    DELETE FROM {table_name}
+                    WHERE company_id = %s
+                    AND (company_name, platform, source_file, ingested_at) NOT IN (
+                        SELECT company_name, platform, source_file, ingested_at
+                        FROM (
+                            SELECT
+                                company_name, platform, source_file, ingested_at,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY company_id
+                                    ORDER BY
+                                        url_verified DESC,
+                                        last_updated DESC NULLS LAST,
+                                        ingested_at DESC
+                                ) as rn
+                            FROM {table_name}
                             WHERE company_id = %s
-                            AND company_name = %s
-                            AND source_file = %s
-                            AND file_hash = %s
-                            AND ingested_at = %s
-                            """, (company_id, record[0], record[8], record[9], record[10]))
+                        )
+                        WHERE rn = 1
+                    )
+                    """
 
-                            context.log.info(f"Removed duplicate record: {record[0]} from {record[8]}")
-                            stats["records_deduplicated"] += 1
+                    cursor.execute(deduplicate_sql, (company_id, company_id))
+                    removed_count = cursor.rowcount
+                    stats["legitimate_duplicates_resolved"] += removed_count
+                    context.log.info(f"Removed {removed_count} duplicate records for same company+platform")
+
+                elif unique_pairs > 1:
+                    # Potential hash collision or data entry variations
+                    context.log.warning(f"Multiple company+platform pairs for company_id {company_id}: {company_details_str}")
+
+                    # Check if these are likely data entry variations (similar company names)
+                    cursor.execute(f"""
+                    SELECT DISTINCT
+                        TRIM(UPPER(company_name)) as normalized_company,
+                        TRIM(UPPER(platform)) as normalized_platform,
+                        company_name,
+                        platform,
+                        COUNT(*) as record_count,
+                        MAX(url_verified) as best_url_verified,
+                        MAX(last_updated) as latest_updated,
+                        MAX(ingested_at) as latest_ingested
+                    FROM {table_name}
+                    WHERE company_id = %s
+                    GROUP BY TRIM(UPPER(company_name)), TRIM(UPPER(platform)), company_name, platform
+                    ORDER BY record_count DESC, best_url_verified DESC, latest_updated DESC NULLS LAST
+                    """, (company_id,))
+
+                    collision_records = cursor.fetchall()
+
+                    # Group by normalized company+platform to detect variations
+                    normalized_groups = {}
+                    for record in collision_records:
+                        normalized_key = f"{record[0]}|{record[1]}"  # normalized_company|normalized_platform
+                        if normalized_key not in normalized_groups:
+                            normalized_groups[normalized_key] = []
+                        normalized_groups[normalized_key].append(record)
+
+                    if len(normalized_groups) == 1:
+                        # Data entry variations - same company+platform with slight name differences
+                        stats["data_variations_found"] += 1
+                        context.log.info(f"Data entry variations detected for company_id {company_id}")
+
+                        # Keep the best record across all variations
+                        best_record = collision_records[0]  # Already sorted by quality
+                        context.log.info(f"Keeping best variation: {best_record[2]} ({best_record[3]})")
+
+                        # Remove all other variations
+                        cursor.execute(f"""
+                        DELETE FROM {table_name}
+                        WHERE company_id = %s
+                        AND NOT (
+                            company_name = %s
+                            AND platform = %s
+                            AND ingested_at = %s
+                        )
+                        """, (
+                            company_id,
+                            best_record[2],  # company_name
+                            best_record[3],  # platform
+                            best_record[7]   # latest_ingested
+                        ))
+
+                        removed_count = cursor.rowcount
+                        stats["data_variation_records_resolved"] += removed_count
+
+                        context.log.info(f"Resolved {removed_count} data entry variation records")
 
                     else:
-                        # Multiple content signatures - these are genuinely different companies with hash collision
-                        context.log.warning(f"True hash collision detected for company_id {company_id} - {len(content_groups)} different companies")
+                        # True hash collision - different company+platform combinations
+                        stats["hash_collisions_found"] += 1
+                        context.log.error(f"HASH COLLISION DETECTED: company_id {company_id} assigned to {unique_pairs} different company+platform pairs: {company_details_str}")
 
-                        # Sort content groups by quality (verified URLs, latest updates)
-                        sorted_groups = []
-                        for content_sig, records in content_groups.items():
-                            # Best record in this group
-                            best_in_group = records[0]  # Already sorted by quality
-                            sorted_groups.append((best_in_group, records))
+                        # Keep the best quality record overall
+                        best_record = collision_records[0]
+                        context.log.info(f"Keeping best quality record: {best_record[2]} ({best_record[3]}) - verified: {best_record[5]}, updated: {best_record[6]}")
 
-                        # Sort groups by quality of their best record
-                        sorted_groups.sort(key=lambda x: (
-                            x[0][5] if x[0][5] is not None else False,  # url_verified (boolean)
-                            x[0][7] if x[0][7] is not None else datetime.min,  # last_updated (handle None)
-                            x[0][10] if x[0][10] is not None else datetime.min  # ingested_at (handle None)
-                        ), reverse=True)
+                        # Remove all other records in the collision
+                        cursor.execute(f"""
+                        DELETE FROM {table_name}
+                        WHERE company_id = %s
+                        AND NOT (
+                            company_name = %s
+                            AND platform = %s
+                            AND ingested_at = %s
+                        )
+                        """, (
+                            company_id,
+                            best_record[2],  # company_name
+                            best_record[3],  # platform
+                            best_record[7]   # latest_ingested
+                        ))
 
-                        # Keep the best group with original company_id
-                        best_group = sorted_groups[0]
-                        best_record = best_group[0]
-                        context.log.info(f"Keeping original company_id {company_id} for: {best_record[0]} (verified: {best_record[5]})")
+                        removed_count = cursor.rowcount
+                        stats["hash_collision_records_removed"] += removed_count
 
-                        # Reassign company_ids for other groups
-                        for i, (group_best, group_records) in enumerate(sorted_groups[1:], 1):
-                            company_name = group_best[0]
-                            # Add a counter to make it unique while keeping it deterministic
-                            modified_name = f"{company_name}_dup_{i}"
-                            new_company_id = generate_company_id(modified_name)
-
-                            context.log.info(f"Reassigning {company_name} to new ID: {new_company_id}")
-
-                            # Update all records in this group with the new company_id
-                            for record in group_records:
-                                cursor.execute(f"""
-                                UPDATE {table_name}
-                                SET company_id = %s
-                                WHERE company_id = %s
-                                AND company_name = %s
-                                AND source_file = %s
-                                AND file_hash = %s
-                                AND ingested_at = %s
-                                """, (new_company_id, company_id, record[0], record[8], record[9], record[10]))
-
-                            stats["duplicates_resolved"] += len(group_records)
+                        # Log details of removed company+platform pairs
+                        for record in collision_records[1:]:
+                            context.log.warning(f"REMOVED due to hash collision: {record[2]} ({record[3]}) - {record[4]} records")
 
             conn.commit()
-            context.log.info(f"Deduplicated {stats['records_deduplicated']} identical records")
-            context.log.info(f"Resolved {stats['duplicates_resolved']} true hash collision records")
+
+            # Summary logging
+            if stats["legitimate_duplicates_resolved"] > 0:
+                context.log.info(f"Resolved {stats['legitimate_duplicates_resolved']} legitimate duplicate records")
+
+            if stats["data_variation_records_resolved"] > 0:
+                context.log.info(f"Resolved {stats['data_variation_records_resolved']} data entry variation records")
+
+            if stats["hash_collisions_found"] > 0:
+                context.log.error(f"CRITICAL: Found {stats['hash_collisions_found']} hash collisions, removed {stats['hash_collision_records_removed']} records. Consider increasing hash length!")
         else:
             context.log.info("No company_id duplicates found")
 
@@ -385,8 +437,23 @@ def process_local_csv_files(
                 # Read CSV file
                 df = pd.read_csv(file_path)
                 if not df.empty:
-                    # Generate company_id for all records
-                    df['company_id'] = df['company_name'].apply(generate_company_id)
+                    # Ensure platform column exists - if not, derive from filename or use "local"
+                    if 'platform' not in df.columns:
+                        # Try to derive platform from filename
+                        filename_lower = os.path.basename(file_path).lower()
+                        if 'workday' in filename_lower:
+                            df['platform'] = 'workday'
+                        elif 'greenhouse' in filename_lower:
+                            df['platform'] = 'greenhouse'
+                        elif 'bamboohr' in filename_lower:
+                            df['platform'] = 'bamboohr'
+                        elif 'smartrecruiters' in filename_lower:
+                            df['platform'] = 'smartrecruiters'
+                        else:
+                            df['platform'] = 'local'  # Default platform for local files
+
+                    # Generate company_id for all records using composite name + platform
+                    df['company_id'] = df.apply(lambda row: generate_company_id(row['company_name'], row['platform']), axis=1)
 
                     # Convert timestamp columns if they exist in CSV
                     timestamp_columns = ['date_added', 'last_updated']
@@ -536,12 +603,13 @@ def process_s3_csv_files(
 
                     cursor.execute(copy_sql)
 
-                    # Generate company_id for all records
+                    # Generate company_id for all records using composite name + platform
                     cursor.execute(f"""
                     UPDATE {temp_table}
-                    SET company_id = LEFT(SHA2(LOWER(TRIM(company_name)), 256), 8)
+                    SET company_id = LEFT(SHA2(LOWER(TRIM(company_name)) || '|' || LOWER(TRIM(platform)), 256), 12)
                     WHERE company_name IS NOT NULL
                     AND LENGTH(TRIM(company_name)) > 0
+                    AND platform IS NOT NULL
                     """)
 
                     # Get record count and validate data
@@ -732,7 +800,6 @@ def snowflake_master_company_urls(
         "skipped_files": 0,
         "errors": 0,
         "duplicates_found": 0,
-        "duplicates_resolved": 0,
         "records_deduplicated": 0
     }
 
@@ -983,8 +1050,10 @@ def snowflake_master_company_urls(
     context.log.info(f"Unique companies: {unique_companies}")
     context.log.info(f"Verified URLs: {verified_urls}")
     context.log.info(f"Duplicates found: {stats['duplicates_found']}")
-    context.log.info(f"Records deduplicated: {stats['records_deduplicated']}")
-    context.log.info(f"Duplicates resolved: {stats['duplicates_resolved']}")
+    context.log.info(f"Legitimate duplicates resolved: {stats['legitimate_duplicates_resolved']}")
+    context.log.info(f"Data variations resolved: {stats['data_variation_records_resolved']}")
+    context.log.info(f"Hash collisions found: {stats['hash_collisions_found']}")
+    context.log.info(f"Hash collision records removed: {stats['hash_collision_records_removed']}")
     context.log.info(f"Errors encountered: {stats['errors']}")
     context.log.info("=========================")
 
@@ -998,8 +1067,11 @@ def snowflake_master_company_urls(
         "unique_companies": MetadataValue.int(unique_companies),
         "verified_urls": MetadataValue.int(verified_urls),
         "duplicates_found": MetadataValue.int(stats["duplicates_found"]),
-        "records_deduplicated": MetadataValue.int(stats["records_deduplicated"]),
-        "duplicates_resolved": MetadataValue.int(stats["duplicates_resolved"]),
+        "legitimate_duplicates_resolved": MetadataValue.int(stats["legitimate_duplicates_resolved"]),
+        "hash_collisions_found": MetadataValue.int(stats["hash_collisions_found"]),
+        "hash_collision_records_removed": MetadataValue.int(stats["hash_collision_records_removed"]),
+        "data_variations_found": MetadataValue.int(stats["data_variations_found"]),
+        "data_variation_records_resolved": MetadataValue.int(stats["data_variation_records_resolved"]),
         "errors": MetadataValue.int(stats["errors"]),
         "snowflake_table": MetadataValue.text(f"BETTERJOBS_DB.RAW.{table_name}"),
         "s3_enabled": MetadataValue.bool(config.enable_s3_processing and bool(s3_uri)),
@@ -1016,8 +1088,10 @@ def snowflake_master_company_urls(
         "unique_companies": unique_companies,
         "verified_urls": verified_urls,
         "duplicates_found": stats["duplicates_found"],
-        "records_deduplicated": stats["records_deduplicated"],
-        "duplicates_resolved": stats["duplicates_resolved"],
+        "legitimate_duplicates_resolved": stats["legitimate_duplicates_resolved"],
+        "data_variation_records_resolved": stats["data_variation_records_resolved"],
+        "hash_collisions_found": stats["hash_collisions_found"],
+        "hash_collision_records_removed": stats["hash_collision_records_removed"],
         "errors": stats["errors"],
         "processed_at": datetime.now()
     }])

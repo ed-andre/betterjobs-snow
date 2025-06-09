@@ -7,19 +7,23 @@ from typing import List, Dict, Optional, Tuple
 from dagster import asset, AssetExecutionContext, Config, MetadataValue
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
+from ..transformations.uid_generation import generate_company_platform_id
 
 
 def generate_profile_id(company_name: str) -> str:
     """
     Generate a stable, unique profile ID from company name.
-    Uses first 8 characters of SHA-256 hash to create a compact ID.
+
+    ENHANCEMENT-008: Updated to use composite name + "PROFILE" platform designation
+    to maintain consistency with master company URLs approach.
+
+    Args:
+        company_name: Company name
+
+    Returns:
+        12-character hexadecimal profile ID
     """
-    # Normalize company name (lowercase, remove extra spaces)
-    normalized_name = " ".join(company_name.lower().split())
-    # Generate hash
-    hash_object = hashlib.sha256(normalized_name.encode())
-    # Take first 8 characters for a compact but still unique ID
-    return hash_object.hexdigest()[:8]
+    return generate_company_platform_id(company_name, "PROFILE")
 
 
 def setup_snowflake_stage_and_table(conn, stage_name: str, s3_uri: str, table_name: str):
@@ -376,8 +380,8 @@ def process_s3_csv_files(
                         raw_data
                     )
                     SELECT DISTINCT
-                        -- Generate profile_id from company name
-                        SUBSTR(SHA2(LOWER(TRIM(company_name)), 256), 1, 8) as profile_id,
+                        -- Generate profile_id from company name using composite "PROFILE" platform
+                        LEFT(SHA2(LOWER(TRIM(company_name)) || '|PROFILE', 256), 12) as profile_id,
                         TRIM(company_name) as company_name,
                         NULLIF(TRIM(company_industry), '') as company_industry,
                         NULLIF(TRIM(employee_count_range), '') as employee_count_range,
@@ -528,18 +532,33 @@ def process_s3_csv_files(
 
 
 def handle_profile_duplicates(conn, table_name: str, context: AssetExecutionContext) -> Dict:
-    """Handle potential profile_id duplicates by deduplication."""
+    """
+    Handle potential profile_id duplicates by deduplication.
+
+    Distinguishes between:
+    1. Legitimate duplicates (same company, multiple records) -> Keep most recent
+    2. Hash collisions (different companies, same profile_id) -> Remove all but one, log collision
+    """
     cursor = conn.cursor()
-    stats = {"duplicates_found": 0, "duplicates_resolved": 0}
+    stats = {
+        "duplicates_found": 0,
+        "legitimate_duplicates_resolved": 0,
+        "hash_collisions_found": 0,
+        "hash_collision_records_removed": 0
+    }
 
     try:
         cursor.execute("USE DATABASE BETTERJOBS_DB")
         cursor.execute("USE SCHEMA RAW")
 
-        # Check for profile_id duplicates
+        # Check for profile_id duplicates with detailed analysis
         cursor.execute(f"""
-        SELECT profile_id, COUNT(*) as count,
-               LISTAGG(DISTINCT company_name, ', ') as company_names
+        SELECT
+            profile_id,
+            COUNT(*) as total_records,
+            COUNT(DISTINCT TRIM(UPPER(company_name))) as unique_companies,
+            LISTAGG(DISTINCT TRIM(company_name), ' | ') as company_names,
+            ARRAY_AGG(DISTINCT TRIM(UPPER(company_name))) as unique_company_list
         FROM {table_name}
         GROUP BY profile_id
         HAVING COUNT(*) > 1
@@ -552,26 +571,88 @@ def handle_profile_duplicates(conn, table_name: str, context: AssetExecutionCont
             context.log.warning(f"Found {len(duplicates)} profile_id duplicates")
 
             for dup in duplicates:
-                profile_id, count, company_names = dup
-                context.log.info(f"Resolving duplicate profile_id {profile_id} for companies: {company_names}")
+                profile_id, total_records, unique_companies, company_names_str, unique_company_list = dup
 
-                # Keep the most recent record (by ingested_at)
-                cursor.execute(f"""
-                DELETE FROM {table_name}
-                WHERE profile_id = %s
-                AND ingested_at NOT IN (
-                    SELECT MAX(ingested_at)
+                if unique_companies == 1:
+                    # Legitimate duplicate - same company, multiple records
+                    context.log.info(f"Legitimate duplicate: profile_id {profile_id} for company: {company_names_str}")
+
+                    # Keep the most recent record (by ingested_at)
+                    cursor.execute(f"""
+                    DELETE FROM {table_name}
+                    WHERE profile_id = %s
+                    AND ingested_at NOT IN (
+                        SELECT MAX(ingested_at)
+                        FROM {table_name}
+                        WHERE profile_id = %s
+                    )
+                    """, (profile_id, profile_id))
+
+                    removed_count = cursor.rowcount
+                    stats["legitimate_duplicates_resolved"] += removed_count
+                    context.log.info(f"Removed {removed_count} duplicate records for same company")
+
+                else:
+                    # Hash collision - different companies with same profile_id
+                    stats["hash_collisions_found"] += 1
+                    context.log.error(f"HASH COLLISION DETECTED: profile_id {profile_id} assigned to {unique_companies} different companies: {company_names_str}")
+
+                    # Get detailed info about each company for collision handling
+                    cursor.execute(f"""
+                    SELECT company_name, company_industry, employee_count_range, city,
+                           ingested_at, source_file,
+                           ROW_NUMBER() OVER (ORDER BY
+                               CASE WHEN company_industry IS NOT NULL THEN 1 ELSE 2 END,
+                               CASE WHEN employee_count_range IS NOT NULL THEN 1 ELSE 2 END,
+                               CASE WHEN city IS NOT NULL THEN 1 ELSE 2 END,
+                               ingested_at DESC
+                           ) as quality_rank
                     FROM {table_name}
                     WHERE profile_id = %s
-                )
-                """, (profile_id, profile_id))
+                    ORDER BY quality_rank
+                    """, (profile_id,))
 
-                removed_count = cursor.rowcount
-                stats["duplicates_resolved"] += removed_count
-                context.log.info(f"Removed {removed_count} duplicate records for profile_id {profile_id}")
+                    collision_records = cursor.fetchall()
+
+                    # Keep the best quality record (most complete data)
+                    best_record = collision_records[0]
+                    context.log.info(f"Keeping best quality record: {best_record[0]} (industry: {best_record[1]}, employees: {best_record[2]}, city: {best_record[3]})")
+
+                    # Remove all other records in the collision
+                    cursor.execute(f"""
+                    DELETE FROM {table_name}
+                    WHERE profile_id = %s
+                    AND NOT (
+                        company_name = %s
+                        AND ingested_at = %s
+                        AND COALESCE(company_industry, '') = %s
+                        AND COALESCE(employee_count_range, '') = %s
+                        AND COALESCE(city, '') = %s
+                    )
+                    """, (
+                        profile_id,
+                        best_record[0],  # company_name
+                        best_record[4],  # ingested_at
+                        best_record[1] or '',  # company_industry
+                        best_record[2] or '',  # employee_count_range
+                        best_record[3] or ''   # city
+                    ))
+
+                    removed_count = cursor.rowcount
+                    stats["hash_collision_records_removed"] += removed_count
+
+                    # Log details of removed companies
+                    for record in collision_records[1:]:
+                        context.log.warning(f"REMOVED due to hash collision: {record[0]} from {record[5]} (ingested: {record[4]})")
 
             conn.commit()
-            context.log.info(f"Resolved {stats['duplicates_resolved']} duplicate records")
+
+            # Summary logging
+            if stats["legitimate_duplicates_resolved"] > 0:
+                context.log.info(f"Resolved {stats['legitimate_duplicates_resolved']} legitimate duplicate records")
+
+            if stats["hash_collisions_found"] > 0:
+                context.log.error(f"CRITICAL: Found {stats['hash_collisions_found']} hash collisions, removed {stats['hash_collision_records_removed']} records. Consider increasing hash length!")
 
     except Exception as e:
         context.log.error(f"Error handling duplicates: {str(e)}")
@@ -681,7 +762,9 @@ def raw_company_profiles(
             "records_with_city": MetadataValue.int(stats[2]),
             "s3_files_processed": MetadataValue.int(len([r for r in s3_results if r['status'] == 'success'])),
             "duplicates_found": MetadataValue.int(duplicate_stats['duplicates_found']),
-            "duplicates_resolved": MetadataValue.int(duplicate_stats['duplicates_resolved']),
+            "legitimate_duplicates_resolved": MetadataValue.int(duplicate_stats['legitimate_duplicates_resolved']),
+            "hash_collisions_found": MetadataValue.int(duplicate_stats['hash_collisions_found']),
+            "hash_collision_records_removed": MetadataValue.int(duplicate_stats['hash_collision_records_removed']),
             "sample_data": MetadataValue.md(df.head(10).to_markdown() if not df.empty else "No data")
         }
 

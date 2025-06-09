@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def clean_html_tags(text: Optional[str]) -> str:
     """
-    Remove HTML tags and decode HTML entities from text.
+    Remove HTML tags and decode HTML entities from text while preserving structure.
 
     Args:
         text: Raw text that may contain HTML tags and entities
@@ -31,18 +31,103 @@ def clean_html_tags(text: Optional[str]) -> str:
     # Decode HTML entities first (e.g., &amp; -> &, &lt; -> <)
     text = html.unescape(text)
 
-    # Remove HTML tags using regex
+    # Fix common character encoding issues FIRST (before HTML processing)
+    text = fix_character_encoding(text)
+
+    # Convert HTML structure to readable text format
+    text = convert_html_structure_to_text(text)
+
+    # Convert remaining line breaks to spaces
+    text = re.sub(r'<br\s*/?>', ' ', text, flags=re.IGNORECASE)
+
+    # Remove remaining HTML tags using regex
     # This pattern matches opening and closing tags, including self-closing tags
-    clean_text = re.sub(r'<[^>]+>', '', text)
+    clean_text = re.sub(r'<[^>]+>', ' ', text)  # NOTE: Replace with space, not empty string
 
     # Remove HTML comments
-    clean_text = re.sub(r'<!--.*?-->', '', clean_text, flags=re.DOTALL)
+    clean_text = re.sub(r'<!--.*?-->', ' ', clean_text, flags=re.DOTALL)
 
     # Handle common HTML artifacts
     clean_text = clean_text.replace('&nbsp;', ' ')
     clean_text = clean_text.replace('\xa0', ' ')  # Non-breaking space
 
-    return clean_text.strip()
+    # Normalize whitespace after all processing
+    clean_text = re.sub(r'\s+', ' ', clean_text.strip())
+
+    return clean_text
+
+
+def fix_character_encoding(text: str) -> str:
+    """
+    Fix common UTF-8 character encoding issues.
+
+    Args:
+        text: Text with potential encoding issues
+
+    Returns:
+        Text with corrected character encoding
+    """
+    if not text:
+        return ""
+
+    # Fix common UTF-8 encoding issues
+    encoding_fixes = {
+        'â€™': "'",  # Right single quotation mark
+        'â€œ': '"',  # Left double quotation mark
+        'â€': '"',   # Right double quotation mark
+        'â€"': '–',  # En dash
+        'â€"': '—',  # Em dash
+        'â€¢': '•',  # Bullet point
+        'â€¦': '…',  # Horizontal ellipsis
+        'â€': '"',   # Another quote variant
+        'â€˜': "'",  # Left single quotation mark
+        'â€š': "'",  # Single low-9 quotation mark
+        'â€ž': '"',  # Double low-9 quotation mark
+        'â€º': '›',  # Single right-pointing angle quotation mark
+        'â€¹': '‹',  # Single left-pointing angle quotation mark
+    }
+
+    for corrupted, correct in encoding_fixes.items():
+        text = text.replace(corrupted, correct)
+
+    return text
+
+
+def convert_html_structure_to_text(text: str) -> str:
+    """
+    Convert HTML structure elements to readable text format.
+
+    Args:
+        text: Text with HTML structure elements
+
+    Returns:
+        Text with HTML structure converted to readable format
+    """
+    if not text:
+        return ""
+
+    # Convert list items to bullet points with proper spacing
+    text = re.sub(r'<li[^>]*>', ' • ', text, flags=re.IGNORECASE)
+    text = re.sub(r'</li>', '. ', text, flags=re.IGNORECASE)
+
+    # Convert paragraphs to double line breaks for separation
+    text = re.sub(r'<p[^>]*>', '\n\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</p>', '', text, flags=re.IGNORECASE)
+
+    # Convert div elements to line breaks
+    text = re.sub(r'<div[^>]*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</div>', '', text, flags=re.IGNORECASE)
+
+    # Convert headers to line breaks with spacing
+    for level in range(1, 7):  # h1 through h6
+        text = re.sub(f'<h{level}[^>]*>', '\n\n', text, flags=re.IGNORECASE)
+        text = re.sub(f'</h{level}>', '\n', text, flags=re.IGNORECASE)
+
+    # Handle list containers
+    text = re.sub(r'<[uo]l[^>]*>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</[uo]l>', '\n', text, flags=re.IGNORECASE)
+
+    return text
 
 
 def normalize_whitespace(text: Optional[str]) -> str:
@@ -344,8 +429,13 @@ def clean_job_description(description: Optional[str]) -> str:
     if not description or not isinstance(description, str):
         return ""
 
-    # Remove HTML tags and normalize whitespace
-    clean_desc = normalize_whitespace(clean_html_tags(description))
+    # Clean HTML tags with structure preservation and character encoding fixes
+    clean_desc = clean_html_tags(description)
+
+    # Convert line breaks to spaces and normalize whitespace
+    # (This handles any remaining line breaks after HTML structure conversion)
+    clean_desc = clean_desc.replace('\n', ' ').replace('\r', ' ')
+    clean_desc = normalize_whitespace(clean_desc)
 
     # Remove common boilerplate patterns
     boilerplate_patterns = [
@@ -361,9 +451,9 @@ def clean_job_description(description: Optional[str]) -> str:
     for pattern in boilerplate_patterns:
         clean_desc = re.sub(pattern, '', clean_desc, flags=re.IGNORECASE | re.DOTALL)
 
-    # Remove excessive bullet points and formatting artifacts
+    # Remove excessive bullet points and formatting artifacts (but preserve meaningful ones)
     clean_desc = re.sub(r'[•·▪▫‣⁃]\s*', '• ', clean_desc)  # Standardize bullet points
-    clean_desc = re.sub(r'\n\s*\n\s*\n+', '\n\n', clean_desc)  # Remove excessive line breaks
+    clean_desc = re.sub(r'•\s*•\s*', '• ', clean_desc)      # Remove duplicate bullets
 
     # Final whitespace normalization
     clean_desc = normalize_whitespace(clean_desc)

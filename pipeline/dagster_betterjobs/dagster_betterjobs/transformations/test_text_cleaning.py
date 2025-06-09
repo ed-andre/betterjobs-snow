@@ -96,5 +96,86 @@ def test_text_cleaning():
     print(f"  Input:  {sample_data}")
     print(f"  Output: {cleaned_data}")
 
+    # ========== BUG REPRODUCTION TESTS ==========
+    print("\n" + "=" * 60)
+    print("BUG REPRODUCTION TESTS - BUG-010")
+    print("=" * 60)
+
+    # Test 1: Line break concatenation issue
+    print("\n1. LINE BREAK CONCATENATION BUG:")
+    line_break_text = """React etc.
+N-tier application architecture
+Strong background in multiple disciplines with an engineering mindset
+In-depth knowledge of one of the following RDBMS: Oracle or MS SQL Server
+Experience working in an agile environment"""
+
+    clean_line_breaks = clean_job_description(line_break_text)
+    print(f"  Input (with natural line breaks):")
+    print(f"    {repr(line_break_text)}")
+    print(f"  Output (should preserve word boundaries):")
+    print(f"    {repr(clean_line_breaks)}")
+    print(f"  Issue: Words concatenated? {('React etc.N-tier' in clean_line_breaks or 'architectureStrong' in clean_line_breaks)}")
+    print()
+
+    # Test 2: HTML list structure destruction
+    print("2. HTML LIST STRUCTURE DESTRUCTION BUG:")
+    html_list_text = """<ul>
+<li>Perform qualitative and quantitative analysis</li>
+<li>Work with editorial tools to classify web pages</li>
+<li>Collaborate with data scientists</li>
+</ul>"""
+
+    clean_html_list = clean_job_description(html_list_text)
+    print(f"  Input (structured HTML list):")
+    print(f"    {repr(html_list_text)}")
+    print(f"  Output (should preserve logical separation):")
+    print(f"    {repr(clean_html_list)}")
+    print(f"  Issue: Words concatenated? {'analysisWork' in clean_html_list}")
+    print()
+
+    # Test 3: Character encoding issues
+    print("3. CHARACTER ENCODING ISSUES:")
+    encoding_text = "We are looking for developers with good experience in data analytics."
+    # Simulate common encoding corruption
+    corrupted_text = "We are looking for developers' with good experience in data analytics."
+
+    clean_encoding = clean_job_description(corrupted_text)
+    print(f"  Input (corrupted encoding):")
+    print(f"    {repr(corrupted_text)}")
+    print(f"  Output (should fix encoding):")
+    print(f"    {repr(clean_encoding)}")
+    print(f"  Issue: Still corrupted? {'â€' in clean_encoding}")
+    print()
+
+    # Test 4: Complex real-world example
+    print("4. COMPLEX REAL-WORLD EXAMPLE:")
+    complex_text = """<p>We are seeking a Senior Software Engineer with:</p>
+<ul>
+<li>5+ years of experience with JavaScript
+React, Node.js</li>
+<li>Strong SQL Server
+Experience with databases</li>
+<li>Bachelor's degree in Computer Science
+OR equivalent experience</li>
+</ul>
+<p>This role offers competitive salary and benefits.</p>
+
+We are an equal opportunity employer."""
+
+    clean_complex = clean_job_description(complex_text)
+    print(f"  Input (complex HTML with line breaks):")
+    print(f"    {repr(complex_text)}")
+    print(f"  Output (should be readable):")
+    print(f"    {repr(clean_complex)}")
+    print(f"  Issues detected:")
+    print(f"    - JavaScript+React concatenation: {'JavaScriptReact' in clean_complex}")
+    print(f"    - SQL Server+Experience concatenation: {'ServerExperience' in clean_complex}")
+    print(f"    - Degree+OR concatenation: {'ScienceOR' in clean_complex}")
+    print()
+
+    print("=" * 60)
+    print("END BUG REPRODUCTION TESTS")
+    print("=" * 60 + "\n")
+
 if __name__ == "__main__":
     test_text_cleaning()
