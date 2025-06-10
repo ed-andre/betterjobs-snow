@@ -91,49 +91,94 @@ CREATE TABLE IF NOT EXISTS jobs_unified (
 );
 ```
 
-### 2.1 Future Schema Extensions (Phase 2 - LLM Enrichments)
+### 2.1 LLM Enrichment Schema (Phase 2 - Separate Table Approach)
 
-When Phase 2 LLM processing is implemented, the following columns will be added:
+**RECOMMENDED**: Create a separate `jobs_llm_enriched` table instead of altering `jobs_unified`.
+
+**Benefits of Separate Table**:
+- ✅ Keep `jobs_unified` schema stable for existing analytics
+- ✅ Independent LLM processing without affecting base data
+- ✅ Better performance for queries not needing LLM data
+- ✅ Easier management of confidence scores and reprocessing
+- ✅ Clean separation of base data vs AI-extracted data
 
 ```sql
--- Add LLM extraction columns in Phase 2
-ALTER TABLE jobs_unified ADD COLUMN salary_min NUMBER;
-ALTER TABLE jobs_unified ADD COLUMN salary_max NUMBER;
-ALTER TABLE jobs_unified ADD COLUMN salary_currency STRING DEFAULT 'USD';
-ALTER TABLE jobs_unified ADD COLUMN salary_period STRING;  -- hourly, annually, monthly
-ALTER TABLE jobs_unified ADD COLUMN salary_confidence FLOAT;
+-- Create LLM enrichment table (Phase 2)
+CREATE TABLE IF NOT EXISTS jobs_llm_enriched (
+    -- Foreign key to jobs_unified (match exact data type)
+    job_uid STRING PRIMARY KEY,
 
--- Experience and requirements (from LLM)
-ALTER TABLE jobs_unified ADD COLUMN min_years_experience NUMBER;
-ALTER TABLE jobs_unified ADD COLUMN max_years_experience NUMBER;
-ALTER TABLE jobs_unified ADD COLUMN experience_level STRING;  -- Entry, Mid, Senior, Executive
-ALTER TABLE jobs_unified ADD COLUMN education_requirements VARIANT;  -- Array of requirements
+    -- Salary information (from LLM)
+    salary_min NUMBER,
+    salary_max NUMBER,
+    salary_currency STRING DEFAULT 'USD',
+    salary_period STRING,  -- hourly, annually, monthly
+    salary_type STRING,    -- base, total, contract
+    equity_mentioned BOOLEAN DEFAULT FALSE,
+    bonus_mentioned BOOLEAN DEFAULT FALSE,
+    salary_confidence FLOAT,
 
--- Technical skills (from LLM, stored as JSON arrays)
-ALTER TABLE jobs_unified ADD COLUMN programming_languages VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN databases VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN cloud_platforms VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN frameworks VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN tools VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN soft_skills VARIANT;
+    -- Experience requirements (from LLM)
+    min_years_experience NUMBER,
+    max_years_experience NUMBER,
+    experience_level STRING,  -- Entry, Mid, Senior, Executive
+    specific_technologies_years VARIANT, -- JSON object: {"Python": 3, "React": 2}
+    education_requirements VARIANT,      -- JSON array: ["Bachelor's degree", "Master's preferred"]
+    certifications VARIANT,              -- JSON array: ["AWS Certified", "PMP"]
+    experience_confidence FLOAT,
 
--- Work arrangement (from LLM)
-ALTER TABLE jobs_unified ADD COLUMN work_type STRING;  -- Remote, Hybrid, On-site
-ALTER TABLE jobs_unified ADD COLUMN remote_flexibility STRING;
-ALTER TABLE jobs_unified ADD COLUMN travel_requirements STRING;
-ALTER TABLE jobs_unified ADD COLUMN office_locations VARIANT;
+    -- Technical skills (from LLM, consolidated as JSON objects)
+    technical_skills VARIANT,            -- {"languages": ["Python", "JavaScript"], "databases": ["PostgreSQL"], "cloud": ["AWS", "Azure"], "frameworks": ["React", "Django"], "tools": ["Docker", "Git"]}
+    soft_skills VARIANT,                 -- ["Communication", "Leadership", "Problem Solving", "Team Collaboration"]
+    skills_confidence FLOAT,
 
--- Keywords and classification (from LLM)
-ALTER TABLE jobs_unified ADD COLUMN primary_keywords VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN industry_keywords VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN role_type_keywords VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN company_stage_keywords VARIANT;
-ALTER TABLE jobs_unified ADD COLUMN job_family STRING;
-ALTER TABLE jobs_unified ADD COLUMN job_sub_family STRING;
+    -- Work arrangement (from LLM)
+    work_type STRING,                    -- Remote, Hybrid, On-site
+    remote_flexibility STRING,           -- "3 days remote, 2 days office"
+    travel_requirements STRING,          -- "10% travel required"
+    office_locations VARIANT,            -- ["San Francisco, CA", "New York, NY"]
+    timezone_requirements STRING,        -- "Pacific Time preferred"
+    work_arrangement_confidence FLOAT,
 
--- Additional quality metrics
-ALTER TABLE jobs_unified ADD COLUMN extraction_confidence_avg FLOAT;
-ALTER TABLE jobs_unified ADD COLUMN keyword_quality_score FLOAT;
+    -- Job classification (from LLM)
+    job_family STRING,                   -- Engineering, Data, Product, Sales, Marketing
+    job_sub_family STRING,               -- Backend Engineering, Data Science, etc.
+    seniority_level STRING,              -- Entry, Mid, Senior, Executive
+    primary_keywords VARIANT,            -- ["Full Stack", "API Development", "Microservices"]
+    industry_keywords VARIANT,           -- ["FinTech", "B2B SaaS", "High Growth"]
+    role_type STRING,                    -- IC, Manager, Director, VP
+    team_size STRING,                    -- "5-10 engineers"
+    classification_confidence FLOAT,
+
+    -- LLM processing metadata
+    llm_processed BOOLEAN DEFAULT TRUE,
+    llm_processing_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    llm_model_version STRING DEFAULT 'gemini-2.5-flash-preview-05-20',
+    llm_overall_confidence FLOAT,
+    llm_needs_manual_review BOOLEAN DEFAULT FALSE,
+
+    -- Quality validation
+    extraction_confidence_avg FLOAT,     -- Average of all confidence scores
+    keyword_quality_score FLOAT,         -- SQL-based keyword validation score
+    validation_status STRING DEFAULT 'pending', -- pending, validated, needs_review
+    last_updated TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Add foreign key constraint after table creation (more reliable approach)
+ALTER TABLE jobs_llm_enriched
+ADD CONSTRAINT fk_jobs_llm_job_uid
+FOREIGN KEY (job_uid) REFERENCES jobs_unified(job_uid);
+
+-- Add clustering for performance
+ALTER TABLE jobs_llm_enriched CLUSTER BY (llm_processing_timestamp);
+
+-- Create index on confidence for quality queries
+CREATE INDEX IF NOT EXISTS idx_llm_confidence
+ON jobs_llm_enriched (llm_overall_confidence);
+
+-- Create index on validation status
+CREATE INDEX IF NOT EXISTS idx_validation_status
+ON jobs_llm_enriched (validation_status);
 ```
 
 ### 3. Add Clustering and Indexes
@@ -208,23 +253,118 @@ SELECT * FROM jobs_unified
 WHERE date_posted >= CURRENT_DATE - 30
 AND is_active = TRUE;
 
--- View for jobs with salary information
-CREATE OR REPLACE VIEW jobs_with_salary AS
-SELECT * FROM jobs_unified
-WHERE salary_min IS NOT NULL OR salary_max IS NOT NULL;
+-- View for jobs with complete LLM enrichment
+CREATE OR REPLACE VIEW jobs_fully_enriched AS
+SELECT
+    j.*,
+    llm.*
+FROM jobs_unified j
+INNER JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid
+WHERE j.is_english = TRUE;
 
--- Platform summary view
+-- View for jobs with salary information (from LLM extraction)
+CREATE OR REPLACE VIEW jobs_with_salary AS
+SELECT
+    j.*,
+    llm.salary_min,
+    llm.salary_max,
+    llm.salary_currency,
+    llm.salary_period,
+    llm.salary_confidence
+FROM jobs_unified j
+INNER JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid
+WHERE llm.salary_min IS NOT NULL OR llm.salary_max IS NOT NULL;
+
+-- View for high-confidence LLM extractions
+CREATE OR REPLACE VIEW jobs_high_confidence_llm AS
+SELECT
+    j.*,
+    llm.*
+FROM jobs_unified j
+INNER JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid
+WHERE llm.llm_overall_confidence >= 0.8;
+
+-- Platform summary view (updated for LLM data)
 CREATE OR REPLACE VIEW platform_summary AS
 SELECT
-    platform,
+    j.platform,
     COUNT(*) as total_jobs,
-    COUNT(CASE WHEN is_english = TRUE THEN 1 END) as english_jobs,
-    COUNT(CASE WHEN salary_min IS NOT NULL THEN 1 END) as jobs_with_salary,
-    AVG(data_quality_score) as avg_quality_score,
-    MIN(date_posted) as earliest_job,
-    MAX(date_posted) as latest_job
-FROM jobs_unified
-GROUP BY platform;
+    COUNT(CASE WHEN j.is_english = TRUE THEN 1 END) as english_jobs,
+    COUNT(llm.job_uid) as jobs_with_llm_data,
+    COUNT(CASE WHEN llm.salary_min IS NOT NULL THEN 1 END) as jobs_with_salary,
+    COUNT(CASE WHEN llm.llm_overall_confidence >= 0.8 THEN 1 END) as high_confidence_extractions,
+    AVG(j.data_quality_score) as avg_base_quality_score,
+    AVG(llm.llm_overall_confidence) as avg_llm_confidence,
+    MIN(j.date_posted) as earliest_job,
+    MAX(j.date_posted) as latest_job
+FROM jobs_unified j
+LEFT JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid
+GROUP BY j.platform;
+
+-- LLM processing status view
+CREATE OR REPLACE VIEW llm_processing_status AS
+SELECT
+    COUNT(j.job_uid) as total_jobs,
+    COUNT(llm.job_uid) as processed_jobs,
+    COUNT(j.job_uid) - COUNT(llm.job_uid) as pending_jobs,
+    ROUND((COUNT(llm.job_uid)::FLOAT / COUNT(j.job_uid)) * 100, 1) as processing_percentage,
+    COUNT(CASE WHEN llm.llm_overall_confidence >= 0.8 THEN 1 END) as high_confidence_extractions,
+    COUNT(CASE WHEN llm.llm_needs_manual_review = TRUE THEN 1 END) as needs_manual_review,
+    AVG(llm.llm_overall_confidence) as avg_confidence_score
+FROM jobs_unified j
+LEFT JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid
+WHERE j.is_english = TRUE;
+
+-- Skills analysis view (updated for consolidated technical_skills)
+CREATE OR REPLACE VIEW skills_analysis AS
+SELECT
+    skill.value::STRING as skill_name,
+    'technical_language' as skill_category,
+    COUNT(*) as frequency,
+    ARRAY_AGG(DISTINCT j.platform) as platforms,
+    AVG(llm.skills_confidence) as avg_confidence
+FROM jobs_unified j
+INNER JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid,
+LATERAL FLATTEN(input => llm.technical_skills:languages) skill
+WHERE j.is_english = TRUE
+GROUP BY skill.value
+UNION ALL
+SELECT
+    skill.value::STRING as skill_name,
+    'technical_database' as skill_category,
+    COUNT(*) as frequency,
+    ARRAY_AGG(DISTINCT j.platform) as platforms,
+    AVG(llm.skills_confidence) as avg_confidence
+FROM jobs_unified j
+INNER JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid,
+LATERAL FLATTEN(input => llm.technical_skills:databases) skill
+WHERE j.is_english = TRUE
+GROUP BY skill.value
+UNION ALL
+SELECT
+    skill.value::STRING as skill_name,
+    'technical_cloud' as skill_category,
+    COUNT(*) as frequency,
+    ARRAY_AGG(DISTINCT j.platform) as platforms,
+    AVG(llm.skills_confidence) as avg_confidence
+FROM jobs_unified j
+INNER JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid,
+LATERAL FLATTEN(input => llm.technical_skills:cloud) skill
+WHERE j.is_english = TRUE
+GROUP BY skill.value
+UNION ALL
+SELECT
+    skill.value::STRING as skill_name,
+    'soft_skill' as skill_category,
+    COUNT(*) as frequency,
+    ARRAY_AGG(DISTINCT j.platform) as platforms,
+    AVG(llm.skills_confidence) as avg_confidence
+FROM jobs_unified j
+INNER JOIN jobs_llm_enriched llm ON j.job_uid = llm.job_uid,
+LATERAL FLATTEN(input => llm.soft_skills) skill
+WHERE j.is_english = TRUE
+GROUP BY skill.value
+ORDER BY frequency DESC;
 ```
 
 ## Environment Variables

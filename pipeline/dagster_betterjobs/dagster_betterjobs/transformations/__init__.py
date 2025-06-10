@@ -36,6 +36,11 @@ from .dynamic_lookback import (
     get_batch_lookback_periods,
 )
 
+from .llm_prompts import (
+    JobExtractionPrompts,
+    PromptFormatter
+)
+
 __all__ = [
     "clean_html_tags",
     "normalize_whitespace",
@@ -55,4 +60,7 @@ __all__ = [
     "DynamicLookbackConfig",
     "get_dynamic_lookback_period",
     "get_batch_lookback_periods",
+    # LLM prompt templates
+    "JobExtractionPrompts",
+    "PromptFormatter",
 ]

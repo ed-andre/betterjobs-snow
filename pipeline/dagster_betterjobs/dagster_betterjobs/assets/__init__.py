@@ -19,6 +19,9 @@ from dagster_betterjobs.assets.stage_jobs_unified import stage_jobs_unified
 # PHASE-1.5: Company profiles transformation
 from dagster_betterjobs.assets.stage_company_profiles import stage_company_profiles
 
+# PHASE-2.3: LLM enrichment for structured information extraction
+from dagster_betterjobs.assets.stage_jobs_llm_enriched import stage_jobs_llm_enriched
+
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
 __all__ = [
@@ -39,5 +42,7 @@ __all__ = [
     "stage_jobs_unified",
     # Company profiles transformation
     "stage_company_profiles",
+    # LLM enrichment asset
+    "stage_jobs_llm_enriched",
     "snowflake_master_company_urls"
 ]
