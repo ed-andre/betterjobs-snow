@@ -63,13 +63,51 @@ The job search reports show:
 - **Job Cards**: Clean, professional job listing cards with relevance and quality scores
 - **Detailed Information**: Company details, posting dates, locations, and full job descriptions
 
-### Dagster Pipeline Visualization (IN PROGRESS)
+### Dagster Pipeline Architecture (IN DEVELOPMENT)
 
-The following diagram shows the structure of our Dagster pipeline assets, including URL discovery, job discovery, and data transport components:
+The following diagrams show the current structure of our evolving Dagster pipeline, implementing a medallion architecture with parallel processing and AI-powered enrichment. **This is an active work in progress** with additional assets and a complete Gold layer coming soon.
 
-NOTE: This is not the final diagram. This section will be updated with the latest architecture once fully implemented
+#### RAW (Bronze) Layer Pipeline ✅ **COMPLETED**
+![RAW Layer Pipeline](media/1-raw_dagsterpipeline.png)
 
-![Dagster Pipeline Structure](media/dagsterpipeline.png)
+The RAW layer handles data ingestion and initial discovery:
+- **Company URL Management**: Processes master company data from S3 and local sources
+- **Parallel Job Discovery**: Individual platform assets for BambooHR, Greenhouse, Workday, and SmartRecruiters discovery
+- **Company Profile Extraction**: Automated company information gathering
+- **Sensor-Based Processing**: Adhoc company processing with automatic detection
+
+#### STAGE (Silver) Layer Pipeline 🚧 **IN PROGRESS**
+![STAGE Layer Pipeline](media/2-stage_dagsterpipeline.png)
+
+The STAGE layer provides comprehensive data transformation and AI enrichment:
+- **Platform-Specific Processing**: Individual stage assets for each ATS platform enable parallel processing
+- **Unified Data Integration**: Cross-platform validation and deduplication in `stage_jobs_unified`
+- **AI-Powered Enrichment**: Parallel LLM processing for salary extraction, skills analysis, and job classification
+- **Quality Validation**: Comprehensive data quality scoring and language detection
+- **Enhanced Job Search**: Modern HTML report generation with interactive filtering capabilities
+
+#### GOLD (Presentation) Layer Pipeline 🔮 **COMING SOON**
+*Diagram will be added as assets are developed*
+
+The planned GOLD layer will provide business-ready analytics and reporting:
+- **Aggregated Job Market Metrics**: Daily, weekly, and monthly job posting trends
+- **Skills & Salary Analytics**: Market rates, in-demand skills, and compensation benchmarks
+- **Geographic Intelligence**: Location-based job market insights and remote work trends
+- **Industry Analysis**: Sector-specific hiring patterns and emerging job categories
+
+#### Current Architecture Benefits:
+- **Parallel Processing**: 4-5x performance improvement through platform-specific assets
+- **Failure Isolation**: Individual platform failures don't affect others
+- **Resilient Processing**: Individual record error handling prevents batch failures
+- **AI Integration**: Gemini LLM extraction for structured job information
+- **Production Ready**: Comprehensive monitoring, error tracking, and quality validation
+
+#### Upcoming Enhancements:
+- **Additional ATS Platforms**: Lever, Jobvite, iCIMS integration
+- **Advanced Analytics**: Predictive hiring models and market forecasting
+- **Real-time Dashboards**: Live job market monitoring and alerting
+- **API Endpoints**: External access to processed job market data
+- **Machine Learning Models**: Job classification, salary prediction, and skills matching
 
 ### Analytics & Reporting
 - **Job Market Trends**: Track hiring patterns across industries and companies
@@ -89,7 +127,7 @@ NOTE: This is not the final diagram. This section will be updated with the lates
   - Snowflake
   - AWS S3
   - Google AI Gemini API
-  - OpenAI API (optional)
+
 
 ### External Service Setup
 
@@ -336,15 +374,14 @@ The Snowflake data warehouse can be connected to various BI tools:
 - **Tableau**: Connect directly to Snowflake for interactive dashboards
 - **Power BI**: Use Snowflake connector for real-time reporting
 - **Looker**: Create data models and exploration interfaces
-- **Databricks**: For advanced analytics and machine learning
-- **dbt**: For data transformation and modeling
+- **Metabase**: Create data models and exploration interfaces
 
 ## Features
 
-- **Real-time Job Discovery**: Find jobs as soon as they're posted to company sites
+- **Efficient Job Discovery**: Find jobs faster than traditional job search engines
 - **Multi-platform Coverage**: Support for major ATS platforms (Workday, Greenhouse, BambooHR, etc.)
 - **Comprehensive Analytics**: Track job market trends, company hiring patterns, and industry insights
-- **Scalable Architecture**: Handle large volumes of job data with Snowflake's cloud data platform
+- **Scalable Architecture**: Handle large volumes of job data with Snowflake's cloud data platform and Gemini AI
 - **Automated Processing**: Schedule regular job discovery and data updates
 - **Data Quality**: Built-in validation and deduplication of job listings
 
