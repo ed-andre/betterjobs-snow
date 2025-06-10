@@ -52,13 +52,19 @@ def process_platform_llm_enrichment(
         Dict with processing statistics and results
     """
 
-    # Initialize statistics tracking with platform prefix
+    # Initialize enhanced statistics tracking with platform prefix
     stats = {
         "processing_start": datetime.now().isoformat(),
         "platform": platform,
         "jobs_processed": 0,
         "jobs_successful": 0,
         "jobs_failed": 0,
+        "llm_extraction_failures": 0,      # NEW: Track LLM API failures
+        "database_insertion_failures": 0,   # NEW: Track database insertion failures
+        "failed_job_records": [],          # NEW: Track all failed records
+        "insertion_error_summary": {},     # NEW: Track insertion error types
+        "batches_processed": 0,            # NEW: Track batch processing
+        "batches_with_failures": 0,       # NEW: Track batches that had insertion failures
         "api_calls_made": 0,
         "total_tokens_estimated": 0,
         "avg_confidence_score": 0.0,
@@ -98,7 +104,7 @@ def process_platform_llm_enrichment(
 
         context.log.info(f"🔄 [{platform.upper()}] Processing {len(jobs_df)} jobs in {total_batches} batches (batch size: {batch_size})")
 
-        # Process batches with per-batch database storage
+        # Process batches with resilient per-batch database storage
         total_records_saved = 0
         for batch_idx in range(0, len(jobs_df), batch_size):
             batch_jobs = jobs_df.iloc[batch_idx:batch_idx + batch_size]
@@ -111,11 +117,27 @@ def process_platform_llm_enrichment(
                 batch_jobs, prompts, formatter, gemini, config, context, stats, platform
             )
 
-            # Store batch results immediately after processing
+            # Store batch results immediately after processing with resilient insertion
             if batch_results:
-                insert_llm_batch_results(context, cursor, batch_results, database_name, stage_schema, platform)
-                total_records_saved += len(batch_results)
-                context.log.info(f"💾 [{platform.upper()}] Saved batch {current_batch} results: {len(batch_results)} records")
+                insertion_stats = insert_llm_batch_results_resilient(
+                    context, cursor, batch_results, database_name, stage_schema, platform
+                )
+
+                # Aggregate insertion statistics
+                stats["database_insertion_failures"] += insertion_stats["failed_insertions"]
+                stats["failed_job_records"].extend(insertion_stats["failed_records"])
+
+                # Merge error summaries
+                for error_type, count in insertion_stats["error_summary"].items():
+                    stats["insertion_error_summary"][error_type] = stats["insertion_error_summary"].get(error_type, 0) + count
+
+                if insertion_stats["failed_insertions"] > 0:
+                    stats["batches_with_failures"] += 1
+
+                total_records_saved += insertion_stats["successful_insertions"]
+                context.log.info(f"💾 [{platform.upper()}] Saved batch {current_batch} results: {insertion_stats['successful_insertions']}/{insertion_stats['total_records']} records")
+
+            stats["batches_processed"] += 1
 
             # Rate limiting between batches
             if current_batch < total_batches:
@@ -126,13 +148,18 @@ def process_platform_llm_enrichment(
         # Calculate final statistics
         finalize_platform_statistics(cursor, stats, database_name, stage_schema, platform, context)
 
-        # Success rate calculation
-        success_rate = (stats["jobs_successful"] / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
+        # Calculate enhanced success rates
+        total_llm_failures = stats["llm_extraction_failures"] + stats["database_insertion_failures"]
+        overall_success_rate = ((stats["jobs_processed"] - total_llm_failures) / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
+        extraction_success_rate = (stats["jobs_successful"] / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
 
         context.log.info(f"""
-        🎯 [{platform.upper()}] LLM Processing Complete:
+        🎯 [{platform.upper()}] Resilient LLM Processing Complete:
         • Jobs Processed: {stats['jobs_processed']}
-        • Success Rate: {success_rate:.1f}%
+        • LLM Extraction Success: {stats['jobs_successful']} ({extraction_success_rate:.1f}%)
+        • Database Insertion Failures: {stats['database_insertion_failures']}
+        • Overall Success Rate: {overall_success_rate:.1f}%
+        • Batches with Failures: {stats['batches_with_failures']}/{stats['batches_processed']}
         • Average Confidence: {stats['avg_confidence_score']:.3f}
         • Low Confidence Jobs: {stats['low_confidence_count']}
         • API Calls Made: {stats['api_calls_made']}
@@ -314,10 +341,12 @@ def process_llm_batch(
 
             else:
                 stats["jobs_failed"] += 1
+                stats["llm_extraction_failures"] += 1  # Track LLM extraction failure
                 context.log.warning(f"❌ [{platform.upper()}] Failed to extract data for job {job['JOB_UID']}")
 
         except Exception as e:
             stats["jobs_failed"] += 1
+            stats["llm_extraction_failures"] += 1  # Track LLM extraction failure
             error_type = type(e).__name__
             stats["error_summary"][error_type] = stats["error_summary"].get(error_type, 0) + 1
             context.log.error(f"❌ [{platform.upper()}] Error processing job {job['JOB_UID']}: {str(e)}")
@@ -480,22 +509,45 @@ def prepare_llm_record(
     }
 
 
-def insert_llm_batch_results(
+def insert_llm_batch_results_resilient(
     context: AssetExecutionContext,
     cursor,
     batch_results: List[Dict[str, Any]],
     database_name: str,
     stage_schema: str,
     platform: str
-) -> None:
+) -> Dict[str, Any]:
     """
-    Bulk insert LLM extraction results into Snowflake.
+    Insert LLM batch results with individual record error handling.
+
+    This function prevents single problematic records from failing entire batches.
+    Returns comprehensive processing statistics including failed records.
+
+    Args:
+        context: Dagster execution context
+        cursor: Snowflake cursor
+        batch_results: List of LLM extraction results to insert
+        database_name: Snowflake database name
+        stage_schema: Snowflake schema name
+        platform: Platform name for logging
+
+    Returns:
+        Dict with insertion statistics and failed record details
     """
+
+    insertion_stats = {
+        "total_records": len(batch_results),
+        "successful_insertions": 0,
+        "failed_insertions": 0,
+        "failed_records": [],
+        "error_summary": {}
+    }
 
     if not batch_results:
-        return
+        context.log.info(f"[{platform.upper()}] No batch results to insert")
+        return insertion_stats
 
-    # Build single row insert query using VALUES with individual execution
+    # Build single row insert query
     insert_query = f"""
     INSERT INTO {database_name}.{stage_schema}.JOBS_LLM_ENRICHED (
         JOB_UID, SALARY_MIN, SALARY_MAX, SALARY_CURRENCY, SALARY_PERIOD, SALARY_TYPE,
@@ -521,14 +573,64 @@ def insert_llm_batch_results(
         %(keyword_quality_score)s, %(validation_status)s
     """
 
-    try:
-        # Execute individual inserts instead of executemany for complex queries
-        for record in batch_results:
+    # Process each record individually with error isolation
+    for record in batch_results:
+        try:
+            # Attempt individual record insertion
             cursor.execute(insert_query, record)
-        context.log.debug(f"[{platform.upper()}] Inserted {len(batch_results)} LLM records")
-    except Exception as e:
-        context.log.error(f"[{platform.upper()}] Failed to insert LLM batch results: {str(e)}")
-        raise
+            insertion_stats["successful_insertions"] += 1
+
+        except Exception as e:
+            # Log individual record failure and continue
+            error_type = type(e).__name__
+            error_msg = str(e)
+
+            failed_record_info = {
+                "job_uid": record.get("job_uid", "unknown"),
+                "error_type": error_type,
+                "error_message": error_msg,
+                "record_data": record  # For debugging
+            }
+
+            insertion_stats["failed_records"].append(failed_record_info)
+            insertion_stats["failed_insertions"] += 1
+            insertion_stats["error_summary"][error_type] = insertion_stats["error_summary"].get(error_type, 0) + 1
+
+            context.log.warning(f"[{platform.upper()}] Failed to insert record {record.get('job_uid', 'unknown')}: {error_msg}")
+
+    # Log comprehensive batch results
+    success_rate = (insertion_stats["successful_insertions"] / insertion_stats["total_records"]) * 100
+    context.log.info(f"[{platform.upper()}] Batch insertion complete: {insertion_stats['successful_insertions']}/{insertion_stats['total_records']} successful ({success_rate:.1f}%)")
+
+    if insertion_stats["failed_insertions"] > 0:
+        context.log.warning(f"[{platform.upper()}] {insertion_stats['failed_insertions']} records failed insertion - continuing with next batch")
+        for error_type, count in insertion_stats["error_summary"].items():
+            context.log.warning(f"[{platform.upper()}] {error_type}: {count} failures")
+
+    return insertion_stats
+
+
+# Keep the original function as an alias for backward compatibility
+def insert_llm_batch_results(
+    context: AssetExecutionContext,
+    cursor,
+    batch_results: List[Dict[str, Any]],
+    database_name: str,
+    stage_schema: str,
+    platform: str
+) -> None:
+    """
+    Legacy function maintained for backward compatibility.
+    Now uses resilient insertion internally.
+    """
+    insertion_stats = insert_llm_batch_results_resilient(
+        context, cursor, batch_results, database_name, stage_schema, platform
+    )
+
+    # Maintain original behavior: raise exception if ALL records failed
+    if insertion_stats["successful_insertions"] == 0 and insertion_stats["failed_insertions"] > 0:
+        context.log.error(f"[{platform.upper()}] All records in batch failed to insert")
+        raise Exception(f"Complete batch insertion failure for platform {platform}")
 
 
 def finalize_platform_statistics(
@@ -560,21 +662,40 @@ def finalize_platform_statistics(
 
 def create_platform_metadata(stats: Dict[str, Any], platform: str) -> Dict[str, MetadataValue]:
     """
-    Create Dagster metadata for platform-specific LLM processing.
+    Create enhanced Dagster metadata for platform-specific resilient LLM processing.
     """
 
-    success_rate = (stats["jobs_successful"] / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
+    extraction_success_rate = (stats["jobs_successful"] / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
+    total_llm_failures = stats["llm_extraction_failures"] + stats["database_insertion_failures"]
+    overall_success_rate = ((stats["jobs_processed"] - total_llm_failures) / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
     processing_time_minutes = (datetime.now() - datetime.fromisoformat(stats["processing_start"])).total_seconds() / 60 if stats["processing_start"] else 0
 
-    return {
+    metadata = {
+        # Core processing metrics
         f"{platform}_jobs_processed": MetadataValue.int(stats["jobs_processed"]),
-        f"{platform}_success_rate": MetadataValue.float(success_rate),
+        f"{platform}_extraction_success_rate": MetadataValue.float(extraction_success_rate),
+        f"{platform}_overall_success_rate": MetadataValue.float(overall_success_rate),
         f"{platform}_avg_confidence_score": MetadataValue.float(stats["avg_confidence_score"]),
         f"{platform}_low_confidence_count": MetadataValue.int(stats["low_confidence_count"]),
+
+        # API and performance metrics
         f"{platform}_api_calls_made": MetadataValue.int(stats["api_calls_made"]),
         f"{platform}_estimated_tokens": MetadataValue.int(stats["total_tokens_estimated"]),
-        f"{platform}_processing_time_minutes": MetadataValue.float(processing_time_minutes)
+        f"{platform}_processing_time_minutes": MetadataValue.float(processing_time_minutes),
+
+        # Enhanced resilient processing metrics
+        f"{platform}_database_insertion_failures": MetadataValue.int(stats["database_insertion_failures"]),
+        f"{platform}_batches_processed": MetadataValue.int(stats["batches_processed"]),
+        f"{platform}_batches_with_failures": MetadataValue.int(stats["batches_with_failures"]),
+        f"{platform}_failed_records_count": MetadataValue.int(len(stats["failed_job_records"]))
     }
+
+    # Add error summary if there are failures
+    if stats["insertion_error_summary"]:
+        for error_type, count in stats["insertion_error_summary"].items():
+            metadata[f"{platform}_error_{error_type.lower()}_count"] = MetadataValue.int(count)
+
+    return metadata
 
 
 def coordinate_llm_enrichment_completion(context: AssetExecutionContext) -> Dict[str, Any]:

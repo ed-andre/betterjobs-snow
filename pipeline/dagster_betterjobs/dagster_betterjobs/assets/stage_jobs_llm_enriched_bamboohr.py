@@ -24,7 +24,7 @@ from dagster_betterjobs.transformations.llm_processing import (
 
 class LLMEnrichmentConfig(Config):
     """Configuration for LLM enrichment processing."""
-    batch_size: int = 10  # Smaller batches for complex BambooHR jobs
+    batch_size: int = 15  # Medium-sized batches for complex BambooHR jobs
     delay_between_batches: float = 1.0  # Rate limiting between batches
     max_retries: int = 3  # Maximum retry attempts for failed API calls
     max_description_length: int = 8000  # Token limit for job descriptions
