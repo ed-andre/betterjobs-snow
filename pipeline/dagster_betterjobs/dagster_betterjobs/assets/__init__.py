@@ -16,6 +16,9 @@ from dagster_betterjobs.assets.stage_jobs_smartrecruiters import stage_jobs_smar
 # ENHANCEMENT-001: Lightweight combiner for cross-platform validation
 from dagster_betterjobs.assets.stage_jobs_unified import stage_jobs_unified
 
+# PHASE-1.5: Company profiles transformation
+from dagster_betterjobs.assets.stage_company_profiles import stage_company_profiles
+
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
 __all__ = [
@@ -34,5 +37,7 @@ __all__ = [
     "stage_jobs_smartrecruiters",
     # Cross-platform combiner
     "stage_jobs_unified",
+    # Company profiles transformation
+    "stage_company_profiles",
     "snowflake_master_company_urls"
 ]

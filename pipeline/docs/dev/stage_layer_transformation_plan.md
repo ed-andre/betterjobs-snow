@@ -1210,6 +1210,76 @@ CREATE TABLE STAGE.jobs_unified (
 - **English Jobs**: ~95% of processed jobs
 - **Average Data Quality Score**: >0.85 across all platforms
 
+**Ready for**: Phase 1.5 - Company Profiles Transformation
+
+#### Phase 1.5: Company Profiles Transformation (Mini Phase) ✅ (COMPLETED)
+**Objective**: Transform raw company profiles data to standardized STAGE layer format
+
+**Scope**: Simple data transformation from `RAW.RAW_COMPANY_PROFILES` to `STAGE.COMPANY_PROFILES`
+
+**Refresh Strategy**: Full refresh approach - rebuilds entire table on each run for data consistency and simplicity. This decsion was made  because the data is small. Adding incremental refresh would not provide much benefit and would add to the complexity of the pipeline.
+
+**Field Mappings**:
+```sql
+-- Simple field transformations
+PROFILE_ID → COMPANY_ID (direct mapping - already standardized)
+COMPANY_NAME → COMPANY_NAME_STANDARDIZED (text cleaning)
+COMPANY_INDUSTRY → COMPANY_INDUSTRY_STANDARDIZED (text cleaning + standardization)
+EMPLOYEE_COUNT_RANGE → EMPLOYEE_COUNT_RANGE (direct mapping)
+EMPLOYEE_COUNT_RANGE → COMPANY_SIZE_CATEGORY (derived categorization)
+CITY → HEADQUARTERS_LOCATION (text cleaning)
+FUNDING_STAGE → NULL (not available in raw data)
+```
+
+**Implementation Steps**:
+
+1. **Create Stage Company Profiles Asset**
+   - Asset name: `stage_company_profiles`
+   - Dependencies: `raw_company_profiles`
+   - Simple transformation using existing text cleaning functions
+
+2. **Company Size Categorization**
+   ```sql
+   CASE
+     WHEN EMPLOYEE_COUNT_RANGE LIKE '%1-10%' OR EMPLOYEE_COUNT_RANGE LIKE '%1-50%' THEN 'Startup'
+     WHEN EMPLOYEE_COUNT_RANGE LIKE '%51-200%' OR EMPLOYEE_COUNT_RANGE LIKE '%201-500%' THEN 'Small'
+     WHEN EMPLOYEE_COUNT_RANGE LIKE '%501-1000%' OR EMPLOYEE_COUNT_RANGE LIKE '%1001-5000%' THEN 'Medium'
+     WHEN EMPLOYEE_COUNT_RANGE LIKE '%5000%' THEN 'Large'
+     ELSE 'Unknown'
+   END as COMPANY_SIZE_CATEGORY
+   ```
+
+3. **Text Standardization**
+   - Use existing `clean_company_name()` function
+   - Industry standardization with common mappings
+   - Location cleaning for headquarters
+
+4. **Data Quality Validation**
+   - Ensure all companies have valid COMPANY_ID
+   - Validate required fields (company name)
+   - Handle duplicates (should be minimal due to raw layer deduplication)
+
+**Implementation**: ✅ **COMPLETED**
+- ✅ Created `stage_company_profiles` asset with full refresh strategy
+- ✅ Industry standardization and company size categorization
+- ✅ Data quality validation and error handling
+- ✅ Snowflake integration with proper schema creation
+- ✅ **Benefits**: Clean, standardized company profiles ready for Gold layer analytics
+
+**Deliverables**:
+- `dagster_betterjobs/assets/stage_company_profiles.py` - Main company profiles transformation asset
+- Updated company profiles available in STAGE.COMPANY_PROFILES table
+- Simple, reliable full refresh transformation pipeline
+- Comprehensive data quality validation
+
+**Key Features Implemented**:
+- **Industry Standardization**: Maps raw industry values to standardized categories
+- **Company Size Categorization**: Derives size categories from employee count ranges
+- **Data Quality Validation**: Ensures all companies have valid identifiers and required fields
+- **Full Refresh Strategy**: Rebuilds entire table for consistency and simplicity
+- **Error Handling**: Robust error handling with detailed logging
+- **Snowflake Integration**: Auto-creates schema and handles data type conversions
+
 **Ready for**: Phase 2 - LLM Integration (Gemini-powered information extraction)
 
 #### Phase 2: LLM Integration
