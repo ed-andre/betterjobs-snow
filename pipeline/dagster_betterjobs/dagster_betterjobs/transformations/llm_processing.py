@@ -17,9 +17,15 @@ Used by individual platform LLM assets for parallel processing.
 
 import json
 import time
+import sys
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+
+# RECURSION FIX: Set system recursion limit to prevent stack overflow
+DEFAULT_RECURSION_LIMIT = sys.getrecursionlimit()
+SAFE_RECURSION_LIMIT = min(2000, DEFAULT_RECURSION_LIMIT)  # Conservative limit
+sys.setrecursionlimit(SAFE_RECURSION_LIMIT)
 
 from dagster import AssetExecutionContext, MetadataValue
 from dagster_betterjobs.transformations.llm_prompts import (
@@ -82,6 +88,7 @@ def process_platform_llm_enrichment(
         cursor = conn.cursor()
 
         context.log.info(f"🚀 [{platform.upper()}] Starting LLM enrichment processing...")
+        context.log.info(f"🛡️ [{platform.upper()}] Recursion protection enabled: max depth={SAFE_RECURSION_LIMIT}, size limits active")
 
         # Get platform-specific jobs to process
         jobs_df = get_platform_jobs_for_processing(
@@ -282,15 +289,37 @@ def process_llm_batch(
         job_start_time = time.time()
 
         try:
+            # RECURSION FIX: Validate job description before processing
+            job_description = job['JOB_DESCRIPTION_CLEAN']
+            if not job_description or len(str(job_description)) > 100000:  # 100KB limit
+                context.log.warning(f"❌ [{platform.upper()}] Skipping job {job['JOB_UID']}: description too large or invalid")
+                stats["jobs_failed"] += 1
+                stats["llm_extraction_failures"] += 1
+                continue
+
             # Format job description for LLM processing
             formatted_description = formatter.format_job_description(
-                job['JOB_DESCRIPTION_CLEAN'],
+                job_description,
                 max_length=config.max_description_length
             )
+
+            # RECURSION FIX: Additional validation of formatted description
+            if len(formatted_description) > 50000:  # 50KB formatted limit
+                context.log.warning(f"❌ [{platform.upper()}] Skipping job {job['JOB_UID']}: formatted description too large")
+                stats["jobs_failed"] += 1
+                stats["llm_extraction_failures"] += 1
+                continue
 
             # Get comprehensive extraction prompt
             extraction_prompt = prompts.get_comprehensive_extraction_prompt()
             full_prompt = extraction_prompt.format(job_description=formatted_description)
+
+            # RECURSION FIX: Validate final prompt size
+            if len(full_prompt) > 60000:  # 60KB prompt limit
+                context.log.warning(f"❌ [{platform.upper()}] Skipping job {job['JOB_UID']}: final prompt too large")
+                stats["jobs_failed"] += 1
+                stats["llm_extraction_failures"] += 1
+                continue
 
             # Estimate tokens (rough approximation: 4 characters per token)
             estimated_tokens = len(full_prompt) // 4
@@ -379,9 +408,17 @@ def extract_job_data_with_retry(
 
                 context.log.debug(f"[{platform.upper()}] Gemini response for {job_uid} in {elapsed_time:.2f}s (attempt {attempt + 1})")
 
+                # RECURSION FIX: Validate response size before parsing
+                response_text = response.text if hasattr(response, 'text') else str(response)
+                MAX_RESPONSE_SIZE = 100000  # 100KB limit
+
+                if len(response_text) > MAX_RESPONSE_SIZE:
+                    context.log.warning(f"[{platform.upper()}] Large response ({len(response_text)} chars) truncated for {job_uid}")
+                    response_text = response_text[:MAX_RESPONSE_SIZE]
+
                 # Parse JSON response using the prompt formatter
                 formatter = PromptFormatter()
-                extracted_data = formatter.validate_extraction_response(response.text)
+                extracted_data = formatter.validate_extraction_response(response_text)
 
                 # Validate that we got the expected structure
                 if validate_extraction_structure(extracted_data):
@@ -393,6 +430,11 @@ def extract_job_data_with_retry(
 
         except json.JSONDecodeError as e:
             context.log.warning(f"[{platform.upper()}] JSON decode error for {job_uid} (attempt {attempt + 1}): {str(e)}")
+            if attempt == max_retries - 1:
+                return None
+
+        except RecursionError as e:
+            context.log.error(f"[{platform.upper()}] Recursion error for {job_uid} (attempt {attempt + 1}): {str(e)}")
             if attempt == max_retries - 1:
                 return None
 

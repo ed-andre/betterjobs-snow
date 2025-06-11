@@ -309,6 +309,12 @@ class PromptFormatter:
         if not response_text or response_text.strip() == "":
             raise ValueError("Empty response from LLM")
 
+        # RECURSION FIX: Add response size limit to prevent recursion issues
+        MAX_RESPONSE_SIZE = 50000  # 50KB limit for response parsing
+        if len(response_text) > MAX_RESPONSE_SIZE:
+            # Truncate response to prevent recursion in parsing
+            response_text = response_text[:MAX_RESPONSE_SIZE]
+
         # Try direct JSON parsing first
         try:
             return json.loads(response_text.strip())
@@ -322,14 +328,21 @@ class PromptFormatter:
         code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
         if code_block_match:
             try:
-                return json.loads(code_block_match.group(1))
+                json_content = code_block_match.group(1)
+                # RECURSION FIX: Add size limit for code block content
+                if len(json_content) > MAX_RESPONSE_SIZE:
+                    json_content = json_content[:MAX_RESPONSE_SIZE]
+                return json.loads(json_content)
             except json.JSONDecodeError:
                 pass
 
-        # Use balanced bracket matching instead of greedy regex to avoid recursion
+        # Use balanced bracket matching with recursion protection
         json_text = _extract_json_with_balanced_brackets(response_text)
         if json_text:
             try:
+                # RECURSION FIX: Add size limit for balanced bracket extraction
+                if len(json_text) > MAX_RESPONSE_SIZE:
+                    json_text = json_text[:MAX_RESPONSE_SIZE]
                 return json.loads(json_text)
             except json.JSONDecodeError:
                 pass
@@ -398,6 +411,15 @@ def _extract_json_with_balanced_brackets(text: str) -> Optional[str]:
     Returns:
         Extracted JSON string or None if no valid JSON found
     """
+    # RECURSION FIX: Add safety limits to prevent recursion and infinite loops
+    MAX_TEXT_SIZE = 100000  # 100KB limit
+    MAX_ITERATIONS = 10000   # Maximum iterations to prevent infinite loops
+    MAX_BRACKET_DEPTH = 50   # Maximum nesting depth
+
+    # Truncate input if too large
+    if len(text) > MAX_TEXT_SIZE:
+        text = text[:MAX_TEXT_SIZE]
+
     # Find the first opening brace
     start_idx = text.find('{')
     if start_idx == -1:
@@ -407,8 +429,14 @@ def _extract_json_with_balanced_brackets(text: str) -> Optional[str]:
     bracket_count = 0
     in_string = False
     escape_next = False
+    iteration_count = 0
 
     for i, char in enumerate(text[start_idx:], start_idx):
+        # RECURSION FIX: Prevent infinite loops with iteration limit
+        iteration_count += 1
+        if iteration_count > MAX_ITERATIONS:
+            return None
+
         if escape_next:
             escape_next = False
             continue
@@ -424,12 +452,19 @@ def _extract_json_with_balanced_brackets(text: str) -> Optional[str]:
         if not in_string:
             if char == '{':
                 bracket_count += 1
+                # RECURSION FIX: Prevent excessive nesting
+                if bracket_count > MAX_BRACKET_DEPTH:
+                    return None
             elif char == '}':
                 bracket_count -= 1
 
                 # Found matching closing bracket
                 if bracket_count == 0:
-                    return text[start_idx:i+1]
+                    extracted = text[start_idx:i+1]
+                    # RECURSION FIX: Validate extracted size
+                    if len(extracted) > MAX_TEXT_SIZE:
+                        return extracted[:MAX_TEXT_SIZE]
+                    return extracted
 
     # No balanced JSON found
     return None
