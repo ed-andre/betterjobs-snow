@@ -30,7 +30,7 @@ class LLMEnrichmentConfig(Config):
     max_description_length: int = 8000  # Token limit for job descriptions
     confidence_threshold: float = 0.6  # Threshold for low-confidence flagging
     limit_jobs: int = None  # Limit for testing (None = process all)
-    enable_validation_pass: bool = True  # Enable second-pass validation for low confidence
+    # enable_validation_pass: bool = True  # DISABLED: Second-pass validation (future enhancement)
     processing_mode: str = "new_only"  # "new_only", "all", "failed_only"
 
 

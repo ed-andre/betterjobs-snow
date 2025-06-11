@@ -1394,7 +1394,7 @@ FUNDING_STAGE → NULL (not available in raw data)
 
 **2. Specialized Prompt Templates**:
 - `get_comprehensive_extraction_prompt()` - Master extraction (all data)
-- `get_validation_prompt()` - Second-pass validation for low-confidence extractions
+- ~~`get_validation_prompt()` - Second-pass validation for low-confidence extractions~~ **DISABLED**: Future enhancement
 - `get_quick_classification_prompt()` - Lightweight job classification only
 - `get_salary_focused_prompt()` - High-accuracy salary extraction
 
@@ -1487,8 +1487,23 @@ Job posting text:
 """
 ```
 
-**Validation Prompt** (For low-confidence extractions):
+~~**Validation Prompt** (For low-confidence extractions)~~ **DISABLED - Future Enhancement**:
+
+**Decision**: The second-pass validation functionality has been disabled as of 2025-06-10 to simplify the implementation and reduce API costs.
+
+**Reasoning**:
+- **Cost Optimization**: Second-pass validation would double API costs for low-confidence extractions
+- **Processing Speed**: Single-pass extraction maintains faster processing times
+- **Complexity Reduction**: Eliminates complex validation logic and error handling
+- **Initial Quality**: Comprehensive prompt already achieves high-quality extractions
+
+**Future Enhancement Opportunity**:
+- Could be re-enabled as ENHANCEMENT-011 when cost-benefit analysis shows value
+- Would require careful implementation of validation thresholds and selective triggering
+- Alternative: Could use cheaper models for validation passes (e.g., Gemini Flash vs Pro)
+
 ```python
+# DISABLED CODE - Kept for future reference
 VALIDATION_PROMPT = """
 Review this extracted job information and verify its accuracy against the original job posting.
 Return a JSON object indicating what needs correction:

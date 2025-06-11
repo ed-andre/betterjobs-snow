@@ -2666,4 +2666,141 @@ stats = {
 
 ---
 
+## ENHANCEMENT-012: LLM Validation Pass Implementation (Future Tech Debt)
+
+**Status:** 📋 **Planned**
+**Priority:** Low
+**Component:** LLM Enrichment Pipeline
+**Date Planned:** 2025-06-10
+**Date Started:** N/A
+**Date Completed:** N/A
+
+### Description
+Implement second-pass validation for LLM extractions with low confidence scores to improve data quality through targeted re-extraction with specialized validation prompts.
+
+### Business Justification
+- **Data Quality Improvement**: Second-pass validation could improve accuracy of low-confidence extractions
+- **Targeted Processing**: Only validate extractions below confidence threshold (e.g., <0.6)
+- **Quality Assurance**: Provide additional validation layer for critical business data
+- **Accuracy Enhancement**: Potentially improve overall extraction accuracy from 85% to 90%+
+
+### Technical Approach
+**Validation Pass Configuration:**
+```python
+class LLMEnrichmentConfig(Config):
+    enable_validation_pass: bool = False  # Currently disabled
+    validation_confidence_threshold: float = 0.6  # Trigger validation below this score
+    validation_categories: List[str] = ["salary_info", "experience_requirements"]  # Which categories to validate
+```
+
+**Two-Pass Processing Logic:**
+1. **Primary Extraction**: Use comprehensive extraction prompt for all job descriptions
+2. **Confidence Assessment**: Identify extractions below threshold for specific categories
+3. **Validation Pass**: Re-process low-confidence extractions with specialized validation prompt
+4. **Result Merging**: Combine primary extraction with validation improvements
+
+**Specialized Validation Prompt:**
+```python
+VALIDATION_TARGETED_PROMPT = """
+Review and improve the following extracted job information:
+
+Categories needing validation: {validation_categories}
+Current extraction confidence: {current_confidence}
+
+Original job posting:
+{job_description}
+
+Current extraction:
+{current_extraction}
+
+Please provide improved extraction focusing ONLY on the low-confidence categories.
+Return the same JSON structure with corrected values for flagged categories.
+"""
+```
+
+### Decision to Disable (2025-06-10)
+
+**Current Status**: This enhancement has been **temporarily disabled** to simplify the initial LLM implementation.
+
+**Reasoning for Disabling**:
+- **Cost Optimization**: Second-pass validation would double API costs for low-confidence extractions (~20-30% of jobs)
+- **Processing Speed**: Single-pass extraction maintains faster processing times
+- **Complexity Reduction**: Eliminates complex validation logic, confidence tracking, and selective re-processing
+- **Initial Quality**: Comprehensive extraction prompt already achieves >85% accuracy
+
+**Config Changes Made**:
+```python
+# In all LLM enrichment assets:
+# enable_validation_pass: bool = True  # DISABLED: Second-pass validation (future enhancement)
+```
+
+**Code Preserved**: Validation prompt templates and processing logic preserved in documentation for future implementation.
+
+### Implementation Plan (Future)
+
+**Phase 1: Validation Infrastructure**
+1. Re-enable `enable_validation_pass` configuration option
+2. Implement confidence threshold filtering for targeted validation
+3. Create validation-specific prompt templates
+4. Add validation pass statistics tracking
+
+**Phase 2: Selective Processing**
+1. Implement category-specific confidence assessment
+2. Create targeted validation for specific extraction categories (salary, experience)
+3. Add validation result merging logic
+4. Implement cost-optimization strategies (validation only for high-value extractions)
+
+**Phase 3: Advanced Validation**
+1. Use cheaper models for validation passes (Gemini Flash vs Pro)
+2. Implement smart validation triggering based on extraction patterns
+3. Add validation result comparison and improvement tracking
+4. Create validation effectiveness analysis
+
+### Cost-Benefit Analysis Required
+
+**Estimated Costs**:
+- **API Cost Increase**: 20-30% increase in Gemini API usage for low-confidence jobs
+- **Processing Time**: 40-50% increase in processing time for jobs requiring validation
+- **Implementation Complexity**: Additional validation logic, error handling, result merging
+
+**Potential Benefits**:
+- **Quality Improvement**: Estimated 5-10% improvement in extraction accuracy
+- **Confidence Enhancement**: Higher confidence scores for previously low-quality extractions
+- **Business Value**: More accurate salary data and experience requirements
+
+**Recommendation**: Implement only after proving ROI through quality analysis of current single-pass approach.
+
+### Success Criteria (Future Implementation)
+- Validation pass improves accuracy by >5% for validated categories
+- Total processing cost increase <30% while maintaining speed targets
+- Low-confidence extraction percentage reduced from 20% to <10%
+- Validation logic adds <20% complexity to codebase
+
+### Technical Considerations
+
+**Alternative Approaches**:
+1. **Statistical Validation**: Use SQL-based validation against job description content
+2. **Model Comparison**: Use different LLM models for validation passes
+3. **Human-in-the-Loop**: Flag low-confidence extractions for manual review
+4. **ML-Based Validation**: Train smaller models for specific validation tasks
+
+**Risk Mitigation**:
+- **Cost Controls**: Implement budget caps and usage monitoring
+- **Performance Monitoring**: Track validation effectiveness and cost per improvement
+- **Graceful Degradation**: Validation failures shouldn't affect primary extraction
+- **A/B Testing**: Compare single-pass vs validation-pass results
+
+### Files Affected (Future Implementation)
+- `transformations/llm_prompts.py` - Add validation prompt templates
+- `transformations/llm_processing.py` - Add validation pass logic
+- All `assets/stage_jobs_llm_enriched_*.py` - Re-enable validation configuration
+- Documentation updates for validation process
+
+### Related Enhancements
+- **ENHANCEMENT-009**: LLM Processing Reliability - Already addresses core processing stability
+- **ENHANCEMENT-010**: LLM Enrichment Asset Breakdown - Platform-specific processing enables targeted validation
+- Future enhancements for ML-based validation models
+
+---
+
 ## Template for New Enhancements
