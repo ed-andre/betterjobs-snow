@@ -32,6 +32,14 @@ from dagster_betterjobs.assets.stage_jobs_llm_enriched_smartrecruiters import st
 # ENHANCEMENT-010: LLM enrichment coordinator asset
 from dagster_betterjobs.assets.stage_jobs_llm_enriched_unified import stage_jobs_llm_enriched_unified
 
+# PHASE-3: LLM Data Standardization Assets
+from dagster_betterjobs.assets.llm_standardization.skills_normalization import (
+    stage_llm_skills_raw_extraction,
+    stage_skills_standardization_rules,
+    stage_skills_normalized,
+    stage_job_skills_bridge
+)
+
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
 __all__ = [
@@ -61,5 +69,10 @@ __all__ = [
     "stage_jobs_llm_enriched_smartrecruiters",
     # LLM enrichment coordinator
     "stage_jobs_llm_enriched_unified",
+    # LLM data standardization assets
+    "stage_llm_skills_raw_extraction",
+    "stage_skills_standardization_rules",
+    "stage_skills_normalized",
+    "stage_job_skills_bridge",
     "snowflake_master_company_urls"
 ]

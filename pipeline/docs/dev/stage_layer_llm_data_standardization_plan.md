@@ -94,11 +94,13 @@ stage_llm_analytics_views (Phase 5)
 **Output**: Temporary staging table with raw skills data
 
 ```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py
+
 @asset(
-    deps=["jobs_llm_enriched"],
+    deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten skills from LLM VARIANT columns",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql"
+    kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_skills_raw_extraction(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -120,10 +122,12 @@ def stage_llm_skills_raw_extraction(context, snowflake: SnowflakeResource) -> Di
 **Output**: Updated standardization rules table
 
 ```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py
+
 @asset(
     description="Maintain skill standardization rules and aliases",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql",
+    kinds={"snowflake", "python", "SQL"},
     freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)  # Weekly updates
 )
 def stage_skills_standardization_rules(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -145,11 +149,13 @@ def stage_skills_standardization_rules(context, snowflake: SnowflakeResource) ->
 **Output**: Normalized skills with market intelligence
 
 ```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py
+
 @asset(
     deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
     description="Create normalized skills master table with market intelligence",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql"
+    kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -172,11 +178,13 @@ def stage_skills_normalized(context, snowflake: SnowflakeResource) -> Dict[str, 
 **Output**: Job-skill relationships with context and confidence
 
 ```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py
+
 @asset(
-    deps=["stage_skills_normalized", "jobs_unified"],
+    deps=["stage_skills_normalized", "stage_jobs_unified"],
     description="Create job-skill relationships with context tracking",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql"
+    kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_skills_bridge(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -203,7 +211,7 @@ def stage_job_skills_bridge(context, snowflake: SnowflakeResource) -> Dict[str, 
     deps=["stage_llm_skills_raw_extraction"],
     description="Standardize job posting keywords and classifications",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql"
+    kinds={"snowflake", "python", "SQL"}
 )
 def stage_keywords_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -235,7 +243,7 @@ def stage_keywords_normalized(context, snowflake: SnowflakeResource) -> Dict[str
     deps=["jobs_llm_enriched", "jobs_unified"],
     description="Standardize location data with geographic intelligence",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql"
+    kinds={"snowflake", "python", "SQL"}
 )
 def stage_locations_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -272,7 +280,7 @@ def stage_locations_normalized(context, snowflake: SnowflakeResource) -> Dict[st
     deps=["stage_skills_normalized", "stage_keywords_normalized", "stage_locations_normalized"],
     description="Comprehensive data quality validation for LLM standardization",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql"
+    kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_data_quality_validation(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -305,7 +313,7 @@ def stage_llm_data_quality_validation(context, snowflake: SnowflakeResource) -> 
     deps=["stage_job_skills_bridge", "stage_job_keywords_bridge", "stage_job_locations_bridge"],
     description="Create analytics-optimized views for downstream consumption",
     group_name="llm_standardization",
-    compute_kind="snowflake_sql"
+    kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_analytics_views(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -325,7 +333,7 @@ def stage_llm_analytics_views(context, snowflake: SnowflakeResource) -> Dict[str
 #### Core Processing Functions
 
 ```python
-# transformations/llm_standardization.py
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/transformations/llm_standardization.py
 
 class SkillStandardizer:
     """Handle skill standardization and deduplication logic"""
@@ -715,7 +723,7 @@ INSERT INTO LOCATION_STANDARDIZATION_RULES VALUES
 
 ```sql
 -- Step 1: Extract all skills from VARIANT columns
-CREATE OR REPLACE VIEW STAGE_SKILLS_RAW_EXTRACTION AS
+CREATE OR REPLACE VIEW SKILLS_RAW_EXTRACTION AS
 WITH TECHNICAL_SKILLS_EXPLODED AS (
     -- Extract technical skills by category
     SELECT
@@ -796,6 +804,67 @@ INSERT INTO SKILL_STANDARDIZATION_RULES VALUES
 ('rule_008', 'postgresql', 'PostgreSQL', 'databases', 'relational_database', 1.0, 'exact_match', CURRENT_TIMESTAMP),
 ('rule_009', 'postgres', 'PostgreSQL', 'databases', 'relational_database', 0.95, 'exact_match', CURRENT_TIMESTAMP),
 ('rule_010', 'aws', 'Amazon Web Services', 'cloud', 'public_cloud', 1.0, 'exact_match', CURRENT_TIMESTAMP);
+
+-- Skill category detection patterns table
+CREATE TABLE IF NOT EXISTS SKILL_CATEGORY_PATTERNS (
+    PATTERN_ID STRING PRIMARY KEY,
+    SKILL_CATEGORY STRING NOT NULL,                 -- languages, frameworks, databases, cloud, tools
+    PATTERN STRING NOT NULL,                        -- Regex pattern for category detection
+    PATTERN_TYPE STRING DEFAULT 'regex',            -- regex, exact_match, contains
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,             -- Confidence in category assignment
+    DESCRIPTION STRING,                             -- Human-readable description of pattern
+    IS_ACTIVE BOOLEAN DEFAULT TRUE,                 -- Enable/disable pattern
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (SKILL_CATEGORY, IS_ACTIVE);
+
+-- Insert skill category detection patterns
+INSERT INTO SKILL_CATEGORY_PATTERNS VALUES
+-- Languages patterns
+('cat_001', 'languages', '\\bpython\\b', 'regex', 1.0, 'Python programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_002', 'languages', '\\bjavascript\\b', 'regex', 1.0, 'JavaScript programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_003', 'languages', '\\bjava\\b', 'regex', 1.0, 'Java programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_004', 'languages', '\\bc\\+\\+\\b', 'regex', 1.0, 'C++ programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_005', 'languages', '\\bc#\\b', 'regex', 1.0, 'C# programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_006', 'languages', '\\bruntime\\b', 'regex', 0.8, 'Runtime environments', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_007', 'languages', '\\bprogramming\\b', 'regex', 0.7, 'General programming references', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_008', 'languages', '\\blanguage\\b', 'regex', 0.6, 'Language keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Frameworks patterns
+('cat_009', 'frameworks', '\\bframework\\b', 'regex', 1.0, 'Framework keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_010', 'frameworks', '\\breact\\b', 'regex', 1.0, 'React framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_011', 'frameworks', '\\bangular\\b', 'regex', 1.0, 'Angular framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_012', 'frameworks', '\\bvue\\b', 'regex', 1.0, 'Vue.js framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_013', 'frameworks', '\\bdjango\\b', 'regex', 1.0, 'Django framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_014', 'frameworks', '\\bspring\\b', 'regex', 1.0, 'Spring framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_015', 'frameworks', '\\bexpress\\b', 'regex', 1.0, 'Express.js framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_016', 'frameworks', '\\.js$', 'regex', 0.8, 'JavaScript framework extensions', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_017', 'frameworks', '\\.ts$', 'regex', 0.8, 'TypeScript framework extensions', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Databases patterns
+('cat_018', 'databases', '\\bdatabase\\b', 'regex', 1.0, 'Database keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_019', 'databases', '\\bsql\\b', 'regex', 1.0, 'SQL databases', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_020', 'databases', '\\bmysql\\b', 'regex', 1.0, 'MySQL database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_021', 'databases', '\\bpostgresql\\b', 'regex', 1.0, 'PostgreSQL database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_022', 'databases', '\\bmongodb\\b', 'regex', 1.0, 'MongoDB database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_023', 'databases', '\\bredis\\b', 'regex', 1.0, 'Redis database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_024', 'databases', '\\boracle\\b', 'regex', 1.0, 'Oracle database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Cloud platforms patterns
+('cat_025', 'cloud', '\\baws\\b', 'regex', 1.0, 'Amazon Web Services', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_026', 'cloud', '\\bazure\\b', 'regex', 1.0, 'Microsoft Azure', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_027', 'cloud', '\\bgcp\\b', 'regex', 1.0, 'Google Cloud Platform', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_028', 'cloud', '\\bcloud\\b', 'regex', 1.0, 'Cloud keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_029', 'cloud', '\\bkubernetes\\b', 'regex', 1.0, 'Kubernetes orchestration', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_030', 'cloud', '\\bcontainer\\b', 'regex', 0.8, 'Container technologies', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Tools patterns
+('cat_031', 'tools', '\\btool\\b', 'regex', 0.7, 'Tool keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_032', 'tools', '\\bgit\\b', 'regex', 1.0, 'Git version control', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_033', 'tools', '\\bdocker\\b', 'regex', 1.0, 'Docker containerization', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_034', 'tools', '\\bjenkins\\b', 'regex', 1.0, 'Jenkins CI/CD', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_035', 'tools', '\\bslack\\b', 'regex', 0.9, 'Slack communication tool', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_036', 'tools', '\\bjira\\b', 'regex', 1.0, 'JIRA project management', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 ```
 
 #### 4.3 Automated Standardization Process
@@ -836,7 +905,7 @@ BEGIN
             MIN(ju.date_retrieved::DATE) as first_seen_date,
             MAX(ju.date_retrieved::DATE) as last_seen_date,
             AVG(COALESCE(sr.confidence_score, 0.5)) as confidence_score
-        FROM stage_skills_raw_extraction sre
+        FROM SKILLS_RAW_EXTRACTION sre
         LEFT JOIN STAGE.skill_standardization_rules sr
             ON LOWER(sre.skill_name_raw) = LOWER(sr.pattern)
         JOIN STAGE.jobs_unified ju ON sre.job_uid = ju.job_uid
@@ -889,7 +958,7 @@ BEGIN
         END as overall_confidence,
         CURRENT_TIMESTAMP,
         'system'
-    FROM stage_skills_raw_extraction sre
+    FROM SKILLS_RAW_EXTRACTION sre
     JOIN STAGE.skills_normalized sn
         ON (COALESCE(sr.standardized_name, sre.skill_name_original) = sn.skill_name)
     LEFT JOIN STAGE.skill_standardization_rules sr
@@ -1032,33 +1101,70 @@ GROUP BY jf.job_family, jf.seniority_level, sn.skill_category, sn.skill_name
 HAVING job_count >= 5;  -- Minimum threshold for statistical relevance
 ```
 
-## Implementation Timeline
+## Implementation Status
 
-### Step 1: Infrastructure Setup
-- ✅ Create all normalized tables and indexes
-- ✅ Implement basic extraction views
-- ✅ Set up initial standardization rules
+### ✅ Phase 1: Skills Normalization Assets - **COMPLETED** (June 2025)
 
-### Step 2: Data Processing Pipeline
-- ✅ Implement and test standardization procedures
-- ✅ Run initial data normalization
-- ✅ Create quality monitoring views
+**Assets Implemented:**
+- `stage_llm_skills_raw_extraction`: Extracts and flattens skills from VARIANT columns
+- `stage_skills_standardization_rules`: Manages skill standardization rules
+- `stage_skills_normalized`: Creates normalized skills master table with family classification
+- `stage_job_skills_bridge`: Creates job-skill relationships with confidence scoring
 
-### Step 3: Validation and Quality Assurance
-- ✅ Validate data quality and completeness
-- ✅ Manual review of low-confidence skills
-- ✅ Refine standardization rules
+**Key Features Delivered:**
+- ✅ Skills extraction from technical_skills, soft_skills, and primary_keywords
+- ✅ Lookup table-based skill family classification (development, data, devops, etc.)
+- ✅ Confidence scoring and manual review flagging
+- ✅ Comprehensive bridge table with source tracking and context
+- ✅ Error handling and accurate logging
 
-### Step 4: Performance Optimization
-- ✅ Implement performance indexes
-- ✅ Create materialized views
-- ✅ Optimize for analytics queries
+**SQL Configuration Files Created:**
+- `pipeline/sql/llm_standardization/insert_skill_category_patterns.sql` - Category detection patterns
+- `pipeline/sql/llm_standardization/insert_skill_standardization_rules.sql` - Skill standardization rules
+- `pipeline/sql/llm_standardization/insert_skill_family_mappings.sql` - Family classification mappings
+- `pipeline/sql/llm_standardization/insert_location_standardization_rules.sql` - Location standardization
+- `pipeline/sql/llm_standardization/README.md` - Setup documentation
 
-### Step 5: Production Deployment
-- ✅ Deploy to production environment
-- ✅ Monitor data quality metrics
-- ✅ Validate analytical views
-- ✅ Document final process
+**Production Metrics Achieved:**
+- Skills Normalized: 8,302 unique skills
+- Job-Skill Relationships: 149,477 total relationships
+- Coverage: 6,706 jobs with normalized skills
+- Average Skills per Job: 22.3
+- High Confidence Relationships: 10,572
+
+**Technical Improvements:**
+- Fixed Snowflake VARIANT to ARRAY casting issues using `IS_ARRAY()`
+- Implemented lookup table approach instead of hardcoded CASE statements
+- Added proper Decimal to float conversion for Dagster metadata
+- Enhanced logging accuracy for table creation vs. existence checks
+
+### 🚧 Phase 2: Keywords Standardization Assets - **PLANNED**
+
+**Next Steps:**
+- `stage_keywords_normalized`: Standardize industry, role type, and business keywords
+- `stage_job_keywords_bridge`: Create job-keyword relationships
+- Implement keyword classification logic (industry, role_type, company_stage, technology)
+
+### 🚧 Phase 3: Location Standardization Assets - **PLANNED**
+
+**Next Steps:**
+- `stage_locations_normalized`: Standardize location data with geographic hierarchy
+- `stage_job_locations_bridge`: Create job-location relationships with work arrangement context
+- Implement geographic enrichment (tech hub classification, cost of living data)
+
+### 🚧 Phase 4: Data Quality and Validation Assets - **PLANNED**
+
+**Next Steps:**
+- `stage_llm_data_quality_validation`: Comprehensive quality monitoring
+- `stage_llm_quality_metrics`: Quality metrics for dashboards
+- Implement anomaly detection and automated alerting
+
+### 🚧 Phase 5: Analytics Enablement Assets - **PLANNED**
+
+**Next Steps:**
+- `stage_llm_analytics_views`: Pre-aggregated views for analytics
+- Performance optimization with materialized views
+- Integration preparation for Gold layer dimensional modeling
 
 ## Error Handling and Monitoring Strategy
 
@@ -1192,7 +1298,7 @@ def stage_llm_monitoring_metrics(context, snowflake: SnowflakeResource) -> Dict[
 ### File Structure and Organization
 
 ```
-pipeline/
+pipeline/dagster_betterjobs/dagster_betterjobs/
 ├── assets/
 │   ├── llm_standardization/
 │   │   ├── __init__.py
@@ -1213,10 +1319,12 @@ pipeline/
 │   └── monitoring_config.py            # Monitoring configuration
 ├── sql/
 │   ├── llm_standardization/
-│   │   ├── skills_extraction.sql       # Skills extraction queries
-│   │   ├── locations_extraction.sql    # Locations extraction queries
-│   │   ├── keywords_extraction.sql     # Keywords extraction queries
-│   │   └── quality_validation.sql      # Quality validation queries
+│   │   ├── README.md                           # Setup documentation and usage instructions
+│   │   ├── insert_skill_category_patterns.sql # Skill category detection patterns
+│   │   ├── insert_skill_standardization_rules.sql # Skill name standardization rules
+│   │   ├── insert_skill_family_mappings.sql   # Skill family classification mappings
+│   │   ├── insert_location_standardization_rules.sql # Location standardization rules
+│   │   └── quality_validation.sql             # Quality validation queries (planned)
 │   └── views/
 │       ├── skills_analytics.sql        # Skills analysis views
 │       ├── location_analytics.sql      # Location analysis views

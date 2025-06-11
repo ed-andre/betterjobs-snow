@@ -333,6 +333,19 @@ FOREIGN KEY (SKILL_ID) REFERENCES SKILLS_NORMALIZED(SKILL_ID);
 -- Additional clustering can be added if needed:
 -- ALTER TABLE JOB_SKILLS_BRIDGE CLUSTER BY (SKILL_ID, JOB_UID);
 
+-- Skill family mapping table
+ CREATE TABLE IF NOT EXISTS SKILL_FAMILY_MAPPING (
+            MAPPING_ID STRING PRIMARY KEY,
+            SKILL_CATEGORY STRING NOT NULL,             -- Category to map from
+            SKILL_FAMILY STRING NOT NULL,               -- Family to map to
+            FAMILY_DESCRIPTION STRING,                  -- Description of the family
+            PRIORITY INTEGER DEFAULT 1,                 -- Priority for overlapping mappings
+            IS_ACTIVE BOOLEAN DEFAULT TRUE,             -- Enable/disable mapping
+            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+        ) CLUSTER BY (SKILL_CATEGORY, IS_ACTIVE)
+
+
 -- Keywords normalization master table
 CREATE TABLE IF NOT EXISTS KEYWORDS_NORMALIZED (
     KEYWORD_ID STRING PRIMARY KEY,
@@ -499,6 +512,95 @@ INSERT INTO SKILL_STANDARDIZATION_RULES VALUES
 ('rule_008', 'postgresql', 'PostgreSQL', 'databases', 'relational_database', 1.0, 'exact_match', CURRENT_TIMESTAMP),
 ('rule_009', 'postgres', 'PostgreSQL', 'databases', 'relational_database', 0.95, 'exact_match', CURRENT_TIMESTAMP),
 ('rule_010', 'aws', 'Amazon Web Services', 'cloud', 'public_cloud', 1.0, 'exact_match', CURRENT_TIMESTAMP);
+
+-- Skill category detection patterns table
+CREATE TABLE IF NOT EXISTS SKILL_CATEGORY_PATTERNS (
+    PATTERN_ID STRING PRIMARY KEY,
+    SKILL_CATEGORY STRING NOT NULL,                 -- languages, frameworks, databases, cloud, tools
+    PATTERN STRING NOT NULL,                        -- Regex pattern for category detection
+    PATTERN_TYPE STRING DEFAULT 'regex',            -- regex, exact_match, contains
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,             -- Confidence in category assignment
+    DESCRIPTION STRING,                             -- Human-readable description of pattern
+    IS_ACTIVE BOOLEAN DEFAULT TRUE,                 -- Enable/disable pattern
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (SKILL_CATEGORY, IS_ACTIVE);
+
+-- Insert skill category detection patterns
+INSERT INTO SKILL_CATEGORY_PATTERNS VALUES
+-- Languages patterns
+('cat_001', 'languages', '\\bpython\\b', 'regex', 1.0, 'Python programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_002', 'languages', '\\bjavascript\\b', 'regex', 1.0, 'JavaScript programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_003', 'languages', '\\bjava\\b', 'regex', 1.0, 'Java programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_004', 'languages', '\\bc\\+\\+\\b', 'regex', 1.0, 'C++ programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_005', 'languages', '\\bc#\\b', 'regex', 1.0, 'C# programming language', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_006', 'languages', '\\bruntime\\b', 'regex', 0.8, 'Runtime environments', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_007', 'languages', '\\bprogramming\\b', 'regex', 0.7, 'General programming references', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_008', 'languages', '\\blanguage\\b', 'regex', 0.6, 'Language keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Frameworks patterns
+('cat_009', 'frameworks', '\\bframework\\b', 'regex', 1.0, 'Framework keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_010', 'frameworks', '\\breact\\b', 'regex', 1.0, 'React framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_011', 'frameworks', '\\bangular\\b', 'regex', 1.0, 'Angular framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_012', 'frameworks', '\\bvue\\b', 'regex', 1.0, 'Vue.js framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_013', 'frameworks', '\\bdjango\\b', 'regex', 1.0, 'Django framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_014', 'frameworks', '\\bspring\\b', 'regex', 1.0, 'Spring framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_015', 'frameworks', '\\bexpress\\b', 'regex', 1.0, 'Express.js framework', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_016', 'frameworks', '\\.js$', 'regex', 0.8, 'JavaScript framework extensions', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_017', 'frameworks', '\\.ts$', 'regex', 0.8, 'TypeScript framework extensions', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Databases patterns
+('cat_018', 'databases', '\\bdatabase\\b', 'regex', 1.0, 'Database keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_019', 'databases', '\\bsql\\b', 'regex', 1.0, 'SQL databases', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_020', 'databases', '\\bmysql\\b', 'regex', 1.0, 'MySQL database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_021', 'databases', '\\bpostgresql\\b', 'regex', 1.0, 'PostgreSQL database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_022', 'databases', '\\bmongodb\\b', 'regex', 1.0, 'MongoDB database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_023', 'databases', '\\bredis\\b', 'regex', 1.0, 'Redis database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_024', 'databases', '\\boracle\\b', 'regex', 1.0, 'Oracle database', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Cloud platforms patterns
+('cat_025', 'cloud', '\\baws\\b', 'regex', 1.0, 'Amazon Web Services', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_026', 'cloud', '\\bazure\\b', 'regex', 1.0, 'Microsoft Azure', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_027', 'cloud', '\\bgcp\\b', 'regex', 1.0, 'Google Cloud Platform', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_028', 'cloud', '\\bcloud\\b', 'regex', 1.0, 'Cloud keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_029', 'cloud', '\\bkubernetes\\b', 'regex', 1.0, 'Kubernetes orchestration', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_030', 'cloud', '\\bcontainer\\b', 'regex', 0.8, 'Container technologies', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Tools patterns
+('cat_031', 'tools', '\\btool\\b', 'regex', 0.7, 'Tool keyword', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_032', 'tools', '\\bgit\\b', 'regex', 1.0, 'Git version control', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_033', 'tools', '\\bdocker\\b', 'regex', 1.0, 'Docker containerization', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_034', 'tools', '\\bjenkins\\b', 'regex', 1.0, 'Jenkins CI/CD', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_035', 'tools', '\\bslack\\b', 'regex', 0.9, 'Slack communication tool', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('cat_036', 'tools', '\\bjira\\b', 'regex', 1.0, 'JIRA project management', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+
+-- Location standardization rules
+CREATE OR REPLACE TABLE LOCATION_STANDARDIZATION_RULES (
+    RULE_ID STRING PRIMARY KEY,
+    PATTERN STRING,                                 -- Pattern to match
+    STANDARDIZED_NAME STRING,                       -- Standard form
+    CITY STRING,
+    STATE_PROVINCE STRING,
+    COUNTRY STRING,
+    LOCATION_TYPE STRING,                           -- office, remote, hybrid
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
+    RULE_TYPE STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern, fuzzy_match
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Example location standardization rules
+INSERT INTO LOCATION_STANDARDIZATION_RULES VALUES
+('loc_001', 'san francisco', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_002', 'sf', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 0.9, 'exact_match', CURRENT_TIMESTAMP),
+('loc_003', 'san francisco, ca', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_004', 'new york', 'New York, NY', 'New York', 'New York', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_005', 'nyc', 'New York, NY', 'New York', 'New York', 'United States', 'office', 0.95, 'exact_match', CURRENT_TIMESTAMP),
+('loc_006', 'remote', 'Remote', NULL, NULL, 'Global', 'remote', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_007', 'work from home', 'Remote', NULL, NULL, 'Global', 'remote', 0.9, 'exact_match', CURRENT_TIMESTAMP),
+('loc_008', 'seattle', 'Seattle, WA', 'Seattle', 'Washington', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_009', 'austin', 'Austin, TX', 'Austin', 'Texas', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_010', 'boston', 'Boston, MA', 'Boston', 'Massachusetts', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP);
 ```
 
 ### 6. Create Views for Easy Querying
@@ -690,6 +792,21 @@ LEFT JOIN (
     GROUP BY JOB_UID
 ) locations_per_job ON ju.JOB_UID = locations_per_job.JOB_UID;
 
+-- Skill category patterns analysis view
+CREATE OR REPLACE VIEW SKILL_CATEGORY_PATTERNS_ANALYSIS AS
+SELECT
+    SKILL_CATEGORY,
+    COUNT(*) as TOTAL_PATTERNS,
+    COUNT(CASE WHEN IS_ACTIVE = TRUE THEN 1 END) as ACTIVE_PATTERNS,
+    COUNT(CASE WHEN IS_ACTIVE = FALSE THEN 1 END) as INACTIVE_PATTERNS,
+    AVG(CONFIDENCE_SCORE) as AVG_CONFIDENCE,
+    MIN(CONFIDENCE_SCORE) as MIN_CONFIDENCE,
+    MAX(CONFIDENCE_SCORE) as MAX_CONFIDENCE,
+    ARRAY_AGG(CASE WHEN IS_ACTIVE = TRUE THEN PATTERN END) as ACTIVE_PATTERN_LIST
+FROM SKILL_CATEGORY_PATTERNS
+GROUP BY SKILL_CATEGORY
+ORDER BY TOTAL_PATTERNS DESC;
+
 -- Data validation report view
 CREATE OR REPLACE VIEW DATA_VALIDATION_REPORT AS
 WITH VALIDATION_CHECKS AS (
@@ -779,6 +896,7 @@ DESCRIBE TABLE KEYWORDS_NORMALIZED;
 DESCRIBE TABLE JOB_KEYWORDS_BRIDGE;
 DESCRIBE TABLE LOCATIONS_NORMALIZED;
 DESCRIBE TABLE JOB_LOCATIONS_BRIDGE;
+DESCRIBE TABLE SKILL_CATEGORY_PATTERNS;
 
 -- Check views
 SHOW VIEWS;
@@ -794,6 +912,16 @@ SELECT * FROM JOB_SKILLS_COVERAGE;
 SELECT * FROM LOCATIONS_ANALYSIS LIMIT 10;
 SELECT * FROM JOB_LOCATIONS_COVERAGE;
 SELECT * FROM DATA_VALIDATION_REPORT;
+
+-- Test skill category patterns
+SELECT SKILL_CATEGORY, COUNT(*) as PATTERN_COUNT
+FROM SKILL_CATEGORY_PATTERNS
+WHERE IS_ACTIVE = TRUE
+GROUP BY SKILL_CATEGORY
+ORDER BY PATTERN_COUNT DESC;
+
+-- Test skill category patterns analysis view
+SELECT * FROM SKILL_CATEGORY_PATTERNS_ANALYSIS;
 ```
 
 ## Next Steps

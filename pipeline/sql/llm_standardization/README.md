@@ -1,0 +1,166 @@
+# LLM Standardization Static Data Management
+
+This directory contains SQL files for managing static data used in the LLM standardization process. This keeps static data separate from Dagster asset logic for better maintainability and version control.
+
+## Philosophy
+
+**Static data should be managed separately from application code to:**
+- ✅ Avoid conflicts when multiple developers need to modify rules
+- ✅ Enable easy rule updates without code changes
+- ✅ Maintain clear separation of concerns
+- ✅ Support database-driven configuration
+- ✅ Enable rule versioning and audit trails
+
+## File Structure
+
+```
+pipeline/sql/llm_standardization/
+├── README.md                                    # This file
+├── insert_skill_standardization_rules.sql      # Comprehensive skill aliases and variants
+├── insert_skill_category_patterns.sql          # Skill category detection patterns
+├── insert_location_standardization_rules.sql   # Location standardization rules
+├── insert_keyword_standardization_rules.sql    # Keyword classification rules (future)
+└── migrations/                                 # Version-controlled rule updates
+    ├── 001_initial_skill_rules.sql
+    ├── 002_add_microsoft_tools.sql
+    └── 003_update_confidence_scores.sql
+```
+
+## Standard Process
+
+### 1. Initial Setup
+
+Run the comprehensive rule files once during initial setup:
+
+```sql
+-- Execute in order
+@insert_skill_standardization_rules.sql
+@insert_skill_category_patterns.sql
+@insert_location_standardization_rules.sql
+@insert_keyword_standardization_rules.sql
+```
+
+### 2. Adding New Rules
+
+**Option A: Direct INSERT (for small changes)**
+```sql
+INSERT INTO SKILL_STANDARDIZATION_RULES VALUES
+('rule_new_001', 'rust', 'Rust', 'languages', 'system_language', 1.0, 'exact_match', CURRENT_TIMESTAMP);
+```
+
+**Option B: Migration Script (recommended for larger changes)**
+```sql
+-- Create: pipeline/sql/llm_standardization/migrations/004_add_rust_language.sql
+INSERT INTO SKILL_STANDARDIZATION_RULES VALUES
+('rule_new_001', 'rust', 'Rust', 'languages', 'system_language', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('rule_new_002', 'rust-lang', 'Rust', 'languages', 'system_language', 0.9, 'exact_match', CURRENT_TIMESTAMP);
+```
+
+### 3. Updating Existing Rules
+
+```sql
+UPDATE SKILL_STANDARDIZATION_RULES
+SET CONFIDENCE_SCORE = 0.95,
+    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
+WHERE RULE_ID = 'rule_006';
+```
+
+### 4. Asset Integration
+
+The Dagster assets check for rule existence but don't manage the rules themselves:
+
+```python
+# In skills_normalization.py
+def stage_skills_standardization_rules():
+    """
+    Ensure standardization rules table exists and validate rules are present.
+    Rules are managed via SQL files, not hardcoded in assets.
+    """
+    # Check if table exists and has rules
+    # Log warning if no rules found
+    # Don't insert rules (managed separately)
+```
+
+## Rule Management Best Practices
+
+### 1. Rule Naming Convention
+- **Pattern**: `rule_XXX` where XXX is sequential number
+- **Categories**: Use consistent category names
+- **Confidence**: Score from 0.0 to 1.0 based on match accuracy
+
+### 2. Version Control
+- Commit all rule changes to git
+- Use migration scripts for production changes
+- Document rule changes in commit messages
+
+### 3. Testing
+Always test new rules against sample data:
+
+```sql
+-- Test query: How many skills would match the new rule?
+SELECT COUNT(*)
+FROM SKILLS_RAW_EXTRACTION
+WHERE LOWER(SKILL_NAME_RAW) = 'rust';
+```
+
+### 4. Conflict Resolution
+- Use database constraints to prevent duplicate patterns
+- Review confidence scores regularly
+- Monitor standardization quality metrics
+
+## Integration with Dagster Assets
+
+The assets follow this pattern:
+
+```python
+@asset(deps=["stage_skills_standardization_rules"])
+def stage_skills_normalized():
+    """
+    Uses rules from SKILL_STANDARDIZATION_RULES table.
+    Rules are managed separately via SQL files.
+    """
+    # Query existing rules from database
+    # Apply standardization logic
+    # No hardcoded rules in asset code
+```
+
+## Maintenance Commands
+
+### Check Rule Coverage
+```sql
+SELECT
+    SKILL_CATEGORY,
+    COUNT(*) as RULE_COUNT,
+    AVG(CONFIDENCE_SCORE) as AVG_CONFIDENCE
+FROM SKILL_STANDARDIZATION_RULES
+GROUP BY SKILL_CATEGORY;
+```
+
+### Find Missing Rules
+```sql
+-- Skills that don't match any standardization rule
+SELECT DISTINCT SKILL_NAME_RAW, COUNT(*) as FREQUENCY
+FROM SKILLS_RAW_EXTRACTION sre
+LEFT JOIN SKILL_STANDARDIZATION_RULES sr
+    ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
+WHERE sr.PATTERN IS NULL
+GROUP BY SKILL_NAME_RAW
+ORDER BY FREQUENCY DESC
+LIMIT 20;
+```
+
+### Validate Rule Quality
+```sql
+-- Check for duplicate patterns
+SELECT PATTERN, COUNT(*) as DUPLICATES
+FROM SKILL_STANDARDIZATION_RULES
+GROUP BY PATTERN
+HAVING COUNT(*) > 1;
+```
+
+This approach provides:
+- 🎯 **Clean separation** between static data and application logic
+- 🔄 **Easy maintenance** of rules without code changes
+- 📊 **Database-driven** configuration that can be queried and analyzed
+- 🚀 **Scalable** approach that supports growing rule sets
+- 🔒 **Version controlled** rule changes with audit trails
