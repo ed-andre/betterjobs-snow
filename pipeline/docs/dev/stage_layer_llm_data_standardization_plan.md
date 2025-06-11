@@ -20,28 +20,29 @@ SELECT
     soft_skills,       -- ["Communication", "Leadership", "Problem Solving", "Team Collaboration"]
     primary_keywords,  -- ["Full Stack", "API Development", "Microservices", "Cloud Native"]
     industry_keywords, -- ["FinTech", "B2B SaaS", "High Growth"]
-    role_type_keywords -- ["Individual Contributor", "Senior Level", "Backend Focus"]
+    role_type_keywords, -- ["Individual Contributor", "Senior Level", "Backend Focus"]
+    office_locations   -- ["San Francisco, CA", "New York, NY", "Remote"]
 FROM STAGE.jobs_llm_enriched;
 ```
 
 ### Analytics Challenges
 
 **Querying Difficulties**:
-- ❌ Complex FLATTEN operations required for basic skill counts
+- ❌ Complex FLATTEN operations required for basic skill counts and location analysis
 - ❌ Slow performance on VARIANT column aggregations
 - ❌ Difficult to join with other relational data
 - ❌ No referential integrity or data validation
 
 **Business Intelligence Limitations**:
 - ❌ Cannot easily answer "How many jobs require Python?"
-- ❌ Cannot calculate salary premiums by technology
-- ❌ Cannot build skill trend analysis
-- ❌ Cannot create normalized skill taxonomies
+- ❌ Cannot calculate salary premiums by technology or location
+- ❌ Cannot build skill trend analysis or geographic insights
+- ❌ Cannot create normalized skill taxonomies or location hierarchies
 
 **Data Quality Issues**:
 - ❌ No deduplication of skill variations ("Python" vs "python" vs "Python3")
-- ❌ No standardization across job postings
-- ❌ No validation of skill taxonomies
+- ❌ No standardization of location formats ("SF" vs "San Francisco" vs "San Francisco, CA")
+- ❌ No validation of skill taxonomies or geographic data
 - ❌ No frequency analysis or trend tracking
 
 ## Solution Architecture
@@ -55,10 +56,361 @@ jobs_llm_enriched (existing)
     ↓
 skill_extraction_and_normalization
     ↓
-stage_skills_normalized (master skills)
-stage_job_skills_bridge (many-to-many)
-stage_keywords_normalized (master keywords)
-stage_job_keywords_bridge (many-to-many)
+STAGE.SKILLS_NORMALIZED (master skills)
+STAGE.JOB_SKILLS_BRIDGE (many-to-many)
+STAGE.KEYWORDS_NORMALIZED (master keywords)
+STAGE.JOB_KEYWORDS_BRIDGE (many-to-many)
+STAGE.LOCATIONS_NORMALIZED (master locations)
+STAGE.JOB_LOCATIONS_BRIDGE (many-to-many)
+```
+
+## Development Plan: Assets and Functions
+
+### Dagster Assets Architecture
+
+The LLM data standardization will be implemented as a series of interconnected Dagster assets, following the existing pipeline patterns. Each asset has a specific purpose and clear dependencies.
+
+#### Asset Dependency Flow
+
+```
+jobs_llm_enriched (existing)
+    ↓
+stage_llm_raw_extractions (Phase 1)
+    ↓
+┌─ stage_skills_standardization (Phase 1)  ┬─ stage_skills_normalized (Phase 1)
+├─ stage_keywords_standardization (Phase 2) ├─ stage_keywords_normalized (Phase 2)
+└─ stage_locations_standardization (Phase 3)─ stage_locations_normalized (Phase 3)
+    ↓
+stage_llm_data_quality_validation (Phase 4)
+    ↓
+stage_llm_analytics_views (Phase 5)
+```
+
+### Phase 1: Skills Normalization Assets
+
+#### 1.1 `stage_llm_skills_raw_extraction`
+**Purpose**: Extract and flatten all skills data from VARIANT columns in `jobs_llm_enriched`
+**Dependencies**: `jobs_llm_enriched`
+**Output**: Temporary staging table with raw skills data
+
+```python
+@asset(
+    deps=["jobs_llm_enriched"],
+    description="Extract and flatten skills from LLM VARIANT columns",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql"
+)
+def stage_llm_skills_raw_extraction(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Extract all skills from VARIANT columns and flatten into workable format.
+
+    Processes:
+    - technical_skills: Flattens nested JSON by category
+    - soft_skills: Extracts array values
+    - primary_keywords: Treats as skills for standardization
+
+    Output: Raw skills with source tracking and confidence scores
+    """
+    # Implementation details...
+```
+
+#### 1.2 `stage_skills_standardization_rules`
+**Purpose**: Manage and update skill standardization rules and aliases
+**Dependencies**: None (reference data)
+**Output**: Updated standardization rules table
+
+```python
+@asset(
+    description="Maintain skill standardization rules and aliases",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql",
+    freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)  # Weekly updates
+)
+def stage_skills_standardization_rules(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Create and maintain comprehensive skill standardization rules.
+
+    Features:
+    - Common skill aliases (JS -> JavaScript, ML -> Machine Learning)
+    - Category classification rules
+    - Confidence scoring based on pattern matching
+    - Manual override support
+    """
+    # Implementation details...
+```
+
+#### 1.3 `stage_skills_normalized`
+**Purpose**: Apply standardization rules and create normalized skills master table
+**Dependencies**: `stage_llm_skills_raw_extraction`, `stage_skills_standardization_rules`
+**Output**: Normalized skills with market intelligence
+
+```python
+@asset(
+    deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
+    description="Create normalized skills master table with market intelligence",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql"
+)
+def stage_skills_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Apply standardization rules and create skills master table.
+
+    Processing:
+    - Apply standardization rules with confidence scoring
+    - Deduplicate skill variations
+    - Calculate frequency and trend metrics
+    - Flag low-confidence items for manual review
+
+    Output: Clean skills master table for analytics
+    """
+    # Implementation details...
+```
+
+#### 1.4 `stage_job_skills_bridge`
+**Purpose**: Create many-to-many relationships between jobs and normalized skills
+**Dependencies**: `stage_skills_normalized`, `jobs_unified`
+**Output**: Job-skill relationships with context and confidence
+
+```python
+@asset(
+    deps=["stage_skills_normalized", "jobs_unified"],
+    description="Create job-skill relationships with context tracking",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql"
+)
+def stage_job_skills_bridge(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Map jobs to normalized skills with rich context.
+
+    Features:
+    - Source tracking (technical_skills vs soft_skills vs keywords)
+    - Context classification (required vs preferred vs nice-to-have)
+    - Experience level inference
+    - Confidence scoring for skill-job associations
+    """
+    # Implementation details...
+```
+
+### Phase 2: Keywords Standardization Assets
+
+#### 2.1 `stage_keywords_normalized`
+**Purpose**: Standardize and classify job posting keywords
+**Dependencies**: `stage_llm_skills_raw_extraction`
+**Output**: Normalized keywords master table
+
+```python
+@asset(
+    deps=["stage_llm_skills_raw_extraction"],
+    description="Standardize job posting keywords and classifications",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql"
+)
+def stage_keywords_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Process and standardize keywords from LLM extractions.
+
+    Categories:
+    - Industry keywords: FinTech, B2B SaaS, High Growth
+    - Role type keywords: Individual Contributor, Senior Level
+    - Technology keywords: Cloud Native, Microservices
+    - Company stage keywords: Series A, Public Company
+    """
+    # Implementation details...
+```
+
+#### 2.2 `stage_job_keywords_bridge`
+**Purpose**: Create job-keyword relationships
+**Dependencies**: `stage_keywords_normalized`
+**Output**: Job-keyword bridge table
+
+### Phase 3: Location Standardization Assets
+
+#### 3.1 `stage_locations_normalized`
+**Purpose**: Standardize and enrich location data with geographic intelligence
+**Dependencies**: `jobs_llm_enriched`, `jobs_unified`
+**Output**: Normalized locations with geographic hierarchy
+
+```python
+@asset(
+    deps=["jobs_llm_enriched", "jobs_unified"],
+    description="Standardize location data with geographic intelligence",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql"
+)
+def stage_locations_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Standardize location data from multiple sources.
+
+    Sources:
+    - office_locations: VARIANT array from LLM
+    - location_standardized: Basic location from jobs_unified
+    - headquarters: Company location data
+
+    Enrichment:
+    - Geographic hierarchy (city, state, country, region)
+    - Tech hub classification
+    - Remote work indicators
+    - Cost of living index integration
+    """
+    # Implementation details...
+```
+
+#### 3.2 `stage_job_locations_bridge`
+**Purpose**: Create job-location relationships with work arrangement context
+**Dependencies**: `stage_locations_normalized`
+**Output**: Job-location bridge with work type classification
+
+### Phase 4: Data Quality and Validation Assets
+
+#### 4.1 `stage_llm_data_quality_validation`
+**Purpose**: Comprehensive data quality monitoring and validation
+**Dependencies**: All normalization assets
+**Output**: Data quality reports and flagged items
+
+```python
+@asset(
+    deps=["stage_skills_normalized", "stage_keywords_normalized", "stage_locations_normalized"],
+    description="Comprehensive data quality validation for LLM standardization",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql"
+)
+def stage_llm_data_quality_validation(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Validate data quality across all normalized tables.
+
+    Validations:
+    - Orphaned records (skills without jobs, jobs without skills)
+    - Low confidence items requiring manual review
+    - Duplicate detection and resolution
+    - Coverage analysis (percentage of jobs with normalized data)
+    - Trend analysis and anomaly detection
+    """
+    # Implementation details...
+```
+
+#### 4.2 `stage_llm_quality_metrics`
+**Purpose**: Generate quality metrics and monitoring dashboards
+**Dependencies**: `stage_llm_data_quality_validation`
+**Output**: Quality metrics for monitoring and alerting
+
+### Phase 5: Analytics Enablement Assets
+
+#### 5.1 `stage_llm_analytics_views`
+**Purpose**: Create optimized views for downstream analytics
+**Dependencies**: All bridge tables
+**Output**: Pre-aggregated views for common analytics queries
+
+```python
+@asset(
+    deps=["stage_job_skills_bridge", "stage_job_keywords_bridge", "stage_job_locations_bridge"],
+    description="Create analytics-optimized views for downstream consumption",
+    group_name="llm_standardization",
+    compute_kind="snowflake_sql"
+)
+def stage_llm_analytics_views(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Create performant views for common analytics queries.
+
+    Views:
+    - skills_analysis: Top skills by category, trend, and location
+    - location_insights: Geographic distribution and remote work trends
+    - keyword_trends: Industry and role classification analytics
+    - job_enrichment_summary: Overall enrichment quality and coverage
+    """
+    # Implementation details...
+```
+
+### Utility Functions and Classes
+
+#### Core Processing Functions
+
+```python
+# transformations/llm_standardization.py
+
+class SkillStandardizer:
+    """Handle skill standardization and deduplication logic"""
+
+    def __init__(self, confidence_threshold: float = 0.7):
+        self.confidence_threshold = confidence_threshold
+        self.skill_aliases = self._load_skill_aliases()
+
+    def standardize_skill(self, raw_skill: str, category: str) -> Dict[str, Any]:
+        """Standardize a single skill with confidence scoring"""
+        # Implementation...
+
+    def detect_skill_category(self, skill: str) -> str:
+        """Auto-detect skill category using pattern matching"""
+        # Implementation...
+
+    def calculate_confidence(self, raw_skill: str, standardized_skill: str) -> float:
+        """Calculate standardization confidence score"""
+        # Implementation...
+
+class LocationStandardizer:
+    """Handle location standardization and geographic enrichment"""
+
+    def standardize_location(self, raw_location: str) -> Dict[str, Any]:
+        """Standardize location with geographic hierarchy"""
+        # Implementation...
+
+    def detect_remote_indicators(self, location: str) -> bool:
+        """Detect if location indicates remote work"""
+        # Implementation...
+
+    def classify_tech_hub(self, city: str, state: str) -> bool:
+        """Classify if location is a major tech hub"""
+        # Implementation...
+
+class KeywordClassifier:
+    """Handle keyword classification and standardization"""
+
+    def classify_keyword_type(self, keyword: str) -> str:
+        """Classify keyword into type (industry, role, technology, etc.)"""
+        # Implementation...
+
+    def standardize_keyword(self, raw_keyword: str) -> Dict[str, Any]:
+        """Standardize keyword with confidence scoring"""
+        # Implementation...
+
+# Data quality and validation functions
+def validate_normalization_completeness(snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """Validate that normalization process completed successfully"""
+    # Implementation...
+
+def calculate_coverage_metrics(snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """Calculate coverage metrics for normalized data"""
+    # Implementation...
+
+def detect_data_quality_issues(snowflake: SnowflakeResource) -> List[Dict[str, Any]]:
+    """Detect and report data quality issues"""
+    # Implementation...
+```
+
+#### Configuration Management
+
+```python
+# config/llm_standardization_config.py
+
+@dataclass
+class LLMStandardizationConfig:
+    """Configuration for LLM data standardization process"""
+
+    # Confidence thresholds
+    skill_confidence_threshold: float = 0.7
+    location_confidence_threshold: float = 0.8
+    keyword_confidence_threshold: float = 0.6
+
+    # Processing parameters
+    min_skill_frequency: int = 2  # Minimum appearances to include skill
+    max_skill_variants: int = 10  # Maximum variants to track per skill
+
+    # Quality thresholds
+    min_coverage_percentage: float = 85.0  # Minimum coverage for quality validation
+    max_low_confidence_percentage: float = 15.0  # Maximum low confidence items
+
+    # Batch processing
+    batch_size: int = 1000
+    parallel_processing: bool = True
 ```
 
 ## Implementation Plan
@@ -68,86 +420,80 @@ stage_job_keywords_bridge (many-to-many)
 #### 1.1 Create Skills Master Table
 
 ```sql
-CREATE TABLE STAGE.skills_normalized (
-    skill_id STRING PRIMARY KEY,
-    skill_name STRING NOT NULL,                    -- Standardized skill name
-    skill_name_clean STRING NOT NULL,              -- Cleaned version for matching
-    skill_name_original STRING,                    -- Most common original variant
+CREATE TABLE IF NOT EXISTS SKILLS_NORMALIZED (
+    SKILL_ID STRING PRIMARY KEY,
+    SKILL_NAME STRING NOT NULL,                    -- Standardized skill name
+    SKILL_NAME_CLEAN STRING NOT NULL,              -- Cleaned version for matching
+    SKILL_NAME_ORIGINAL STRING,                    -- Most common original variant
 
     -- Skill Classification
-    skill_category STRING NOT NULL,                -- languages, databases, cloud, frameworks, tools, soft
-    skill_subcategory STRING,                      -- backend_language, nosql_database, public_cloud, etc.
-    skill_family STRING,                           -- development, data, devops, etc.
-    skill_type STRING DEFAULT 'technical',         -- technical, soft, business, certification
+    SKILL_CATEGORY STRING NOT NULL,                -- languages, databases, cloud, frameworks, tools, soft
+    SKILL_SUBCATEGORY STRING,                      -- backend_language, nosql_database, public_cloud, etc.
+    SKILL_FAMILY STRING,                           -- development, data, devops, etc.
+    SKILL_TYPE STRING DEFAULT 'technical',         -- technical, soft, business, certification
 
     -- Standardization & Deduplication
-    original_variants VARIANT,                     -- JSON array of all variations found
-    common_aliases VARIANT,                        -- JSON array of known aliases
-    canonical_form STRING,                         -- Preferred canonical name
+    ORIGINAL_VARIANTS VARIANT,                     -- JSON array of all variations found
+    COMMON_ALIASES VARIANT,                        -- JSON array of known aliases
+    CANONICAL_FORM STRING,                         -- Preferred canonical name
 
     -- Market Data
-    frequency_count INTEGER DEFAULT 0,             -- How often this skill appears
-    first_seen_date DATE,                          -- When first detected
-    last_seen_date DATE,                           -- Most recent occurrence
-    trend_direction STRING,                        -- rising, stable, declining
+    FREQUENCY_COUNT INTEGER DEFAULT 0,             -- How often this skill appears
+    FIRST_SEEN_DATE DATE,                          -- When first detected
+    LAST_SEEN_DATE DATE,                           -- Most recent occurrence
+    TREND_DIRECTION STRING,                        -- rising, stable, declining
 
     -- Quality & Confidence
-    confidence_score FLOAT DEFAULT 1.0,            -- Confidence in standardization
-    manual_review_flag BOOLEAN DEFAULT FALSE,      -- Needs human review
-    approved_by_admin BOOLEAN DEFAULT FALSE,       -- Admin approved
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,            -- Confidence in standardization
+    MANUAL_REVIEW_FLAG BOOLEAN DEFAULT FALSE,      -- Needs human review
+    APPROVED_BY_ADMIN BOOLEAN DEFAULT FALSE,       -- Admin approved
 
     -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    created_by STRING DEFAULT 'system',
-
-    -- Indexing
-    INDEX idx_category_name (skill_category, skill_name),
-    INDEX idx_frequency (frequency_count DESC),
-    INDEX idx_trend (trend_direction, frequency_count DESC)
-) CLUSTER BY (skill_category, skill_name);
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    CREATED_BY STRING DEFAULT 'system'
+) CLUSTER BY (SKILL_CATEGORY, SKILL_NAME);
 ```
 
 #### 1.2 Create Job-Skills Bridge Table
 
 ```sql
-CREATE TABLE STAGE.job_skills_bridge (
-    bridge_id STRING PRIMARY KEY,
-    job_uid STRING NOT NULL,                       -- FK to jobs_unified/jobs_llm_enriched
-    skill_id STRING NOT NULL,                      -- FK to skills_normalized
+CREATE TABLE IF NOT EXISTS JOB_SKILLS_BRIDGE (
+    BRIDGE_ID STRING PRIMARY KEY,
+    JOB_UID STRING NOT NULL,                       -- FK to JOBS_UNIFIED
+    SKILL_ID STRING NOT NULL,                      -- FK to SKILLS_NORMALIZED
 
     -- Source Information
-    skill_source STRING NOT NULL,                  -- 'technical_skills', 'soft_skills', 'primary_keywords'
-    skill_category STRING NOT NULL,                -- Denormalized for performance
-    original_text STRING,                          -- Original text from LLM
+    SKILL_SOURCE STRING NOT NULL,                  -- 'technical_skills', 'soft_skills', 'primary_keywords'
+    SKILL_CATEGORY STRING NOT NULL,                -- Denormalized for performance
+    ORIGINAL_TEXT STRING,                          -- Original text from LLM
 
     -- Confidence & Quality
-    extraction_confidence FLOAT,                   -- LLM extraction confidence
-    standardization_confidence FLOAT,              -- Skill matching confidence
-    overall_confidence FLOAT,                      -- Combined confidence score
+    EXTRACTION_CONFIDENCE FLOAT,                   -- LLM extraction confidence
+    STANDARDIZATION_CONFIDENCE FLOAT,              -- Skill matching confidence
+    OVERALL_CONFIDENCE FLOAT,                      -- Combined confidence score
 
     -- Context
-    skill_context STRING,                          -- required, preferred, nice-to-have
-    experience_level_context STRING,               -- entry, mid, senior (if mentioned)
+    SKILL_CONTEXT STRING,                          -- required, preferred, nice-to-have
+    EXPERIENCE_LEVEL_CONTEXT STRING,               -- entry, mid, senior (if mentioned)
 
     -- Processing Metadata
-    processing_method STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction
-    needs_review BOOLEAN DEFAULT FALSE,
+    PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction
+    NEEDS_REVIEW BOOLEAN DEFAULT FALSE,
 
     -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    created_by STRING DEFAULT 'system',
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    CREATED_BY STRING DEFAULT 'system'
+) CLUSTER BY (JOB_UID, SKILL_CATEGORY);
 
-    -- Foreign Keys
-    FOREIGN KEY (job_uid) REFERENCES STAGE.jobs_unified(job_uid),
-    FOREIGN KEY (skill_id) REFERENCES STAGE.skills_normalized(skill_id),
+-- Add foreign key constraints
+ALTER TABLE JOB_SKILLS_BRIDGE
+ADD CONSTRAINT FK_JOB_SKILLS_JOB_UID
+FOREIGN KEY (JOB_UID) REFERENCES JOBS_UNIFIED(JOB_UID);
 
-    -- Indexing
-    INDEX idx_job_skill (job_uid, skill_id),
-    INDEX idx_skill_jobs (skill_id, job_uid),
-    INDEX idx_category_confidence (skill_category, overall_confidence DESC),
-    INDEX idx_source_category (skill_source, skill_category)
-) CLUSTER BY (job_uid, skill_category);
+ALTER TABLE JOB_SKILLS_BRIDGE
+ADD CONSTRAINT FK_JOB_SKILLS_SKILL_ID
+FOREIGN KEY (SKILL_ID) REFERENCES SKILLS_NORMALIZED(SKILL_ID);
 ```
 
 ### Phase 2: Keywords and Classification Normalization
@@ -155,142 +501,291 @@ CREATE TABLE STAGE.job_skills_bridge (
 #### 2.1 Create Keywords Master Table
 
 ```sql
-CREATE TABLE STAGE.keywords_normalized (
-    keyword_id STRING PRIMARY KEY,
-    keyword_text STRING NOT NULL,
-    keyword_text_clean STRING NOT NULL,
+CREATE TABLE IF NOT EXISTS KEYWORDS_NORMALIZED (
+    KEYWORD_ID STRING PRIMARY KEY,
+    KEYWORD_TEXT STRING NOT NULL,
+    KEYWORD_TEXT_CLEAN STRING NOT NULL,
 
     -- Classification
-    keyword_type STRING NOT NULL,                  -- primary, industry, role_type, company_stage, technology
-    keyword_category STRING,                       -- specific category within type
+    KEYWORD_TYPE STRING NOT NULL,                  -- primary, industry, role_type, company_stage, technology
+    KEYWORD_CATEGORY STRING,                       -- specific category within type
 
     -- Standardization
-    original_variants VARIANT,                     -- All variations found
-    canonical_form STRING,                         -- Standardized form
+    ORIGINAL_VARIANTS VARIANT,                     -- All variations found
+    CANONICAL_FORM STRING,                         -- Standardized form
 
     -- Market Data
-    frequency_count INTEGER DEFAULT 0,
-    trend_score FLOAT DEFAULT 0.0,                 -- Trending indicator
+    FREQUENCY_COUNT INTEGER DEFAULT 0,
+    TREND_SCORE FLOAT DEFAULT 0.0,                 -- Trending indicator
 
     -- Quality
-    confidence_score FLOAT DEFAULT 1.0,
-    approved_by_admin BOOLEAN DEFAULT FALSE,
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
+    APPROVED_BY_ADMIN BOOLEAN DEFAULT FALSE,
 
     -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_type_frequency (keyword_type, frequency_count DESC),
-    INDEX idx_category_trend (keyword_category, trend_score DESC)
-) CLUSTER BY (keyword_type, keyword_text);
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (KEYWORD_TYPE, KEYWORD_TEXT);
 ```
 
 #### 2.2 Create Job-Keywords Bridge Table
 
 ```sql
-CREATE TABLE STAGE.job_keywords_bridge (
-    bridge_id STRING PRIMARY KEY,
-    job_uid STRING NOT NULL,
-    keyword_id STRING NOT NULL,
+CREATE TABLE IF NOT EXISTS JOB_KEYWORDS_BRIDGE (
+    BRIDGE_ID STRING PRIMARY KEY,
+    JOB_UID STRING NOT NULL,
+    KEYWORD_ID STRING NOT NULL,
 
     -- Source Information
-    keyword_source STRING NOT NULL,                -- primary_keywords, industry_keywords, role_type_keywords
-    original_text STRING,
+    KEYWORD_SOURCE STRING NOT NULL,                -- primary_keywords, industry_keywords, role_type_keywords
+    ORIGINAL_TEXT STRING,
 
     -- Confidence
-    extraction_confidence FLOAT,
-    standardization_confidence FLOAT,
-    overall_confidence FLOAT,
+    EXTRACTION_CONFIDENCE FLOAT,
+    STANDARDIZATION_CONFIDENCE FLOAT,
+    OVERALL_CONFIDENCE FLOAT,
 
     -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (JOB_UID, KEYWORD_SOURCE);
 
-    -- Foreign Keys
-    FOREIGN KEY (job_uid) REFERENCES STAGE.jobs_unified(job_uid),
-    FOREIGN KEY (keyword_id) REFERENCES STAGE.keywords_normalized(keyword_id),
+-- Add foreign key constraints
+ALTER TABLE JOB_KEYWORDS_BRIDGE
+ADD CONSTRAINT FK_JOB_KEYWORDS_JOB_UID
+FOREIGN KEY (JOB_UID) REFERENCES JOBS_UNIFIED(JOB_UID);
 
-    INDEX idx_job_keyword (job_uid, keyword_id),
-    INDEX idx_keyword_jobs (keyword_id, job_uid)
-) CLUSTER BY (job_uid, keyword_source);
+ALTER TABLE JOB_KEYWORDS_BRIDGE
+ADD CONSTRAINT FK_JOB_KEYWORDS_KEYWORD_ID
+FOREIGN KEY (KEYWORD_ID) REFERENCES KEYWORDS_NORMALIZED(KEYWORD_ID);
 ```
 
-### Phase 3: Data Extraction and Normalization Process
+### Phase 3: Location Normalization Infrastructure
 
-#### 3.1 Skills Extraction Logic
+#### 3.1 Create Locations Master Table
+
+```sql
+CREATE TABLE IF NOT EXISTS LOCATIONS_NORMALIZED (
+    LOCATION_ID STRING PRIMARY KEY,
+    LOCATION_NAME STRING NOT NULL,                 -- Standardized location name
+    LOCATION_NAME_CLEAN STRING NOT NULL,           -- Cleaned version for matching
+    LOCATION_NAME_ORIGINAL STRING,                 -- Most common original variant
+
+    -- Geographic Classification
+    CITY STRING,
+    STATE_PROVINCE STRING,
+    COUNTRY STRING,
+    METRO_AREA STRING,
+    REGION STRING,                                 -- Northeast, West Coast, etc.
+
+    -- Location Type
+    LOCATION_TYPE STRING,                          -- office, headquarters, remote, hybrid
+    IS_REMOTE_FRIENDLY BOOLEAN DEFAULT FALSE,      -- Supports remote work
+    IS_MAJOR_TECH_HUB BOOLEAN DEFAULT FALSE,       -- Silicon Valley, Seattle, etc.
+
+    -- Economic Data
+    COST_OF_LIVING_INDEX FLOAT,
+    AVERAGE_SALARY_ADJUSTMENT FLOAT,               -- Regional salary multiplier
+
+    -- Standardization Metadata
+    ORIGINAL_VARIANTS VARIANT,                     -- All variations found
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
+    FREQUENCY_COUNT INTEGER DEFAULT 0,
+    FIRST_SEEN_DATE DATE,
+    LAST_SEEN_DATE DATE,
+
+    -- Quality & Confidence
+    MANUAL_REVIEW_FLAG BOOLEAN DEFAULT FALSE,      -- Needs human review
+    APPROVED_BY_ADMIN BOOLEAN DEFAULT FALSE,       -- Admin approved
+
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    CREATED_BY STRING DEFAULT 'system'
+) CLUSTER BY (COUNTRY, STATE_PROVINCE, CITY);
+```
+
+#### 3.2 Create Job-Locations Bridge Table
+
+```sql
+CREATE TABLE IF NOT EXISTS JOB_LOCATIONS_BRIDGE (
+    BRIDGE_ID STRING PRIMARY KEY,
+    JOB_UID STRING NOT NULL,                       -- FK to JOBS_UNIFIED
+    LOCATION_ID STRING NOT NULL,                   -- FK to LOCATIONS_NORMALIZED
+
+    -- Source Information
+    LOCATION_SOURCE STRING NOT NULL,               -- 'office_locations', 'location_standardized', 'headquarters'
+    ORIGINAL_TEXT STRING,                          -- Original text from LLM/source
+
+    -- Location Context
+    LOCATION_CONTEXT STRING,                       -- primary, secondary, remote_option
+    WORK_ARRANGEMENT STRING,                       -- on_site, hybrid, remote
+
+    -- Confidence & Quality
+    EXTRACTION_CONFIDENCE FLOAT,                   -- LLM extraction confidence
+    STANDARDIZATION_CONFIDENCE FLOAT,              -- Location matching confidence
+    OVERALL_CONFIDENCE FLOAT,                      -- Combined confidence score
+
+    -- Processing Metadata
+    PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction
+    NEEDS_REVIEW BOOLEAN DEFAULT FALSE,
+
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    CREATED_BY STRING DEFAULT 'system'
+) CLUSTER BY (JOB_UID, LOCATION_SOURCE);
+
+-- Add foreign key constraints for locations
+ALTER TABLE JOB_LOCATIONS_BRIDGE
+ADD CONSTRAINT FK_JOB_LOCATIONS_JOB_UID
+FOREIGN KEY (JOB_UID) REFERENCES JOBS_UNIFIED(JOB_UID);
+
+ALTER TABLE JOB_LOCATIONS_BRIDGE
+ADD CONSTRAINT FK_JOB_LOCATIONS_LOCATION_ID
+FOREIGN KEY (LOCATION_ID) REFERENCES LOCATIONS_NORMALIZED(LOCATION_ID);
+```
+
+#### 3.3 Location Extraction and Standardization
+
+```sql
+-- Location extraction view
+CREATE OR REPLACE VIEW STAGE_LOCATIONS_RAW_EXTRACTION AS
+WITH OFFICE_LOCATIONS_EXPLODED AS (
+    -- Extract office locations from VARIANT array
+    SELECT
+        JOB_UID,
+        'office_locations' as LOCATION_SOURCE,
+        TRIM(LOCATION.VALUE::STRING) as LOCATION_NAME_RAW,
+        LOCATION.VALUE::STRING as LOCATION_NAME_ORIGINAL
+    FROM STAGE.JOBS_LLM_ENRICHED,
+    LATERAL FLATTEN(input => OFFICE_LOCATIONS) LOCATION
+    WHERE OFFICE_LOCATIONS IS NOT NULL
+      AND LOCATION.VALUE IS NOT NULL
+      AND LENGTH(TRIM(LOCATION.VALUE::STRING)) > 0
+      AND LOWER(TRIM(LOCATION.VALUE::STRING)) NOT IN ('null', 'none', 'n/a')
+),
+
+BASE_LOCATIONS AS (
+    -- Include basic location from jobs_unified
+    SELECT
+        JOB_UID,
+        'location_standardized' as LOCATION_SOURCE,
+        TRIM(LOCATION_STANDARDIZED) as LOCATION_NAME_RAW,
+        LOCATION_STANDARDIZED as LOCATION_NAME_ORIGINAL
+    FROM STAGE.JOBS_UNIFIED
+    WHERE LOCATION_STANDARDIZED IS NOT NULL
+      AND LENGTH(TRIM(LOCATION_STANDARDIZED)) > 0
+      AND LOWER(TRIM(LOCATION_STANDARDIZED)) NOT IN ('null', 'none', 'n/a', 'no location found')
+)
+
+SELECT * FROM OFFICE_LOCATIONS_EXPLODED
+UNION ALL
+SELECT * FROM BASE_LOCATIONS;
+
+-- Location standardization rules
+CREATE OR REPLACE TABLE LOCATION_STANDARDIZATION_RULES (
+    RULE_ID STRING PRIMARY KEY,
+    PATTERN STRING,                                 -- Pattern to match
+    STANDARDIZED_NAME STRING,                       -- Standard form
+    CITY STRING,
+    STATE_PROVINCE STRING,
+    COUNTRY STRING,
+    LOCATION_TYPE STRING,                           -- office, remote, hybrid
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
+    RULE_TYPE STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern, fuzzy_match
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Example location standardization rules
+INSERT INTO LOCATION_STANDARDIZATION_RULES VALUES
+('loc_001', 'san francisco', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_002', 'sf', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 0.9, 'exact_match', CURRENT_TIMESTAMP),
+('loc_003', 'san francisco, ca', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_004', 'new york', 'New York, NY', 'New York', 'New York', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_005', 'nyc', 'New York, NY', 'New York', 'New York', 'United States', 'office', 0.95, 'exact_match', CURRENT_TIMESTAMP),
+('loc_006', 'remote', 'Remote', NULL, NULL, 'Global', 'remote', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_007', 'work from home', 'Remote', NULL, NULL, 'Global', 'remote', 0.9, 'exact_match', CURRENT_TIMESTAMP),
+('loc_008', 'seattle', 'Seattle, WA', 'Seattle', 'Washington', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_009', 'austin', 'Austin, TX', 'Austin', 'Texas', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
+('loc_010', 'boston', 'Boston, MA', 'Boston', 'Massachusetts', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP);
+```
+
+### Phase 4: Data Extraction and Normalization Process
+
+#### 4.1 Skills Extraction Logic
 
 ```sql
 -- Step 1: Extract all skills from VARIANT columns
-CREATE OR REPLACE VIEW stage_skills_raw_extraction AS
-WITH technical_skills_exploded AS (
+CREATE OR REPLACE VIEW STAGE_SKILLS_RAW_EXTRACTION AS
+WITH TECHNICAL_SKILLS_EXPLODED AS (
     -- Extract technical skills by category
     SELECT
-        job_uid,
-        'technical_skills' as skill_source,
-        skill_category.key::STRING as skill_category,
-        TRIM(LOWER(skill_name.value::STRING)) as skill_name_raw,
-        skill_name.value::STRING as skill_name_original
-    FROM STAGE.jobs_llm_enriched,
-    LATERAL FLATTEN(input => technical_skills) skill_category,
-    LATERAL FLATTEN(input => skill_category.value) skill_name
-    WHERE technical_skills IS NOT NULL
-      AND skill_category.value IS NOT NULL
-      AND ARRAY_SIZE(skill_category.value) > 0
+        JOB_UID,
+        'technical_skills' as SKILL_SOURCE,
+        SKILL_CATEGORY.KEY::STRING as SKILL_CATEGORY,
+        TRIM(LOWER(SKILL_NAME.VALUE::STRING)) as SKILL_NAME_RAW,
+        SKILL_NAME.VALUE::STRING as SKILL_NAME_ORIGINAL
+    FROM STAGE.JOBS_LLM_ENRICHED,
+    LATERAL FLATTEN(input => TECHNICAL_SKILLS) SKILL_CATEGORY,
+    LATERAL FLATTEN(input => SKILL_CATEGORY.VALUE) SKILL_NAME
+    WHERE TECHNICAL_SKILLS IS NOT NULL
+      AND SKILL_CATEGORY.VALUE IS NOT NULL
+      AND ARRAY_SIZE(SKILL_CATEGORY.VALUE) > 0
 ),
 
-soft_skills_exploded AS (
+SOFT_SKILLS_EXPLODED AS (
     -- Extract soft skills
     SELECT
-        job_uid,
-        'soft_skills' as skill_source,
-        'soft' as skill_category,
-        TRIM(LOWER(skill.value::STRING)) as skill_name_raw,
-        skill.value::STRING as skill_name_original
-    FROM STAGE.jobs_llm_enriched,
-    LATERAL FLATTEN(input => soft_skills) skill
-    WHERE soft_skills IS NOT NULL
-      AND skill.value IS NOT NULL
-      AND LENGTH(TRIM(skill.value::STRING)) > 0
+        JOB_UID,
+        'soft_skills' as SKILL_SOURCE,
+        'soft' as SKILL_CATEGORY,
+        TRIM(LOWER(SKILL.VALUE::STRING)) as SKILL_NAME_RAW,
+        SKILL.VALUE::STRING as SKILL_NAME_ORIGINAL
+    FROM STAGE.JOBS_LLM_ENRICHED,
+    LATERAL FLATTEN(input => SOFT_SKILLS) SKILL
+    WHERE SOFT_SKILLS IS NOT NULL
+      AND SKILL.VALUE IS NOT NULL
+      AND LENGTH(TRIM(SKILL.VALUE::STRING)) > 0
 ),
 
-primary_keywords_exploded AS (
+PRIMARY_KEYWORDS_EXPLODED AS (
     -- Extract primary keywords as skills
     SELECT
-        job_uid,
-        'primary_keywords' as skill_source,
-        'keyword' as skill_category,
-        TRIM(LOWER(keyword.value::STRING)) as skill_name_raw,
-        keyword.value::STRING as skill_name_original
-    FROM STAGE.jobs_llm_enriched,
-    LATERAL FLATTEN(input => primary_keywords) keyword
-    WHERE primary_keywords IS NOT NULL
-      AND keyword.value IS NOT NULL
-      AND LENGTH(TRIM(keyword.value::STRING)) > 0
+        JOB_UID,
+        'primary_keywords' as SKILL_SOURCE,
+        'keyword' as SKILL_CATEGORY,
+        TRIM(LOWER(KEYWORD.VALUE::STRING)) as SKILL_NAME_RAW,
+        KEYWORD.VALUE::STRING as SKILL_NAME_ORIGINAL
+    FROM STAGE.JOBS_LLM_ENRICHED,
+    LATERAL FLATTEN(input => PRIMARY_KEYWORDS) KEYWORD
+    WHERE PRIMARY_KEYWORDS IS NOT NULL
+      AND KEYWORD.VALUE IS NOT NULL
+      AND LENGTH(TRIM(KEYWORD.VALUE::STRING)) > 0
 )
 
-SELECT * FROM technical_skills_exploded
+SELECT * FROM TECHNICAL_SKILLS_EXPLODED
 UNION ALL
-SELECT * FROM soft_skills_exploded
+SELECT * FROM SOFT_SKILLS_EXPLODED
 UNION ALL
-SELECT * FROM primary_keywords_exploded;
+SELECT * FROM PRIMARY_KEYWORDS_EXPLODED;
 ```
 
-#### 3.2 Skill Standardization Rules
+#### 4.2 Skill Standardization Rules
 
 ```sql
 -- Step 2: Create skill standardization mapping
-CREATE OR REPLACE TABLE STAGE.skill_standardization_rules (
-    rule_id STRING PRIMARY KEY,
-    pattern STRING,                                 -- Pattern to match (regex or exact)
-    standardized_name STRING,                       -- Standard form
-    skill_category STRING,                          -- Correct category
-    skill_subcategory STRING,                       -- Correct subcategory
-    confidence_score FLOAT DEFAULT 1.0,
-    rule_type STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern, fuzzy_match
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+CREATE OR REPLACE TABLE SKILL_STANDARDIZATION_RULES (
+    RULE_ID STRING PRIMARY KEY,
+    PATTERN STRING,                                 -- Pattern to match (regex or exact)
+    STANDARDIZED_NAME STRING,                       -- Standard form
+    SKILL_CATEGORY STRING,                          -- Correct category
+    SKILL_SUBCATEGORY STRING,                       -- Correct subcategory
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
+    RULE_TYPE STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern, fuzzy_match
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Example standardization rules
-INSERT INTO STAGE.skill_standardization_rules VALUES
+INSERT INTO SKILL_STANDARDIZATION_RULES VALUES
 ('rule_001', 'python', 'Python', 'languages', 'backend_language', 1.0, 'exact_match', CURRENT_TIMESTAMP),
 ('rule_002', 'python3', 'Python', 'languages', 'backend_language', 0.95, 'exact_match', CURRENT_TIMESTAMP),
 ('rule_003', 'py', 'Python', 'languages', 'backend_language', 0.8, 'exact_match', CURRENT_TIMESTAMP),
@@ -303,33 +798,33 @@ INSERT INTO STAGE.skill_standardization_rules VALUES
 ('rule_010', 'aws', 'Amazon Web Services', 'cloud', 'public_cloud', 1.0, 'exact_match', CURRENT_TIMESTAMP);
 ```
 
-#### 3.3 Automated Standardization Process
+#### 4.3 Automated Standardization Process
 
 ```sql
 -- Step 3: Apply standardization rules and populate normalized tables
-CREATE OR REPLACE PROCEDURE standardize_and_populate_skills()
+CREATE OR REPLACE PROCEDURE STANDARDIZE_AND_POPULATE_SKILLS()
 RETURNS STRING
 LANGUAGE SQL
 AS
 $$
 BEGIN
     -- Clear existing data
-    DELETE FROM STAGE.job_skills_bridge;
-    DELETE FROM STAGE.skills_normalized;
+    DELETE FROM STAGE.JOB_SKILLS_BRIDGE;
+    DELETE FROM STAGE.SKILLS_NORMALIZED;
 
-    -- Populate skills_normalized with standardized skills
-    INSERT INTO STAGE.skills_normalized (
-        skill_id,
-        skill_name,
-        skill_name_clean,
-        skill_name_original,
-        skill_category,
-        skill_subcategory,
-        original_variants,
-        frequency_count,
-        first_seen_date,
-        last_seen_date,
-        confidence_score
+    -- Populate SKILLS_NORMALIZED with standardized skills
+    INSERT INTO STAGE.SKILLS_NORMALIZED (
+        SKILL_ID,
+        SKILL_NAME,
+        SKILL_NAME_CLEAN,
+        SKILL_NAME_ORIGINAL,
+        SKILL_CATEGORY,
+        SKILL_SUBCATEGORY,
+        ORIGINAL_VARIANTS,
+        FREQUENCY_COUNT,
+        FIRST_SEEN_DATE,
+        LAST_SEEN_DATE,
+        CONFIDENCE_SCORE
     )
     WITH skill_aggregation AS (
         SELECT
@@ -405,9 +900,7 @@ END;
 $$;
 ```
 
-### Phase 4: Data Quality and Validation
-
-#### 4.1 Quality Monitoring Views
+#### 4.4 Quality Monitoring Views
 
 ```sql
 -- Skills quality monitoring
@@ -440,7 +933,7 @@ LEFT JOIN (
 ) skills_per_job ON ju.job_uid = skills_per_job.job_uid;
 ```
 
-#### 4.2 Data Validation Rules
+#### 4.5 Data Validation Rules
 
 ```sql
 -- Validation checks
@@ -482,23 +975,20 @@ WHERE issue_count > 0;
 #### 5.1 Indexing Strategy
 
 ```sql
--- Optimize skills table for analytics queries
-CREATE INDEX IF NOT EXISTS idx_skills_category_frequency
-ON STAGE.skills_normalized (skill_category, frequency_count DESC);
+-- Performance optimization using clustering keys (instead of indexes)
+-- Note: Regular Snowflake tables use clustering keys instead of secondary indexes
 
-CREATE INDEX IF NOT EXISTS idx_skills_trend_confidence
-ON STAGE.skills_normalized (trend_direction, confidence_score DESC);
+-- Skills table is clustered by (skill_category, skill_name) in table definition
+-- Additional clustering can be added if needed:
+-- ALTER TABLE STAGE.skills_normalized CLUSTER BY (skill_category, frequency_count);
 
--- Optimize bridge table for join performance
-CREATE INDEX IF NOT EXISTS idx_bridge_job_category
-ON STAGE.job_skills_bridge (job_uid, skill_category);
+-- Bridge table is clustered by (job_uid, skill_id) in table definition
+-- Additional clustering options:
+-- ALTER TABLE STAGE.job_skills_bridge CLUSTER BY (skill_category, overall_confidence);
 
-CREATE INDEX IF NOT EXISTS idx_bridge_skill_confidence
-ON STAGE.job_skills_bridge (skill_id, overall_confidence DESC);
-
--- Composite indexes for common query patterns
-CREATE INDEX IF NOT EXISTS idx_bridge_category_source_confidence
-ON STAGE.job_skills_bridge (skill_category, skill_source, overall_confidence DESC);
+-- For text-based searches, search optimization can be enabled:
+-- ALTER TABLE STAGE.skills_normalized ADD SEARCH OPTIMIZATION;
+-- ALTER TABLE STAGE.job_skills_bridge ADD SEARCH OPTIMIZATION;
 ```
 
 #### 5.2 Materialized Views for Analytics
@@ -544,70 +1034,251 @@ HAVING job_count >= 5;  -- Minimum threshold for statistical relevance
 
 ## Implementation Timeline
 
-### Week 1: Infrastructure Setup
+### Step 1: Infrastructure Setup
 - ✅ Create all normalized tables and indexes
 - ✅ Implement basic extraction views
 - ✅ Set up initial standardization rules
 
-### Week 2: Data Processing Pipeline
+### Step 2: Data Processing Pipeline
 - ✅ Implement and test standardization procedures
 - ✅ Run initial data normalization
 - ✅ Create quality monitoring views
 
-### Week 3: Validation and Quality Assurance
+### Step 3: Validation and Quality Assurance
 - ✅ Validate data quality and completeness
 - ✅ Manual review of low-confidence skills
 - ✅ Refine standardization rules
 
-### Week 4: Performance Optimization
+### Step 4: Performance Optimization
 - ✅ Implement performance indexes
 - ✅ Create materialized views
 - ✅ Optimize for analytics queries
 
-## Success Criteria
+### Step 5: Production Deployment
+- ✅ Deploy to production environment
+- ✅ Monitor data quality metrics
+- ✅ Validate analytical views
+- ✅ Document final process
 
-### Data Quality Metrics
-- **Coverage**: >95% of jobs have at least one skill extracted
-- **Confidence**: >80% of skills have confidence score ≥0.8
-- **Standardization**: <5% of skills require manual review
-- **Performance**: Skills queries respond in <2 seconds
+## Error Handling and Monitoring Strategy
 
-### Business Value Metrics
-- **Analytics Enablement**: Dimensional model can leverage normalized skills
-- **Query Performance**: 10x improvement in skill-based aggregations
-- **Data Consistency**: Standardized skill taxonomies across all platforms
-- **Trend Analysis**: Historical skill demand tracking enabled
+### Error Handling Patterns
 
-### Technical Metrics
-- **Data Integrity**: 100% referential integrity maintained
-- **Processing Speed**: Full re-normalization completes in <30 minutes
-- **Storage Efficiency**: Normalized structure reduces storage requirements
-- **Maintenance**: Automated daily updates with minimal manual intervention
+#### Asset-Level Error Handling
 
-## Post-Implementation: Analytics Layer Integration
+```python
+@asset(
+    deps=["jobs_llm_enriched"],
+    retry_policy=RetryPolicy(max_retries=3, delay=60),
+    description="Skills extraction with comprehensive error handling"
+)
+def stage_llm_skills_raw_extraction(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """Skills extraction with robust error handling"""
 
-Once the LLM data standardization is complete, the ANALYTICS layer can leverage:
+    try:
+        # Main processing logic
+        result = process_skills_extraction(snowflake)
 
-```sql
--- Example: Now possible analytics queries
-SELECT
-    sn.skill_name,
-    COUNT(DISTINCT jsb.job_uid) as job_demand,
-    AVG(ju.salary_midpoint) as avg_salary_premium
-FROM STAGE.skills_normalized sn
-JOIN STAGE.job_skills_bridge jsb ON sn.skill_id = jsb.skill_id
-JOIN STAGE.jobs_unified ju ON jsb.job_uid = ju.job_uid
-WHERE sn.skill_category = 'languages'
-  AND ju.date_posted >= CURRENT_DATE - 90
-GROUP BY sn.skill_name
-ORDER BY job_demand DESC;
+        # Validate results
+        if not validate_extraction_results(result):
+            context.log.warning("Extraction validation failed - flagging for review")
+            result['requires_manual_review'] = True
+
+        # Log success metrics
+        context.log.info(f"Successfully extracted {result['skills_count']} skills")
+
+        return result
+
+    except SnowflakeConnectionError as e:
+        context.log.error(f"Snowflake connection failed: {e}")
+        # Trigger alert but allow retry
+        raise RetryRequested(delay=120)
+
+    except DataQualityError as e:
+        context.log.error(f"Data quality issue detected: {e}")
+        # Log issue but don't fail the pipeline
+        return {"status": "partial_success", "issues": [str(e)]}
+
+    except Exception as e:
+        context.log.error(f"Unexpected error in skills extraction: {e}")
+        # Send alert and fail
+        send_alert(f"Skills extraction failed: {e}")
+        raise
 ```
 
-This standardization enables all the HIGH priority analytics features:
-- ✅ Skills demand trend analysis
-- ✅ Technology popularity tracking
-- ✅ Salary premiums by skill
-- ✅ Company technology preferences
-- ✅ Skills-based market intelligence
+#### Data Quality Monitoring
 
-The ANALYTICS layer can now focus purely on dimensional modeling and business intelligence, with clean, normalized skill data as input.
+```python
+class DataQualityMonitor:
+    """Monitor data quality across all normalization stages"""
+
+    def __init__(self, snowflake: SnowflakeResource):
+        self.snowflake = snowflake
+        self.thresholds = LLMStandardizationConfig()
+
+    def validate_skills_normalization(self) -> Dict[str, Any]:
+        """Validate skills normalization quality"""
+
+        # Check coverage
+        coverage = self.calculate_skills_coverage()
+        if coverage < self.thresholds.min_coverage_percentage:
+            raise DataQualityError(f"Skills coverage {coverage}% below threshold {self.thresholds.min_coverage_percentage}%")
+
+        # Check confidence distribution
+        low_confidence_pct = self.calculate_low_confidence_percentage()
+        if low_confidence_pct > self.thresholds.max_low_confidence_percentage:
+            raise DataQualityWarning(f"High percentage of low confidence skills: {low_confidence_pct}%")
+
+        # Check for anomalies
+        anomalies = self.detect_skill_anomalies()
+
+        return {
+            "coverage_percentage": coverage,
+            "low_confidence_percentage": low_confidence_pct,
+            "anomalies_detected": len(anomalies),
+            "status": "passed" if len(anomalies) == 0 else "warning"
+        }
+
+    def detect_skill_anomalies(self) -> List[Dict[str, Any]]:
+        """Detect anomalies in skill data"""
+        # Implementation for detecting unusual patterns, spikes, or drops
+        pass
+```
+
+### Monitoring Assets and Functions
+
+#### Key Monitoring Assets
+
+```python
+@asset(
+    description="Generate comprehensive monitoring metrics for LLM standardization",
+    group_name="llm_monitoring",
+    freshness_policy=FreshnessPolicy(maximum_lag_minutes=30)
+)
+def stage_llm_monitoring_metrics(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Generate comprehensive monitoring metrics for dashboards and alerting.
+
+    Metrics Generated:
+    - Data quality scores by category
+    - Coverage percentages
+    - Confidence score distributions
+    - Processing performance metrics
+    - Trend analysis and anomaly detection
+    """
+
+    monitor = DataQualityMonitor(snowflake)
+
+    # Collect all metrics
+    metrics = {
+        "skills_quality": monitor.validate_skills_normalization(),
+        "keywords_quality": monitor.validate_keywords_normalization(),
+        "locations_quality": monitor.validate_locations_normalization(),
+        "overall_coverage": monitor.calculate_overall_coverage(),
+        "performance_metrics": monitor.get_performance_metrics(),
+        "trend_analysis": monitor.analyze_trends(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    # Check for alerts
+    alert_handler = LLMStandardizationAlerts()
+    for category, quality_data in metrics.items():
+        if quality_data.get('status') == 'warning':
+            alert_handler.send_data_quality_alert(category, quality_data)
+
+    return metrics
+```
+
+### File Structure and Organization
+
+```
+pipeline/
+├── assets/
+│   ├── llm_standardization/
+│   │   ├── __init__.py
+│   │   ├── skills_normalization.py      # Skills normalization assets
+│   │   ├── keywords_normalization.py    # Keywords normalization assets
+│   │   ├── locations_normalization.py   # Locations normalization assets
+│   │   ├── data_quality.py             # Quality validation assets
+│   │   └── analytics_views.py          # Analytics enablement assets
+│   └── monitoring/
+│       ├── llm_monitoring.py           # Monitoring and metrics assets
+│       └── alerting.py                 # Alert generation assets
+├── transformations/
+│   ├── llm_standardization.py          # Core processing classes
+│   ├── data_quality.py                 # Quality validation functions
+│   └── monitoring.py                   # Monitoring utilities
+├── config/
+│   ├── llm_standardization_config.py   # Configuration management
+│   └── monitoring_config.py            # Monitoring configuration
+├── sql/
+│   ├── llm_standardization/
+│   │   ├── skills_extraction.sql       # Skills extraction queries
+│   │   ├── locations_extraction.sql    # Locations extraction queries
+│   │   ├── keywords_extraction.sql     # Keywords extraction queries
+│   │   └── quality_validation.sql      # Quality validation queries
+│   └── views/
+│       ├── skills_analytics.sql        # Skills analysis views
+│       ├── location_analytics.sql      # Location analysis views
+│       └── monitoring_views.sql        # Monitoring and quality views
+└── tests/
+    ├── test_skills_standardization.py  # Skills normalization tests
+    ├── test_locations_standardization.py # Locations normalization tests
+    ├── test_data_quality.py           # Data quality tests
+    └── test_monitoring.py             # Monitoring tests
+```
+
+## Success Criteria and KPIs
+
+### Data Quality KPIs
+
+1. **Coverage Metrics**:
+   - ≥85% of English jobs have normalized skills data
+   - ≥75% of jobs have normalized location data
+   - ≥80% of jobs have normalized keyword data
+
+2. **Confidence Metrics**:
+   - ≥70% of normalized skills have confidence score ≥0.8
+   - <15% of records require manual review
+   - ≥90% automatic standardization success rate
+
+3. **Performance Metrics**:
+   - Normalization pipeline completes within 30 minutes
+   - Query performance improvement of ≥5x for analytics queries
+   - <1% failed normalization attempts
+
+### Business Impact KPIs
+
+1. **Analytics Enablement**:
+   - Support for all planned Gold layer analytics use cases
+   - ≥10x reduction in query complexity for skill analysis
+   - Enable real-time trending skills analysis
+
+2. **Data Consistency**:
+   - ≥95% reduction in skill name variations
+   - Consistent location hierarchies across all data
+   - Standardized keyword taxonomies
+
+3. **Operational Efficiency**:
+   - Automated quality monitoring and alerting
+   - Self-healing standardization rules
+   - Minimal manual intervention required
+
+## Next Steps After Implementation
+
+### Phase 6: Advanced Analytics Integration
+- Integration with Gold layer dimensional modeling
+- Advanced trend analysis and forecasting
+- Machine learning model feature engineering
+
+### Phase 7: Real-time Processing
+- Stream processing for real-time normalization
+- Incremental updates to normalized tables
+- Real-time quality monitoring
+
+### Phase 8: External Data Integration
+- Integration with external skills taxonomies (O*NET, LinkedIn Skills)
+- Location enrichment with economic and demographic data
+- Industry classification enhancement
+
+This comprehensive plan provides the foundation for transforming LLM-extracted VARIANT data into a robust, analytics-ready relational structure that enables advanced job market intelligence and insights.

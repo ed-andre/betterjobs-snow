@@ -942,8 +942,8 @@ CLUSTER BY (platform, location_standardized);
 **Decision (2025-06-10)**: The following supporting tables have been identified as **non-critical** for GOLD layer implementation and moved to future enhancements to prioritize core analytics capabilities.
 
 - ✅ `stage_company_profiles`: Enriched company information (**COMPLETED**)
-- 📋 `stage_location_mapping`: Standardized location data → **ENHANCEMENT-013** (Future)
-- 📋 `stage_skills_taxonomy`: Standardized skills and technologies → **ENHANCEMENT-014** (Future)
+- 🔄 `stage_location_mapping`: Standardized location data → **MOVED TO PHASE 3 - LLM DATA STANDARDIZATION**
+- ❌ `stage_skills_taxonomy`: Standardized skills and technologies → **OBSOLETE - SUPERSEDED BY SKILLS_NORMALIZED**
 - 📋 `stage_transformation_logs`: Audit trail of all transformations → **ENHANCEMENT-015** (Future)
 
 **Rationale**: The core STAGE layer provides sufficient data foundation for comprehensive GOLD layer analytics:
@@ -1946,8 +1946,8 @@ The STAGE layer provides comprehensive data foundation enabling immediate develo
 - **Industry Analytics**: Sector-specific trends and classifications
 
 ### **Future Enhancements Identified**:
-- **ENHANCEMENT-013**: Advanced location mapping and geocoding
-- **ENHANCEMENT-014**: Skills taxonomy and standardization
+- **ENHANCEMENT-013**: Advanced location mapping and geocoding → **MOVED TO PHASE 3 - LLM DATA STANDARDIZATION**
+- **ENHANCEMENT-014**: Skills taxonomy and standardization → **OBSOLETE - SUPERSEDED BY SKILLS_NORMALIZED**
 - **ENHANCEMENT-015**: Custom transformation audit logging
 
 **Next Phase**: Begin GOLD layer design and implementation leveraging the robust STAGE layer foundation.

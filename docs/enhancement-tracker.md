@@ -2805,341 +2805,157 @@ Return the same JSON structure with corrected values for flagged categories.
 
 ## ENHANCEMENT-013: Advanced Location Mapping and Geocoding
 
-**Status:** 📋 **Planned**
-**Priority:** Low
+**Status:** 🔄 **MOVED TO PHASE 3 - LLM DATA STANDARDIZATION**
+**Priority:** High (Elevated from Low)
 **Component:** STAGE Location Data Enhancement
 **Date Planned:** 2025-06-10
 **Date Started:** N/A
 **Date Completed:** N/A
 
 ### Description
-Implement advanced location mapping and geocoding capabilities to enhance geographic analytics beyond the basic location standardization already available in `stage_jobs_unified`.
+~~Implement advanced location mapping and geocoding capabilities to enhance geographic analytics beyond the basic location standardization already available in `stage_jobs_unified`.~~
+
+**SCOPE CHANGE**: Integrate location standardization as part of Phase 3 LLM Data Standardization to normalize the `office_locations` VARIANT data extracted by LLM assets.
 
 ### Business Justification
-- **Enhanced Geographic Analytics**: Metro area mapping, cost-of-living data, geographic clusters
+- **Unified Data Architecture**: Standardize location data alongside skills and keywords in same normalization phase
+- **LLM Data Utilization**: Properly normalize the `office_locations` VARIANT data from LLM enrichment
 - **Market Intelligence**: Regional job market insights and location-based salary analysis
 - **Geographic Trends**: Remote work patterns, location preferences, and geographic hiring shifts
 - **Business Intelligence**: Enhanced location-based reporting for stakeholders
 
-### Current Status
-**Basic location standardization already implemented** in `stage_jobs_unified`:
-- Location parsing and remote detection
-- Basic city/state normalization
-- Platform-specific location handling
+### Technical Integration with LLM Normalization
 
-**This enhancement would add**:
-- Geocoding (latitude/longitude coordinates)
-- Metro area and MSA (Metropolitan Statistical Area) mapping
-- Cost-of-living index integration
-- Time zone mapping
-- Geographic clustering and region classification
+**Location Data Sources**:
+1. **Basic Location** (existing): `jobs_unified.location_standardized` - Basic location parsing
+2. **LLM Extracted Locations** (new): `jobs_llm_enriched.office_locations` - VARIANT array of office locations
+3. **Work Arrangement** (new): `jobs_llm_enriched.work_type`, `remote_flexibility` - Remote work patterns
 
-### Technical Approach
-
-**Location Enrichment Pipeline**:
+**Normalized Location Structure** (Phase 3):
 ```sql
-CREATE TABLE STAGE.location_mapping (
-    location_id STRING PRIMARY KEY,
-    location_raw STRING,
-    location_standardized STRING,
+-- Location master table (similar to SKILLS_NORMALIZED pattern)
+CREATE TABLE STAGE.LOCATIONS_NORMALIZED (
+    LOCATION_ID STRING PRIMARY KEY,
+    LOCATION_NAME STRING NOT NULL,                 -- Standardized location name
+    LOCATION_NAME_CLEAN STRING NOT NULL,           -- Cleaned version for matching
+    LOCATION_NAME_ORIGINAL STRING,                 -- Most common original variant
 
-    -- Geocoding data
-    latitude FLOAT,
-    longitude FLOAT,
-    geocoding_confidence FLOAT,
+    -- Geographic Classification
+    CITY STRING,
+    STATE_PROVINCE STRING,
+    COUNTRY STRING,
+    METRO_AREA STRING,
+    REGION STRING,                                 -- Northeast, West Coast, etc.
 
-    -- Administrative divisions
-    city STRING,
-    state STRING,
-    country STRING,
-    metro_area STRING,
-    msa_code STRING,
+    -- Location Type
+    LOCATION_TYPE STRING,                          -- office, headquarters, remote, hybrid
+    IS_REMOTE_FRIENDLY BOOLEAN DEFAULT FALSE,      -- Supports remote work
+    IS_MAJOR_TECH_HUB BOOLEAN DEFAULT FALSE,       -- Silicon Valley, Seattle, etc.
 
-    -- Economic data
-    cost_of_living_index FLOAT,
-    median_household_income NUMBER,
+    -- Economic Data
+    COST_OF_LIVING_INDEX FLOAT,
+    AVERAGE_SALARY_ADJUSTMENT FLOAT,               -- Regional salary multiplier
 
-    -- Geographic classification
-    region STRING, -- Northeast, Southeast, Midwest, Southwest, West
-    time_zone STRING,
-    is_remote BOOLEAN,
-    is_hybrid BOOLEAN,
+    -- Standardization Metadata
+    ORIGINAL_VARIANTS VARIANT,                     -- All variations found
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
+    FREQUENCY_COUNT INTEGER DEFAULT 0,
 
-    -- Metadata
-    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    data_source STRING -- 'geocoding_api', 'manual', 'reference_data'
-);
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (COUNTRY, STATE_PROVINCE, CITY);
+
+-- Job-Location bridge table (many-to-many relationship)
+CREATE TABLE STAGE.JOB_LOCATIONS_BRIDGE (
+    BRIDGE_ID STRING PRIMARY KEY,
+    JOB_UID STRING NOT NULL,                       -- FK to JOBS_UNIFIED
+    LOCATION_ID STRING NOT NULL,                   -- FK to LOCATIONS_NORMALIZED
+
+    -- Source Information
+    LOCATION_SOURCE STRING NOT NULL,               -- 'office_locations', 'location_standardized', 'headquarters'
+    ORIGINAL_TEXT STRING,                          -- Original text from LLM/source
+
+    -- Location Context
+    LOCATION_CONTEXT STRING,                       -- primary, secondary, remote_option
+    WORK_ARRANGEMENT STRING,                       -- on_site, hybrid, remote
+
+    -- Confidence
+    EXTRACTION_CONFIDENCE FLOAT,                   -- LLM extraction confidence
+    STANDARDIZATION_CONFIDENCE FLOAT,              -- Location matching confidence
+    OVERALL_CONFIDENCE FLOAT,                      -- Combined confidence score
+
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+
+    -- Foreign Keys
+    FOREIGN KEY (JOB_UID) REFERENCES JOBS_UNIFIED(JOB_UID),
+    FOREIGN KEY (LOCATION_ID) REFERENCES LOCATIONS_NORMALIZED(LOCATION_ID)
+) CLUSTER BY (JOB_UID, LOCATION_SOURCE);
 ```
 
-**Data Sources Integration**:
-1. **Geocoding APIs**: Google Maps, Census Bureau, OpenStreetMap
-2. **Economic Data**: Bureau of Labor Statistics, cost-of-living databases
-3. **Geographic Reference**: MSA definitions, time zone mappings
-4. **Manual Curation**: Handle edge cases and improve quality
+### Updated Implementation Plan
 
-**Processing Logic**:
-```python
-@asset(deps=["stage_jobs_unified"])
-def stage_location_mapping(context, config):
-    """
-    Enrich location data with geocoding and economic information
-    """
-    # 1. Extract unique locations from jobs_unified
-    # 2. Apply geocoding APIs for coordinates
-    # 3. Map to metro areas and economic data
-    # 4. Create standardized location records
-    # 5. Handle remote/hybrid work classifications
-```
+**Phase 3 Integration** (with Skills/Keywords Normalization):
+1. Extract locations from `office_locations` VARIANT column
+2. Apply location standardization and geocoding
+3. Create location master table and bridge relationships
+4. Integrate with skills/keywords normalization pipeline
 
-### Implementation Plan
-
-**Phase 1: Core Infrastructure**
-1. Create `stage_location_mapping` table schema
-2. Implement basic geocoding integration
-3. Add metro area and MSA mapping
-4. Create location standardization utilities
-
-**Phase 2: Economic Data Integration**
-1. Integrate cost-of-living data sources
-2. Add median income and economic indicators
-3. Implement geographic classification logic
-4. Add time zone and region mapping
-
-**Phase 3: Advanced Analytics Support**
-1. Create location-based analytics views
-2. Implement geographic clustering algorithms
-3. Add location-based salary adjustment calculations
-4. Create geographic trend analysis capabilities
-
-**Phase 4: Integration and Optimization**
-1. Integrate with existing STAGE tables
-2. Update GOLD layer to leverage enhanced location data
-3. Optimize geocoding API usage and caching
-4. Add location data quality monitoring
+**Benefits of Phase 3 Integration**:
+- ✅ **Unified Architecture**: All VARIANT data normalized together
+- ✅ **Consistent Processing**: Same confidence scoring and quality validation
+- ✅ **Performance**: Single normalization pass instead of separate processing
+- ✅ **Data Relationships**: Location-skills correlations and market insights
 
 ### Success Criteria
-- Enhanced geographic analytics in GOLD layer (metro area trends, regional analysis)
-- Accurate geocoding for >95% of job locations
-- Cost-of-living adjusted salary analytics capability
-- Regional job market intelligence and reporting
-- Geographic clustering and trend identification
-
-### Cost Considerations
-- **Geocoding API Costs**: Estimated $0.005-0.01 per location (one-time per unique location)
-- **Data Licensing**: Potential costs for premium economic datasets
-- **Storage**: Minimal incremental cost for additional location data
-- **Processing**: One-time enrichment with incremental updates
-
-### Alternative Approaches
-1. **Free Geocoding**: Use Census Bureau or OpenStreetMap (lower accuracy)
-2. **Static Reference Data**: Pre-built location mapping tables (limited coverage)
-3. **Hybrid Approach**: Combine free and paid services based on location importance
-4. **Manual Curation**: Focus on high-volume locations with manual enhancement
-
-### Dependencies
-- Access to geocoding APIs (Google Maps, Census Bureau)
-- Economic data sources and potential licensing
-- Integration with existing `stage_jobs_unified` processing
-
-### Files Affected (Future Implementation)
-- New: `assets/stage_location_mapping.py` - Location enrichment asset
-- New: `transformations/location_enrichment.py` - Geocoding and mapping utilities
-- Update: GOLD layer assets to leverage enhanced location data
-- Update: Location-based analytics and reporting
+- ✅ Location data integrated into Phase 3 LLM data standardization
+- ✅ Normalized location relationships for office locations, remote work, and headquarters
+- ✅ Geographic analytics enabled alongside skills and keywords
+- ✅ Consistent data quality and confidence scoring across all normalized data
 
 ---
 
 ## ENHANCEMENT-014: Skills Taxonomy and Standardization
 
-**Status:** 📋 **Planned**
-**Priority:** Medium
+**Status:** ❌ **OBSOLETE - SUPERSEDED BY SKILLS_NORMALIZED**
+**Priority:** N/A (Superseded)
 **Component:** STAGE Skills Data Enhancement
 **Date Planned:** 2025-06-10
-**Date Started:** N/A
-**Date Completed:** N/A
+**Date Obsoleted:** 2025-06-11
 
-### Description
-Implement comprehensive skills taxonomy and standardization to improve skills analytics beyond the AI-extracted skills already available in `jobs_llm_enriched`.
+### Obsolescence Reason
+This enhancement has been **superseded by the comprehensive `SKILLS_NORMALIZED` approach** in the LLM Data Standardization plan (`stage_layer_llm_data_standardization_plan.md`).
 
-### Business Justification
-- **Enhanced Skills Analytics**: Standardized skill categorization and trend analysis
-- **Market Intelligence**: Technology adoption rates, emerging skills, skill demand forecasting
-- **Skills Mapping**: Career progression paths, skill adjacency analysis
-- **Industry Insights**: Technology stack trends, skills gaps, and certification value
+### What Was Planned vs What's Implemented
 
-### Current Status
-**AI-extracted skills already implemented** in `jobs_llm_enriched`:
-- Technical skills extraction (languages, databases, cloud, frameworks, tools)
-- Soft skills identification
-- Experience requirements mapping
-- Skills confidence scoring
+**ENHANCEMENT-014 Original Scope**:
+- Basic skills taxonomy and categorization
+- Simple skill aliases and standardization
+- Limited skill relationships mapping
 
-**This enhancement would add**:
-- Skills taxonomy and hierarchical categorization
-- Canonical skill names and aliases
-- Skill level classification (Beginner/Intermediate/Advanced)
-- Skills relationships and adjacency mapping
-- Industry-specific skill groupings
+**SKILLS_NORMALIZED Comprehensive Approach** (Superior Implementation):
+- ✅ **Complete Skills Master Table**: `SKILLS_NORMALIZED` with full taxonomy
+- ✅ **Many-to-Many Relationships**: `JOB_SKILLS_BRIDGE` for proper relational modeling
+- ✅ **Advanced Categorization**: Category, subcategory, family, type classification
+- ✅ **Confidence Scoring**: Extraction and standardization confidence tracking
+- ✅ **Market Intelligence**: Frequency counts, trend analysis, emerging skills detection
+- ✅ **Data Quality**: Validation rules, manual review flags, admin approval workflow
+- ✅ **Deduplication**: Comprehensive skill variation handling and aliases
+- ✅ **Analytics Views**: Pre-built views for skills analysis and quality reporting
 
-### Technical Approach
+### SKILLS_NORMALIZED Advantages
+1. **Comprehensive Coverage**: Handles technical skills, soft skills, and keywords
+2. **Proper Normalization**: Full relational model vs simple taxonomy table
+3. **Quality Assurance**: Built-in confidence scoring and validation workflows
+4. **Market Intelligence**: Trend analysis, frequency tracking, emerging skills detection
+5. **Analytics Ready**: Pre-built views and quality monitoring
+6. **Integrated Approach**: Part of unified LLM data standardization pipeline
 
-**Skills Taxonomy Structure**:
-```sql
-CREATE TABLE STAGE.skills_taxonomy (
-    skill_id STRING PRIMARY KEY,
-    skill_name_canonical STRING,
-    skill_aliases VARIANT, -- Array of alternative names
-
-    -- Taxonomy classification
-    skill_category STRING, -- 'Programming Language', 'Database', 'Cloud Platform', etc.
-    skill_subcategory STRING,
-    skill_family STRING, -- 'Backend', 'Frontend', 'Data', 'DevOps', etc.
-
-    -- Skill metadata
-    skill_type STRING, -- 'Technical', 'Soft', 'Domain', 'Certification'
-    skill_level STRING, -- 'Entry', 'Intermediate', 'Advanced', 'Expert'
-    is_certification BOOLEAN,
-    is_emerging BOOLEAN,
-
-    -- Market data
-    demand_score FLOAT, -- Relative demand based on job posting frequency
-    salary_premium FLOAT, -- Average salary increase associated with skill
-    growth_trend STRING, -- 'Growing', 'Stable', 'Declining'
-
-    -- Relationships
-    parent_skills VARIANT, -- Array of prerequisite skills
-    related_skills VARIANT, -- Array of commonly paired skills
-    career_paths VARIANT, -- Array of career progression paths
-
-    -- Metadata
-    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-);
-
--- Skills mapping table for job enrichment
-CREATE TABLE STAGE.job_skills_standardized (
-    job_uid STRING,
-    skill_id STRING,
-    skill_source STRING, -- 'llm_extraction', 'manual', 'inferred'
-    skill_confidence FLOAT,
-    skill_context STRING, -- How the skill was mentioned in job description
-
-    PRIMARY KEY (job_uid, skill_id),
-    FOREIGN KEY (job_uid) REFERENCES jobs_unified(job_uid),
-    FOREIGN KEY (skill_id) REFERENCES skills_taxonomy(skill_id)
-);
-```
-
-**Skills Standardization Pipeline**:
-```python
-@asset(deps=["stage_jobs_llm_enriched"])
-def stage_skills_taxonomy(context, config):
-    """
-    Build and maintain comprehensive skills taxonomy
-    """
-    # 1. Extract all unique skills from LLM-enriched jobs
-    # 2. Apply standardization and deduplication rules
-    # 3. Map to skill taxonomy and categories
-    # 4. Calculate demand scores and market metrics
-    # 5. Identify skill relationships and adjacencies
-
-@asset(deps=["stage_jobs_llm_enriched", "stage_skills_taxonomy"])
-def stage_job_skills_standardized(context, config):
-    """
-    Map job skills to standardized taxonomy
-    """
-    # 1. Load AI-extracted skills from jobs_llm_enriched
-    # 2. Apply skills taxonomy mapping and standardization
-    # 3. Handle skill aliases and variations
-    # 4. Create normalized job-skill relationships
-```
-
-**Skill Standardization Logic**:
-```python
-class SkillsStandardizer:
-    def __init__(self):
-        self.skill_aliases = {
-            "JS": "JavaScript",
-            "React.js": "React",
-            "Node.js": "Node",
-            "ML": "Machine Learning",
-            "AI": "Artificial Intelligence",
-            # ... extensive alias mapping
-        }
-
-        self.skill_taxonomy = {
-            "JavaScript": {
-                "category": "Programming Language",
-                "family": "Frontend",
-                "level": "Intermediate",
-                "related": ["React", "Node", "TypeScript"]
-            }
-            # ... comprehensive taxonomy
-        }
-
-    def standardize_skill(self, raw_skill: str) -> dict:
-        """Standardize a single skill mention"""
-        canonical_name = self.skill_aliases.get(raw_skill, raw_skill)
-        taxonomy_data = self.skill_taxonomy.get(canonical_name, {})
-        return {
-            "canonical_name": canonical_name,
-            "category": taxonomy_data.get("category"),
-            "family": taxonomy_data.get("family"),
-            "confidence": self.calculate_confidence(raw_skill, canonical_name)
-        }
-```
-
-### Implementation Plan
-
-**Phase 1: Core Taxonomy Development**
-1. Build comprehensive skills taxonomy from LLM-extracted data
-2. Create canonical skill names and alias mappings
-3. Implement skill categorization and hierarchies
-4. Develop skills standardization utilities
-
-**Phase 2: Market Intelligence Enhancement**
-1. Calculate skill demand scores and trends
-2. Analyze skill co-occurrence and relationships
-3. Implement salary premium analysis
-4. Add emerging skills detection
-
-**Phase 3: Advanced Analytics Support**
-1. Create skills adjacency and progression mapping
-2. Implement career path analysis
-3. Add skills gap identification
-4. Create technology adoption forecasting
-
-**Phase 4: Integration and Optimization**
-1. Integrate with existing STAGE and GOLD layers
-2. Create skills-based analytics views
-3. Add skills data quality monitoring
-4. Implement incremental skills taxonomy updates
-
-### Success Criteria
-- Enhanced skills analytics in GOLD layer (skill trends, demand forecasting)
-- Standardized skill categorization for >95% of extracted skills
-- Skills relationships and career progression analysis
-- Technology adoption and skills gap identification
-- Improved skills-based job matching and recommendations
-
-### Alternative Approaches
-1. **External Skills Taxonomies**: Use existing taxonomies (O*NET, LinkedIn Skills)
-2. **ML-Based Classification**: Train models for automatic skill categorization
-3. **Community-Driven**: Crowd-sourced skills taxonomy maintenance
-4. **Hybrid Approach**: Combine multiple taxonomies with custom enhancements
-
-### Integration Points
-- **Current LLM Data**: Build upon AI-extracted skills in `jobs_llm_enriched`
-- **GOLD Layer**: Enhanced skills analytics and market intelligence
-- **Job Search**: Improved skills-based matching and recommendations
-- **Business Intelligence**: Skills market reports and trend analysis
-
-### Files Affected (Future Implementation)
-- New: `assets/stage_skills_taxonomy.py` - Skills taxonomy management
-- New: `assets/stage_job_skills_standardized.py` - Skills mapping asset
-- New: `transformations/skills_standardization.py` - Skills processing utilities
-- Update: GOLD layer assets for enhanced skills analytics
-- Update: Skills-based analytics and reporting capabilities
+### Migration Notes
+- **No Action Required**: ENHANCEMENT-014 functionality is fully covered by SKILLS_NORMALIZED
+- **Enhanced Capabilities**: SKILLS_NORMALIZED provides more comprehensive functionality
+- **Documentation**: Reference `stage_layer_llm_data_standardization_plan.md` for implementation details
 
 ---
 

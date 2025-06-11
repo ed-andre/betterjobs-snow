@@ -1,4 +1,5 @@
 .cursor/rules/current-date.mdc
+.cursor/rules/tables-views-columns-naming.mdc
 
 project-scope-internal.md
 repo-structure-internal.md
@@ -168,3 +169,5 @@ bamboohr_company_urls.csv
 greenhouse_company_urls.csv
 
 
+
+/pipeline/sample_data
