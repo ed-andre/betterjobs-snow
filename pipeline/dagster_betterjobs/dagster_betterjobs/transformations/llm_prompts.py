@@ -326,11 +326,11 @@ class PromptFormatter:
             except json.JSONDecodeError:
                 pass
 
-        # Look for JSON object anywhere in the response
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
+        # Use balanced bracket matching instead of greedy regex to avoid recursion
+        json_text = _extract_json_with_balanced_brackets(response_text)
+        if json_text:
             try:
-                return json.loads(json_match.group())
+                return json.loads(json_text)
             except json.JSONDecodeError:
                 pass
 
@@ -386,6 +386,53 @@ class PromptFormatter:
                     low_confidence_fields.append(section)
 
         return low_confidence_fields
+
+
+def _extract_json_with_balanced_brackets(text: str) -> Optional[str]:
+    """
+    Extract JSON object using balanced bracket matching to avoid regex recursion issues.
+
+    Args:
+        text: Text containing JSON object
+
+    Returns:
+        Extracted JSON string or None if no valid JSON found
+    """
+    # Find the first opening brace
+    start_idx = text.find('{')
+    if start_idx == -1:
+        return None
+
+    # Track bracket depth for balanced matching
+    bracket_count = 0
+    in_string = False
+    escape_next = False
+
+    for i, char in enumerate(text[start_idx:], start_idx):
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == '\\':
+            escape_next = True
+            continue
+
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if char == '{':
+                bracket_count += 1
+            elif char == '}':
+                bracket_count -= 1
+
+                # Found matching closing bracket
+                if bracket_count == 0:
+                    return text[start_idx:i+1]
+
+    # No balanced JSON found
+    return None
 
 
 # Example usage and testing

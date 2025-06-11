@@ -361,7 +361,7 @@ def extract_job_data_with_retry(
     gemini,
     prompt: str,
     job_uid: str,
-    max_retries: int = 3,
+    max_retries: int = 2,
     platform: str = ""
 ) -> Optional[Dict[str, Any]]:
     """
@@ -403,7 +403,7 @@ def extract_job_data_with_retry(
 
         # Exponential backoff for retries
         if attempt < max_retries - 1:
-            time.sleep(2 ** attempt)
+            time.sleep(1.5 ** attempt)
 
     return None
 
