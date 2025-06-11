@@ -2803,4 +2803,1377 @@ Return the same JSON structure with corrected values for flagged categories.
 
 ---
 
+## ENHANCEMENT-013: Advanced Location Mapping and Geocoding
+
+**Status:** 📋 **Planned**
+**Priority:** Low
+**Component:** STAGE Location Data Enhancement
+**Date Planned:** 2025-06-10
+**Date Started:** N/A
+**Date Completed:** N/A
+
+### Description
+Implement advanced location mapping and geocoding capabilities to enhance geographic analytics beyond the basic location standardization already available in `stage_jobs_unified`.
+
+### Business Justification
+- **Enhanced Geographic Analytics**: Metro area mapping, cost-of-living data, geographic clusters
+- **Market Intelligence**: Regional job market insights and location-based salary analysis
+- **Geographic Trends**: Remote work patterns, location preferences, and geographic hiring shifts
+- **Business Intelligence**: Enhanced location-based reporting for stakeholders
+
+### Current Status
+**Basic location standardization already implemented** in `stage_jobs_unified`:
+- Location parsing and remote detection
+- Basic city/state normalization
+- Platform-specific location handling
+
+**This enhancement would add**:
+- Geocoding (latitude/longitude coordinates)
+- Metro area and MSA (Metropolitan Statistical Area) mapping
+- Cost-of-living index integration
+- Time zone mapping
+- Geographic clustering and region classification
+
+### Technical Approach
+
+**Location Enrichment Pipeline**:
+```sql
+CREATE TABLE STAGE.location_mapping (
+    location_id STRING PRIMARY KEY,
+    location_raw STRING,
+    location_standardized STRING,
+
+    -- Geocoding data
+    latitude FLOAT,
+    longitude FLOAT,
+    geocoding_confidence FLOAT,
+
+    -- Administrative divisions
+    city STRING,
+    state STRING,
+    country STRING,
+    metro_area STRING,
+    msa_code STRING,
+
+    -- Economic data
+    cost_of_living_index FLOAT,
+    median_household_income NUMBER,
+
+    -- Geographic classification
+    region STRING, -- Northeast, Southeast, Midwest, Southwest, West
+    time_zone STRING,
+    is_remote BOOLEAN,
+    is_hybrid BOOLEAN,
+
+    -- Metadata
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    data_source STRING -- 'geocoding_api', 'manual', 'reference_data'
+);
+```
+
+**Data Sources Integration**:
+1. **Geocoding APIs**: Google Maps, Census Bureau, OpenStreetMap
+2. **Economic Data**: Bureau of Labor Statistics, cost-of-living databases
+3. **Geographic Reference**: MSA definitions, time zone mappings
+4. **Manual Curation**: Handle edge cases and improve quality
+
+**Processing Logic**:
+```python
+@asset(deps=["stage_jobs_unified"])
+def stage_location_mapping(context, config):
+    """
+    Enrich location data with geocoding and economic information
+    """
+    # 1. Extract unique locations from jobs_unified
+    # 2. Apply geocoding APIs for coordinates
+    # 3. Map to metro areas and economic data
+    # 4. Create standardized location records
+    # 5. Handle remote/hybrid work classifications
+```
+
+### Implementation Plan
+
+**Phase 1: Core Infrastructure**
+1. Create `stage_location_mapping` table schema
+2. Implement basic geocoding integration
+3. Add metro area and MSA mapping
+4. Create location standardization utilities
+
+**Phase 2: Economic Data Integration**
+1. Integrate cost-of-living data sources
+2. Add median income and economic indicators
+3. Implement geographic classification logic
+4. Add time zone and region mapping
+
+**Phase 3: Advanced Analytics Support**
+1. Create location-based analytics views
+2. Implement geographic clustering algorithms
+3. Add location-based salary adjustment calculations
+4. Create geographic trend analysis capabilities
+
+**Phase 4: Integration and Optimization**
+1. Integrate with existing STAGE tables
+2. Update GOLD layer to leverage enhanced location data
+3. Optimize geocoding API usage and caching
+4. Add location data quality monitoring
+
+### Success Criteria
+- Enhanced geographic analytics in GOLD layer (metro area trends, regional analysis)
+- Accurate geocoding for >95% of job locations
+- Cost-of-living adjusted salary analytics capability
+- Regional job market intelligence and reporting
+- Geographic clustering and trend identification
+
+### Cost Considerations
+- **Geocoding API Costs**: Estimated $0.005-0.01 per location (one-time per unique location)
+- **Data Licensing**: Potential costs for premium economic datasets
+- **Storage**: Minimal incremental cost for additional location data
+- **Processing**: One-time enrichment with incremental updates
+
+### Alternative Approaches
+1. **Free Geocoding**: Use Census Bureau or OpenStreetMap (lower accuracy)
+2. **Static Reference Data**: Pre-built location mapping tables (limited coverage)
+3. **Hybrid Approach**: Combine free and paid services based on location importance
+4. **Manual Curation**: Focus on high-volume locations with manual enhancement
+
+### Dependencies
+- Access to geocoding APIs (Google Maps, Census Bureau)
+- Economic data sources and potential licensing
+- Integration with existing `stage_jobs_unified` processing
+
+### Files Affected (Future Implementation)
+- New: `assets/stage_location_mapping.py` - Location enrichment asset
+- New: `transformations/location_enrichment.py` - Geocoding and mapping utilities
+- Update: GOLD layer assets to leverage enhanced location data
+- Update: Location-based analytics and reporting
+
+---
+
+## ENHANCEMENT-014: Skills Taxonomy and Standardization
+
+**Status:** 📋 **Planned**
+**Priority:** Medium
+**Component:** STAGE Skills Data Enhancement
+**Date Planned:** 2025-06-10
+**Date Started:** N/A
+**Date Completed:** N/A
+
+### Description
+Implement comprehensive skills taxonomy and standardization to improve skills analytics beyond the AI-extracted skills already available in `jobs_llm_enriched`.
+
+### Business Justification
+- **Enhanced Skills Analytics**: Standardized skill categorization and trend analysis
+- **Market Intelligence**: Technology adoption rates, emerging skills, skill demand forecasting
+- **Skills Mapping**: Career progression paths, skill adjacency analysis
+- **Industry Insights**: Technology stack trends, skills gaps, and certification value
+
+### Current Status
+**AI-extracted skills already implemented** in `jobs_llm_enriched`:
+- Technical skills extraction (languages, databases, cloud, frameworks, tools)
+- Soft skills identification
+- Experience requirements mapping
+- Skills confidence scoring
+
+**This enhancement would add**:
+- Skills taxonomy and hierarchical categorization
+- Canonical skill names and aliases
+- Skill level classification (Beginner/Intermediate/Advanced)
+- Skills relationships and adjacency mapping
+- Industry-specific skill groupings
+
+### Technical Approach
+
+**Skills Taxonomy Structure**:
+```sql
+CREATE TABLE STAGE.skills_taxonomy (
+    skill_id STRING PRIMARY KEY,
+    skill_name_canonical STRING,
+    skill_aliases VARIANT, -- Array of alternative names
+
+    -- Taxonomy classification
+    skill_category STRING, -- 'Programming Language', 'Database', 'Cloud Platform', etc.
+    skill_subcategory STRING,
+    skill_family STRING, -- 'Backend', 'Frontend', 'Data', 'DevOps', etc.
+
+    -- Skill metadata
+    skill_type STRING, -- 'Technical', 'Soft', 'Domain', 'Certification'
+    skill_level STRING, -- 'Entry', 'Intermediate', 'Advanced', 'Expert'
+    is_certification BOOLEAN,
+    is_emerging BOOLEAN,
+
+    -- Market data
+    demand_score FLOAT, -- Relative demand based on job posting frequency
+    salary_premium FLOAT, -- Average salary increase associated with skill
+    growth_trend STRING, -- 'Growing', 'Stable', 'Declining'
+
+    -- Relationships
+    parent_skills VARIANT, -- Array of prerequisite skills
+    related_skills VARIANT, -- Array of commonly paired skills
+    career_paths VARIANT, -- Array of career progression paths
+
+    -- Metadata
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Skills mapping table for job enrichment
+CREATE TABLE STAGE.job_skills_standardized (
+    job_uid STRING,
+    skill_id STRING,
+    skill_source STRING, -- 'llm_extraction', 'manual', 'inferred'
+    skill_confidence FLOAT,
+    skill_context STRING, -- How the skill was mentioned in job description
+
+    PRIMARY KEY (job_uid, skill_id),
+    FOREIGN KEY (job_uid) REFERENCES jobs_unified(job_uid),
+    FOREIGN KEY (skill_id) REFERENCES skills_taxonomy(skill_id)
+);
+```
+
+**Skills Standardization Pipeline**:
+```python
+@asset(deps=["stage_jobs_llm_enriched"])
+def stage_skills_taxonomy(context, config):
+    """
+    Build and maintain comprehensive skills taxonomy
+    """
+    # 1. Extract all unique skills from LLM-enriched jobs
+    # 2. Apply standardization and deduplication rules
+    # 3. Map to skill taxonomy and categories
+    # 4. Calculate demand scores and market metrics
+    # 5. Identify skill relationships and adjacencies
+
+@asset(deps=["stage_jobs_llm_enriched", "stage_skills_taxonomy"])
+def stage_job_skills_standardized(context, config):
+    """
+    Map job skills to standardized taxonomy
+    """
+    # 1. Load AI-extracted skills from jobs_llm_enriched
+    # 2. Apply skills taxonomy mapping and standardization
+    # 3. Handle skill aliases and variations
+    # 4. Create normalized job-skill relationships
+```
+
+**Skill Standardization Logic**:
+```python
+class SkillsStandardizer:
+    def __init__(self):
+        self.skill_aliases = {
+            "JS": "JavaScript",
+            "React.js": "React",
+            "Node.js": "Node",
+            "ML": "Machine Learning",
+            "AI": "Artificial Intelligence",
+            # ... extensive alias mapping
+        }
+
+        self.skill_taxonomy = {
+            "JavaScript": {
+                "category": "Programming Language",
+                "family": "Frontend",
+                "level": "Intermediate",
+                "related": ["React", "Node", "TypeScript"]
+            }
+            # ... comprehensive taxonomy
+        }
+
+    def standardize_skill(self, raw_skill: str) -> dict:
+        """Standardize a single skill mention"""
+        canonical_name = self.skill_aliases.get(raw_skill, raw_skill)
+        taxonomy_data = self.skill_taxonomy.get(canonical_name, {})
+        return {
+            "canonical_name": canonical_name,
+            "category": taxonomy_data.get("category"),
+            "family": taxonomy_data.get("family"),
+            "confidence": self.calculate_confidence(raw_skill, canonical_name)
+        }
+```
+
+### Implementation Plan
+
+**Phase 1: Core Taxonomy Development**
+1. Build comprehensive skills taxonomy from LLM-extracted data
+2. Create canonical skill names and alias mappings
+3. Implement skill categorization and hierarchies
+4. Develop skills standardization utilities
+
+**Phase 2: Market Intelligence Enhancement**
+1. Calculate skill demand scores and trends
+2. Analyze skill co-occurrence and relationships
+3. Implement salary premium analysis
+4. Add emerging skills detection
+
+**Phase 3: Advanced Analytics Support**
+1. Create skills adjacency and progression mapping
+2. Implement career path analysis
+3. Add skills gap identification
+4. Create technology adoption forecasting
+
+**Phase 4: Integration and Optimization**
+1. Integrate with existing STAGE and GOLD layers
+2. Create skills-based analytics views
+3. Add skills data quality monitoring
+4. Implement incremental skills taxonomy updates
+
+### Success Criteria
+- Enhanced skills analytics in GOLD layer (skill trends, demand forecasting)
+- Standardized skill categorization for >95% of extracted skills
+- Skills relationships and career progression analysis
+- Technology adoption and skills gap identification
+- Improved skills-based job matching and recommendations
+
+### Alternative Approaches
+1. **External Skills Taxonomies**: Use existing taxonomies (O*NET, LinkedIn Skills)
+2. **ML-Based Classification**: Train models for automatic skill categorization
+3. **Community-Driven**: Crowd-sourced skills taxonomy maintenance
+4. **Hybrid Approach**: Combine multiple taxonomies with custom enhancements
+
+### Integration Points
+- **Current LLM Data**: Build upon AI-extracted skills in `jobs_llm_enriched`
+- **GOLD Layer**: Enhanced skills analytics and market intelligence
+- **Job Search**: Improved skills-based matching and recommendations
+- **Business Intelligence**: Skills market reports and trend analysis
+
+### Files Affected (Future Implementation)
+- New: `assets/stage_skills_taxonomy.py` - Skills taxonomy management
+- New: `assets/stage_job_skills_standardized.py` - Skills mapping asset
+- New: `transformations/skills_standardization.py` - Skills processing utilities
+- Update: GOLD layer assets for enhanced skills analytics
+- Update: Skills-based analytics and reporting capabilities
+
+---
+
+## ENHANCEMENT-015: Custom Transformation Audit Logging
+
+**Status:** 📋 **Planned**
+**Priority:** Low
+**Component:** STAGE Data Lineage and Audit
+**Date Planned:** 2025-06-10
+**Date Started:** N/A
+**Date Completed:** N/A
+
+### Description
+Implement custom transformation audit logging to supplement Dagster's built-in monitoring with detailed data lineage tracking and transformation audit trails.
+
+### Business Justification
+- **Data Governance**: Comprehensive audit trail for regulatory compliance and data governance
+- **Debugging Support**: Detailed transformation logs for troubleshooting data quality issues
+- **Performance Monitoring**: Track transformation performance and identify bottlenecks
+- **Change Management**: Monitor data changes and transformations over time
+
+### Current Status
+**Comprehensive monitoring already provided by Dagster**:
+- Asset materialization logs and metadata
+- Run history and performance tracking
+- Error handling and failure detection
+- Resource usage and timing metrics
+
+**This enhancement would add**:
+- Custom business-specific audit logging
+- Detailed transformation lineage tracking
+- Data quality metrics over time
+- Custom alerting and notification rules
+
+### Technical Approach
+
+**Audit Logging Schema**:
+```sql
+CREATE TABLE STAGE.transformation_logs (
+    log_id STRING PRIMARY KEY,
+
+    -- Execution context
+    asset_name STRING,
+    run_id STRING,
+    execution_timestamp TIMESTAMP_NTZ,
+    execution_duration_seconds FLOAT,
+
+    -- Data lineage
+    source_tables VARIANT, -- Array of source table names
+    target_table STRING,
+    transformation_type STRING, -- 'cleaning', 'enrichment', 'aggregation', etc.
+
+    -- Data metrics
+    records_input NUMBER,
+    records_output NUMBER,
+    records_filtered NUMBER,
+    records_duplicated NUMBER,
+    data_quality_score FLOAT,
+
+    -- Transformation details
+    transformation_config VARIANT, -- Asset configuration used
+    transformation_logic STRING, -- Summary of transformation applied
+    transformation_errors VARIANT, -- Array of error summaries
+
+    -- Business metrics
+    processing_mode STRING, -- 'full', 'incremental', 'reprocess'
+    platform_breakdown VARIANT, -- Platform-specific processing stats
+    confidence_metrics VARIANT, -- AI extraction confidence scores
+
+    -- Change tracking
+    schema_changes VARIANT, -- Any schema modifications
+    data_changes_summary STRING, -- High-level summary of data changes
+
+    -- Metadata
+    created_by STRING DEFAULT 'dagster_pipeline',
+    environment STRING DEFAULT 'production'
+);
+
+-- Data quality tracking over time
+CREATE TABLE STAGE.data_quality_metrics (
+    metric_id STRING PRIMARY KEY,
+    table_name STRING,
+    metric_date DATE,
+
+    -- Quality metrics
+    total_records NUMBER,
+    null_percentage FLOAT,
+    duplicate_percentage FLOAT,
+    data_completeness_score FLOAT,
+
+    -- Platform-specific metrics
+    platform_record_counts VARIANT,
+    platform_quality_scores VARIANT,
+
+    -- Trend analysis
+    quality_trend STRING, -- 'improving', 'stable', 'declining'
+    anomaly_detected BOOLEAN,
+
+    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Audit Logging Integration**:
+```python
+class TransformationAuditor:
+    def __init__(self, context, asset_name):
+        self.context = context
+        self.asset_name = asset_name
+        self.start_time = datetime.now()
+        self.metrics = {}
+
+    def log_transformation_start(self, source_tables, config):
+        """Log transformation initiation"""
+        self.log_entry = {
+            "asset_name": self.asset_name,
+            "run_id": self.context.run_id,
+            "source_tables": source_tables,
+            "transformation_config": config,
+            "execution_timestamp": self.start_time
+        }
+
+    def track_data_metrics(self, input_count, output_count, quality_score):
+        """Track data processing metrics"""
+        self.metrics.update({
+            "records_input": input_count,
+            "records_output": output_count,
+            "data_quality_score": quality_score
+        })
+
+    def log_transformation_complete(self, target_table):
+        """Log transformation completion with full metrics"""
+        duration = (datetime.now() - self.start_time).total_seconds()
+
+        log_entry = {
+            **self.log_entry,
+            **self.metrics,
+            "target_table": target_table,
+            "execution_duration_seconds": duration,
+            "transformation_type": self.determine_transformation_type()
+        }
+
+        # Insert to audit table
+        self.insert_audit_log(log_entry)
+
+# Usage in assets
+@asset
+def stage_jobs_unified_with_audit(context, config):
+    auditor = TransformationAuditor(context, "stage_jobs_unified")
+
+    # Log transformation start
+    auditor.log_transformation_start(
+        source_tables=["RAW.WORKDAY_JOBS", "RAW.GREENHOUSE_JOBS"],
+        config=config
+    )
+
+    # Perform transformation
+    result_df = process_jobs_data()
+
+    # Track metrics
+    auditor.track_data_metrics(
+        input_count=len(source_df),
+        output_count=len(result_df),
+        quality_score=calculate_quality_score(result_df)
+    )
+
+    # Log completion
+    auditor.log_transformation_complete("STAGE.jobs_unified")
+
+    return result_df
+```
+
+### Implementation Plan
+
+**Phase 1: Core Audit Infrastructure**
+1. Create audit logging table schemas
+2. Implement `TransformationAuditor` utility class
+3. Add audit logging to core STAGE assets
+4. Create basic audit reporting queries
+
+**Phase 2: Data Quality Tracking**
+1. Implement data quality metrics calculation
+2. Add trend analysis and anomaly detection
+3. Create data quality dashboards
+4. Add automated quality alerts
+
+**Phase 3: Advanced Lineage Tracking**
+1. Implement detailed data lineage tracking
+2. Add schema change detection and monitoring
+3. Create transformation impact analysis
+4. Add data governance reporting
+
+**Phase 4: Integration and Optimization**
+1. Integrate with existing Dagster monitoring
+2. Create custom alerting and notification rules
+3. Add audit data retention and archiving
+4. Create comprehensive audit analytics
+
+### Success Criteria
+- Comprehensive audit trail for all STAGE transformations
+- Data quality tracking and trend analysis
+- Regulatory compliance audit capabilities
+- Enhanced debugging and troubleshooting support
+- Custom business-specific monitoring and alerting
+
+### Alternative Approaches
+1. **Enhanced Dagster Metadata**: Extend Dagster's built-in metadata capabilities
+2. **External Audit Tools**: Integrate with dedicated data governance platforms
+3. **Event-Driven Logging**: Use event streaming for real-time audit logging
+4. **Minimal Implementation**: Focus only on critical audit requirements
+
+### Cost-Benefit Analysis
+**Costs**:
+- **Development Time**: Custom audit infrastructure implementation
+- **Storage Costs**: Additional audit data storage requirements
+- **Maintenance**: Ongoing audit system maintenance and monitoring
+
+**Benefits**:
+- **Compliance**: Regulatory audit trail and data governance support
+- **Debugging**: Enhanced troubleshooting and data quality monitoring
+- **Operations**: Better understanding of transformation performance
+- **Business Intelligence**: Detailed data processing insights
+
+### Files Affected (Future Implementation)
+- New: `transformations/audit_logging.py` - Audit utilities and classes
+- Update: All STAGE assets to include audit logging
+- New: Audit reporting and analytics queries
+- New: Data quality monitoring and alerting
+- Update: Documentation for audit procedures and compliance
+
+---
+
+## ENHANCEMENT-016: Unified Adhoc Company Processing - Company URLs + Profiles Integration
+
+**Status:** 📋 **Planned**
+**Priority:** High
+**Component:** Adhoc Company Processing Pipeline
+**Date Planned:** 2025-06-10
+
+### Description
+Extend the existing adhoc company URLs processing (`adhoc_company_urls.py`) to also support adding company profile information to `raw_company_profiles.py`. This creates a unified adhoc process where users can add both company URLs and detailed company profile data through a single workflow.
+
+### Business Justification
+- **Streamlined Workflow**: Single process to add both company URLs and profile data instead of separate manual steps
+- **Data Consistency**: Ensure company URLs and profiles are added together, maintaining referential integrity
+- **Time Efficiency**: Eliminate duplicate manual processes for company data management
+- **Better Data Quality**: Unified validation and processing logic for all company-related data
+- **User Experience**: Simplified process for adding new companies with complete information
+
+### Technical Approach
+
+**Enhanced CSV Format with Profile Support:**
+```csv
+# Enhanced adhoc companies CSV with profile data
+company_name,company_industry,platform,ats_url,career_url,url_verified,company_size,headquarters,founded_year,company_type,description,website_url,linkedin_url,glassdoor_url
+Google Inc,Technology,workday,https://careers.google.com/jobs/workday,https://careers.google.com,true,100000+,Mountain View CA,1998,Public,Search and cloud computing,https://google.com,https://linkedin.com/company/google,https://glassdoor.com/Overview/Working-at-Google
+```
+
+**Dual Processing Architecture:**
+```python
+@asset(
+    group_name="raw_ingestion_extraction",
+    kinds={"python", "sql", "snowflake"},
+    deps=["snowflake_master_company_urls"],
+    required_resource_keys={"snowflake"}
+)
+def adhoc_company_urls_and_profiles(context: AssetExecutionContext) -> Dict[str, Any]:
+    """
+    Enhanced adhoc processing for both company URLs and company profiles.
+
+    Processes CSV files containing:
+    1. Company URL data (existing functionality)
+    2. Company profile data (new functionality)
+
+    Ensures data consistency between master_company_urls and raw_company_profiles.
+    """
+
+    processing_stats = {
+        "companies_processed": 0,
+        "urls_inserted": 0,
+        "urls_updated": 0,
+        "profiles_inserted": 0,
+        "profiles_updated": 0,
+        "validation_errors": []
+    }
+
+    # Process company URLs (existing logic)
+    url_stats = process_company_urls(context, combined_df)
+
+    # Process company profiles (new logic)
+    profile_stats = process_company_profiles(context, combined_df)
+
+    # Validate cross-table consistency
+    consistency_stats = validate_company_data_consistency(context)
+
+    return merge_processing_stats(url_stats, profile_stats, consistency_stats)
+
+def process_company_profiles(context: AssetExecutionContext, companies_df: pd.DataFrame) -> Dict:
+    """
+    Process company profile data using enhanced CSV with profile fields.
+
+    New profile fields:
+    - company_size, headquarters, founded_year, company_type
+    - description, website_url, linkedin_url, glassdoor_url
+    """
+
+    # Extract profile-specific columns
+    profile_columns = [
+        'company_id', 'company_name', 'company_size', 'headquarters',
+        'founded_year', 'company_type', 'description', 'website_url',
+        'linkedin_url', 'glassdoor_url', 'platform'
+    ]
+
+    profile_df = companies_df[profile_columns].copy()
+
+    # Generate profile_id using consistent ID generation
+    profile_df['profile_id'] = profile_df.apply(
+        lambda row: generate_company_platform_id(row['company_name'], "PROFILE"),
+        axis=1
+    )
+
+    # Use existing raw_company_profiles insertion logic
+    return insert_company_profiles(context, profile_df)
+```
+
+**Data Consistency Validation:**
+```python
+def validate_company_data_consistency(context: AssetExecutionContext) -> Dict:
+    """
+    Validate that company URLs and profiles are consistent.
+
+    Checks:
+    1. Every company in master_company_urls has corresponding profile
+    2. Company names match between tables
+    3. No orphaned profile records
+    """
+
+    consistency_checks = {
+        "companies_with_urls_but_no_profiles": [],
+        "companies_with_profiles_but_no_urls": [],
+        "company_name_mismatches": [],
+        "overall_consistency_score": 0.0
+    }
+
+    # SQL-based consistency validation
+    validation_query = """
+    SELECT
+        COALESCE(u.company_name, p.company_name) as company_name,
+        CASE WHEN u.company_id IS NULL THEN 'missing_url'
+             WHEN p.profile_id IS NULL THEN 'missing_profile'
+             WHEN u.company_name != p.company_name THEN 'name_mismatch'
+             ELSE 'consistent' END as status
+    FROM master_company_urls u
+    FULL OUTER JOIN raw_company_profiles p
+        ON SUBSTRING(u.company_id, 1, 8) = SUBSTRING(p.profile_id, 1, 8)
+    WHERE status != 'consistent'
+    """
+
+    return consistency_checks
+```
+
+### Implementation Plan
+
+**Phase 1: CSV Format Enhancement**
+1. Design enhanced CSV format supporting both URL and profile data
+2. Update CSV validation logic to handle optional profile fields
+3. Add backward compatibility for existing URL-only CSV files
+4. Create CSV template with all supported fields
+
+**Phase 2: Profile Processing Integration**
+1. Integrate company profile processing into adhoc_company_urls.py
+2. Reuse existing raw_company_profiles insertion logic
+3. Add profile-specific validation and error handling
+4. Ensure consistent company ID generation between tables
+
+**Phase 3: Data Consistency Validation**
+1. Implement cross-table consistency checks
+2. Add validation reporting and error detection
+3. Create data quality metrics for company data completeness
+4. Add automated consistency monitoring
+
+**Phase 4: Enhanced Monitoring and Reporting**
+1. Update Dagster metadata to include profile processing statistics
+2. Add comprehensive logging for dual processing workflow
+3. Create unified error reporting for both URL and profile processing
+4. Add data quality dashboards for company data
+
+### Success Criteria
+- ✅ Single CSV file can add both company URLs and profile data
+- ✅ Backward compatibility maintained for existing URL-only CSV files
+- ✅ Data consistency validation between master_company_urls and raw_company_profiles
+- ✅ Enhanced error handling and validation for profile data
+- ✅ Comprehensive monitoring and reporting for unified processing
+- ✅ No breaking changes to existing adhoc company URL workflow
+
+### Files Affected
+- `assets/adhoc_company_urls.py` - Enhanced to support profile processing (rename to `adhoc_company_urls_and_profiles.py`)
+- `transformations/company_profile_processing.py` (new) - Shared profile processing utilities
+- `assets/raw_company_profiles.py` - Extract reusable functions for adhoc integration
+- CSV templates and documentation for enhanced format
+- Dagster job definitions to include unified adhoc processing
+
+---
+
+## ENHANCEMENT-017: Adhoc Job Search Processing with Dynamic Scheduling
+
+**Status:** 📋 **Planned**
+**Priority:** Medium
+**Component:** Job Search Adhoc Processing and Scheduling
+**Date Planned:** 2025-06-10
+
+### Description
+Create an adhoc job search processing system similar to the adhoc company URLs process. Users provide search configurations via CSV files, the system automatically runs job searches, generates HTML reports, and optionally creates recurring schedules for the searches.
+
+### Business Justification
+- **On-Demand Search Capability**: Run custom job searches without code deployment or configuration changes
+- **Automated Reporting**: Generate HTML reports automatically for custom search criteria
+- **Dynamic Scheduling**: Create recurring schedules for important searches (weekly data engineering reports, monthly market analysis)
+- **Business User Empowerment**: Allow non-technical users to create custom job searches and reports
+- **Resource Optimization**: Run targeted searches instead of broad searches, reducing processing time
+
+### Technical Approach
+
+**Adhoc Job Search Configuration CSV:**
+```csv
+# adhoc_job_searches.csv
+search_name,keywords,job_titles,excluded_keywords,locations,platforms,days_back,max_results,min_quality_score,language_filter,schedule_cron,schedule_enabled,output_format
+Data Engineering Jobs,"SQL,database,ETL,pipeline","Data Engineer,SQL Developer","intern,junior","San Francisco,Remote",workday|greenhouse,14,500,0.5,english,0 8 * * 1,true,html
+Senior Python Roles,"Python,Django,Flask","Senior Python,Python Engineer","junior,intern","New York,Boston",all,7,200,0.7,english,,false,html
+Weekly ML Report,"machine learning,AI,tensorflow","ML Engineer,Data Scientist","intern","Remote,California",all,7,1000,0.4,english,0 9 * * 1,true,html|csv
+```
+
+**Adhoc Job Search Asset:**
+```python
+@asset(
+    group_name="adhoc_job_search",
+    kinds={"python", "snowflake"},
+    deps=["stage_jobs_unified"],
+    required_resource_keys={"snowflake"}
+)
+def adhoc_job_searches(context: AssetExecutionContext) -> Dict[str, Any]:
+    """
+    Process adhoc job search requests from CSV configuration files.
+
+    Features:
+    1. Run custom job searches based on CSV configurations
+    2. Generate HTML reports automatically
+    3. Create dynamic schedules for recurring searches
+    4. Support multiple output formats (HTML, CSV, JSON)
+    """
+
+    search_results = {
+        "searches_processed": 0,
+        "reports_generated": 0,
+        "schedules_created": 0,
+        "search_summaries": []
+    }
+
+    # Load adhoc search configurations
+    search_configs = load_adhoc_search_configs(context)
+
+    for config in search_configs:
+        # Execute job search
+        search_result = execute_adhoc_job_search(context, config)
+
+        # Generate reports in requested formats
+        report_paths = generate_search_reports(context, search_result, config)
+
+        # Create or update schedule if requested
+        if config.get('schedule_enabled', False):
+            schedule_result = create_dynamic_schedule(context, config)
+            search_results["schedules_created"] += schedule_result.get("created", 0)
+
+        search_results["searches_processed"] += 1
+        search_results["reports_generated"] += len(report_paths)
+        search_results["search_summaries"].append({
+            "search_name": config["search_name"],
+            "results_count": len(search_result),
+            "report_paths": report_paths
+        })
+
+    return search_results
+
+def execute_adhoc_job_search(context: AssetExecutionContext, config: Dict) -> pd.DataFrame:
+    """Execute job search using provided configuration."""
+
+    search_params = {
+        "keywords": parse_list_field(config["keywords"]),
+        "job_titles": parse_list_field(config["job_titles"]),
+        "excluded_keywords": parse_list_field(config.get("excluded_keywords", "")),
+        "locations": parse_list_field(config.get("locations", "")),
+        "platforms": parse_list_field(config.get("platforms", "all")),
+        "days_back": int(config.get("days_back", 14)),
+        "max_results": int(config.get("max_results", 500)),
+        "min_quality_score": float(config.get("min_quality_score", 0.5)),
+        "language_filter": config.get("language_filter", "english")
+    }
+
+    # Reuse existing job search logic from job_search.py
+    return perform_job_search(context, search_params)
+```
+
+**Dynamic Schedule Creation:**
+```python
+def create_dynamic_schedule(context: AssetExecutionContext, config: Dict) -> Dict:
+    """
+    Create dynamic Dagster schedule for recurring job searches.
+
+    Challenges:
+    - Dagster schedules are typically defined at code time, not runtime
+    - Dynamic schedule creation requires advanced Dagster patterns
+
+    Approaches:
+    1. Template-based schedule generation with code reload
+    2. Meta-scheduling using sensor to trigger searches
+    3. Configuration-driven schedule activation/deactivation
+    """
+
+    schedule_config = {
+        "search_name": config["search_name"],
+        "cron_schedule": config.get("schedule_cron", "0 8 * * 1"),  # Default: Monday 8 AM
+        "search_params": extract_search_params(config),
+        "enabled": config.get("schedule_enabled", False)
+    }
+
+    # Option 1: Store schedule config in database for sensor-based triggering
+    store_schedule_config(context, schedule_config)
+
+    # Option 2: Generate schedule definition files (requires code reload)
+    generate_schedule_definition(schedule_config)
+
+    return {"created": 1 if schedule_config["enabled"] else 0}
+
+@sensor(job_name="adhoc_job_search_executor")
+def adhoc_job_search_sensor(context):
+    """
+    Sensor-based approach to dynamic scheduling.
+
+    Checks for enabled schedules and triggers job searches based on cron expressions.
+    """
+
+    enabled_schedules = load_enabled_schedules()
+
+    for schedule in enabled_schedules:
+        if should_trigger_schedule(schedule):
+            yield RunRequest(
+                run_key=f"adhoc_search_{schedule['search_name']}_{datetime.now().isoformat()}",
+                run_config={
+                    "ops": {
+                        "adhoc_job_search_executor": {
+                            "config": schedule["search_params"]
+                        }
+                    }
+                }
+            )
+```
+
+**Multi-Format Report Generation:**
+```python
+def generate_search_reports(context: AssetExecutionContext, search_results: pd.DataFrame, config: Dict) -> List[str]:
+    """Generate reports in multiple formats based on configuration."""
+
+    output_formats = parse_list_field(config.get("output_format", "html"))
+    report_paths = []
+
+    base_filename = f"adhoc_search_{config['search_name'].replace(' ', '_')}"
+
+    for format_type in output_formats:
+        if format_type.lower() == "html":
+            html_path = generate_html_report(search_results, config, base_filename)
+            report_paths.append(html_path)
+        elif format_type.lower() == "csv":
+            csv_path = generate_csv_report(search_results, config, base_filename)
+            report_paths.append(csv_path)
+        elif format_type.lower() == "json":
+            json_path = generate_json_report(search_results, config, base_filename)
+            report_paths.append(json_path)
+
+    return report_paths
+```
+
+### Implementation Plan
+
+**Phase 1: Core Adhoc Search Processing**
+1. Create `adhoc_job_searches.py` asset with CSV configuration support
+2. Implement job search execution using existing `job_search.py` logic
+3. Add multi-format report generation (HTML, CSV, JSON)
+4. Create adhoc search sensor for automatic processing
+
+**Phase 2: Dynamic Scheduling System**
+1. Design dynamic schedule storage and management system
+2. Implement sensor-based schedule triggering approach
+3. Add schedule validation and error handling
+4. Create schedule management utilities (enable/disable, update)
+
+**Phase 3: Enhanced Configuration and Validation**
+1. Add comprehensive CSV validation for search configurations
+2. Implement search parameter validation and error reporting
+3. Add search result caching and optimization
+4. Create search performance monitoring and analytics
+
+**Phase 4: Integration and User Experience**
+1. Integrate with existing Dagster UI and monitoring
+2. Add search result email notifications (optional)
+3. Create search configuration templates and documentation
+4. Add search history and result tracking
+
+### Success Criteria
+- ✅ Users can create custom job searches via CSV configuration files
+- ✅ Automatic HTML report generation for all adhoc searches
+- ✅ Dynamic schedule creation for recurring searches (sensor-based or template-based)
+- ✅ Multi-format output support (HTML, CSV, JSON)
+- ✅ Comprehensive validation and error handling for search configurations
+- ✅ Integration with existing job search infrastructure
+- ✅ Search result caching and performance optimization
+
+### Technical Considerations
+
+**Dynamic Scheduling Challenges:**
+1. **Dagster Architecture**: Schedules typically defined at code time, not runtime
+2. **Approach Options**:
+   - **Sensor-based**: Use sensors to check schedule configs and trigger runs
+   - **Template Generation**: Generate schedule definition files and reload code
+   - **Meta-scheduling**: Single schedule that processes multiple configurations
+
+**Configuration Management:**
+- CSV validation and error reporting
+- Search parameter compatibility with existing job search logic
+- Output format standardization and quality
+
+**Performance Optimization:**
+- Search result caching for repeated configurations
+- Incremental search processing for frequently updated searches
+- Resource usage monitoring and limits
+
+### Files Affected
+- New: `assets/adhoc_job_searches.py` - Core adhoc search processing
+- New: `sensors/adhoc_search_sensor.py` - Automatic processing sensor
+- New: `transformations/adhoc_search_processing.py` - Search processing utilities
+- New: `schedules/dynamic_schedules.py` - Dynamic schedule management
+- Update: `assets/job_search.py` - Extract reusable search functions
+- CSV templates and configuration documentation
+
+---
+
+## ENHANCEMENT-018: Web-Based Adhoc Processing Frontend
+
+**Status:** 📋 **Planned**
+**Priority:** Medium
+**Component:** User Interface for Adhoc Processing
+**Date Planned:** 2025-06-10
+
+### Description
+Create a simple, web-based frontend UI that allows users to easily input data for both adhoc company processing (ENHANCEMENT-016) and adhoc job search processing (ENHANCEMENT-017). The UI validates input data, compiles it into appropriate formats (CSV or JSON), and integrates with existing sensor-based processing.
+
+### Business Justification
+- **User Experience**: Replace manual CSV creation with intuitive web forms
+- **Data Quality**: Built-in validation prevents common input errors and format issues
+- **Accessibility**: Enable non-technical users to leverage adhoc processing capabilities
+- **Efficiency**: Streamlined data entry with auto-completion, templates, and validation
+- **Integration**: Seamless connection with existing Dagster sensor-based processing
+- **Audit Trail**: Track user inputs and processing requests for compliance and debugging
+
+### Technical Approach
+
+**Frontend Architecture Options:**
+```python
+# Option 1: Streamlit (Rapid Development)
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+import json
+
+def main():
+    st.title("BetterJobs Adhoc Processing Portal")
+
+    tab1, tab2 = st.tabs(["Company Management", "Job Search"])
+
+    with tab1:
+        company_management_ui()
+
+    with tab2:
+        job_search_ui()
+
+def company_management_ui():
+    st.header("Add New Companies")
+
+    # Form for company data entry
+    with st.form("company_form"):
+        company_name = st.text_input("Company Name*")
+        company_industry = st.selectbox("Industry",
+            ["Technology", "Healthcare", "Finance", "Manufacturing", "Other"])
+        platform = st.selectbox("ATS Platform",
+            ["workday", "greenhouse", "bamboohr", "smartrecruiters"])
+        ats_url = st.text_input("ATS URL*")
+        career_url = st.text_input("Career Page URL")
+
+        # Optional profile fields
+        st.subheader("Company Profile (Optional)")
+        company_size = st.selectbox("Company Size",
+            ["1-10", "11-50", "51-200", "201-1000", "1001-5000", "5000+"])
+        headquarters = st.text_input("Headquarters")
+        founded_year = st.number_input("Founded Year", min_value=1800, max_value=2024)
+
+        submitted = st.form_submit_button("Add Company")
+
+        if submitted:
+            if validate_company_data(company_name, ats_url):
+                save_company_data({
+                    "company_name": company_name,
+                    "company_industry": company_industry,
+                    "platform": platform,
+                    "ats_url": ats_url,
+                    "career_url": career_url,
+                    "company_size": company_size,
+                    "headquarters": headquarters,
+                    "founded_year": founded_year
+                })
+                st.success("Company added successfully!")
+
+def job_search_ui():
+    st.header("Create Custom Job Search")
+
+    with st.form("search_form"):
+        search_name = st.text_input("Search Name*")
+
+        # Search criteria
+        keywords = st.text_area("Keywords (comma-separated)",
+            help="e.g., SQL, database, ETL, pipeline")
+        job_titles = st.text_area("Job Titles (comma-separated)",
+            help="e.g., Data Engineer, SQL Developer")
+        excluded_keywords = st.text_area("Excluded Keywords (optional)")
+
+        # Filters
+        col1, col2 = st.columns(2)
+        with col1:
+            platforms = st.multiselect("Platforms",
+                ["workday", "greenhouse", "bamboohr", "smartrecruiters", "all"])
+            days_back = st.number_input("Days Back", min_value=1, max_value=90, value=14)
+
+        with col2:
+            max_results = st.number_input("Max Results", min_value=10, max_value=2000, value=500)
+            min_quality_score = st.slider("Min Quality Score", 0.0, 1.0, 0.5)
+
+        # Scheduling options
+        st.subheader("Scheduling (Optional)")
+        enable_schedule = st.checkbox("Enable Recurring Schedule")
+
+        if enable_schedule:
+            schedule_type = st.selectbox("Schedule Type",
+                ["Daily", "Weekly", "Monthly", "Custom Cron"])
+
+            if schedule_type == "Custom Cron":
+                cron_expression = st.text_input("Cron Expression",
+                    help="e.g., 0 8 * * 1 (Monday 8AM)")
+
+        # Output options
+        output_formats = st.multiselect("Output Formats",
+            ["html", "csv", "json"], default=["html"])
+
+        submitted = st.form_submit_button("Create Search")
+
+        if submitted:
+            if validate_search_data(search_name, keywords):
+                save_search_config({
+                    "search_name": search_name,
+                    "keywords": keywords,
+                    "job_titles": job_titles,
+                    "excluded_keywords": excluded_keywords,
+                    "platforms": "|".join(platforms),
+                    "days_back": days_back,
+                    "max_results": max_results,
+                    "min_quality_score": min_quality_score,
+                    "schedule_enabled": enable_schedule,
+                    "output_format": "|".join(output_formats)
+                })
+                st.success("Job search created successfully!")
+```
+
+**Backend Data Processing:**
+```python
+# Option 2: FastAPI + React (More Scalable)
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, validator
+from typing import List, Optional
+import pandas as pd
+import os
+
+app = FastAPI(title="BetterJobs Adhoc Processing API")
+
+class CompanyData(BaseModel):
+    company_name: str
+    company_industry: str
+    platform: str
+    ats_url: str
+    career_url: Optional[str] = ""
+    company_size: Optional[str] = ""
+    headquarters: Optional[str] = ""
+    founded_year: Optional[int] = None
+
+    @validator('ats_url')
+    def validate_ats_url(cls, v):
+        if not v.startswith(('http://', 'https://')):
+            raise ValueError('ATS URL must be a valid HTTP/HTTPS URL')
+        return v
+
+class JobSearchConfig(BaseModel):
+    search_name: str
+    keywords: List[str]
+    job_titles: List[str]
+    excluded_keywords: Optional[List[str]] = []
+    platforms: List[str]
+    days_back: int = 14
+    max_results: int = 500
+    min_quality_score: float = 0.5
+    schedule_enabled: bool = False
+    schedule_cron: Optional[str] = None
+    output_format: List[str] = ["html"]
+
+@app.post("/api/companies")
+async def add_company(company: CompanyData):
+    """Add new company to adhoc processing queue."""
+
+    # Validate and save to CSV file
+    csv_path = get_adhoc_companies_csv_path()
+
+    # Convert to DataFrame and append
+    company_df = pd.DataFrame([company.dict()])
+
+    if os.path.exists(csv_path):
+        existing_df = pd.read_csv(csv_path)
+        combined_df = pd.concat([existing_df, company_df], ignore_index=True)
+    else:
+        combined_df = company_df
+
+    combined_df.to_csv(csv_path, index=False)
+
+    return {"message": "Company added successfully", "company_id": generate_company_id(company.company_name)}
+
+@app.post("/api/job-searches")
+async def create_job_search(search_config: JobSearchConfig):
+    """Create new job search configuration."""
+
+    # Convert to CSV format
+    search_df = pd.DataFrame([{
+        "search_name": search_config.search_name,
+        "keywords": ",".join(search_config.keywords),
+        "job_titles": ",".join(search_config.job_titles),
+        "excluded_keywords": ",".join(search_config.excluded_keywords),
+        "platforms": "|".join(search_config.platforms),
+        "days_back": search_config.days_back,
+        "max_results": search_config.max_results,
+        "min_quality_score": search_config.min_quality_score,
+        "schedule_enabled": search_config.schedule_enabled,
+        "schedule_cron": search_config.schedule_cron or "",
+        "output_format": "|".join(search_config.output_format)
+    }])
+
+    # Save to adhoc search CSV
+    csv_path = get_adhoc_searches_csv_path()
+
+    if os.path.exists(csv_path):
+        existing_df = pd.read_csv(csv_path)
+        combined_df = pd.concat([existing_df, search_df], ignore_index=True)
+    else:
+        combined_df = search_df
+
+    combined_df.to_csv(csv_path, index=False)
+
+    return {"message": "Job search created successfully", "search_id": generate_search_id(search_config.search_name)}
+```
+
+**React Frontend Components:**
+```jsx
+// CompanyForm.jsx
+import React, { useState } from 'react';
+import { Form, Input, Select, Button, notification } from 'antd';
+
+const CompanyForm = () => {
+    const [form] = Form.useForm();
+    const [loading, setLoading] = useState(false);
+
+    const onFinish = async (values) => {
+        setLoading(true);
+        try {
+            const response = await fetch('/api/companies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(values)
+            });
+
+            if (response.ok) {
+                notification.success({ message: 'Company added successfully!' });
+                form.resetFields();
+            } else {
+                throw new Error('Failed to add company');
+            }
+        } catch (error) {
+            notification.error({ message: 'Error adding company', description: error.message });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <Form form={form} layout="vertical" onFinish={onFinish}>
+            <Form.Item name="company_name" label="Company Name" rules={[{ required: true }]}>
+                <Input placeholder="Enter company name" />
+            </Form.Item>
+
+            <Form.Item name="company_industry" label="Industry" rules={[{ required: true }]}>
+                <Select>
+                    <Select.Option value="Technology">Technology</Select.Option>
+                    <Select.Option value="Healthcare">Healthcare</Select.Option>
+                    <Select.Option value="Finance">Finance</Select.Option>
+                </Select>
+            </Form.Item>
+
+            <Form.Item name="platform" label="ATS Platform" rules={[{ required: true }]}>
+                <Select>
+                    <Select.Option value="workday">Workday</Select.Option>
+                    <Select.Option value="greenhouse">Greenhouse</Select.Option>
+                    <Select.Option value="bamboohr">BambooHR</Select.Option>
+                    <Select.Option value="smartrecruiters">SmartRecruiters</Select.Option>
+                </Select>
+            </Form.Item>
+
+            <Button type="primary" htmlType="submit" loading={loading}>
+                Add Company
+            </Button>
+        </Form>
+    );
+};
+```
+
+**Integration with Existing Sensors:**
+```python
+# Enhanced sensors to detect UI-generated files
+@sensor(asset_selection=[adhoc_company_urls_and_profiles])
+def adhoc_company_ui_sensor(context):
+    """Detect UI-generated company data files and trigger processing."""
+
+    ui_generated_csv = get_adhoc_companies_csv_path()
+
+    if os.path.exists(ui_generated_csv):
+        # Check if file has been modified since last run
+        file_modified_time = os.path.getmtime(ui_generated_csv)
+        last_run_time = get_last_sensor_run_time(context, "adhoc_company_ui_sensor")
+
+        if file_modified_time > last_run_time:
+            return RunRequest(
+                run_key=f"ui_company_data_{int(file_modified_time)}",
+                tags={"source": "ui_generated"}
+            )
+
+@sensor(asset_selection=[adhoc_job_searches])
+def adhoc_search_ui_sensor(context):
+    """Detect UI-generated search configurations and trigger processing."""
+
+    ui_generated_csv = get_adhoc_searches_csv_path()
+
+    if os.path.exists(ui_generated_csv):
+        file_modified_time = os.path.getmtime(ui_generated_csv)
+        last_run_time = get_last_sensor_run_time(context, "adhoc_search_ui_sensor")
+
+        if file_modified_time > last_run_time:
+            return RunRequest(
+                run_key=f"ui_search_config_{int(file_modified_time)}",
+                tags={"source": "ui_generated"}
+            )
+```
+
+### Implementation Plan
+
+**Phase 1: Frontend Technology Selection and Setup**
+1. Choose between Streamlit (rapid development) and FastAPI + React (scalability)
+2. Set up development environment and basic project structure
+3. Create basic UI mockups and user flow design
+4. Implement core form components for company and search data entry
+
+**Phase 2: Data Validation and Processing**
+1. Implement comprehensive client-side and server-side validation
+2. Create data serialization/deserialization for CSV/JSON formats
+3. Add error handling and user feedback systems
+4. Integrate with existing file-based sensor detection
+
+**Phase 3: Advanced Features and Integration**
+1. Add auto-completion for company names, industries, and common search terms
+2. Implement user authentication and session management (if needed)
+3. Add real-time validation and data preview capabilities
+4. Create integration tests with existing Dagster sensors
+
+**Phase 4: Production Deployment and Monitoring**
+1. Set up production deployment environment (Docker, cloud hosting)
+2. Add monitoring and logging for UI usage and errors
+3. Create user documentation and training materials
+4. Implement backup and recovery procedures for user data
+
+### Success Criteria
+- ✅ Intuitive web interface for both company management and job search creation
+- ✅ Comprehensive client-side and server-side data validation
+- ✅ Seamless integration with existing Dagster sensor-based processing
+- ✅ Real-time feedback and error reporting for users
+- ✅ Support for bulk data entry and CSV template downloads
+- ✅ Mobile-responsive design for accessibility
+- ✅ Audit trail and user activity logging
+
+### Technical Considerations
+
+**Technology Stack Decision:**
+1. **Streamlit Pros**: Rapid development, Python-native, easy deployment
+2. **Streamlit Cons**: Limited customization, less scalable for multiple users
+3. **FastAPI + React Pros**: Full customization, scalable, modern architecture
+4. **FastAPI + React Cons**: More development time, additional complexity
+
+**Deployment Options:**
+1. **Local Development**: Simple Docker container for development
+2. **Cloud Deployment**: AWS/GCP/Azure for production use
+3. **Integration**: Embed within existing Dagster UI or standalone application
+
+**Security Considerations:**
+- Input sanitization and validation
+- CSRF protection for form submissions
+- Optional authentication for sensitive operations
+- Rate limiting to prevent abuse
+
+### Files Affected
+- New: `frontend/streamlit_app.py` or `frontend/fastapi_app.py` - Main application
+- New: `frontend/components/` - UI components and forms
+- New: `frontend/static/` - CSS, JavaScript, and asset files
+- New: `api/validation.py` - Data validation utilities
+- Update: Existing sensors to detect UI-generated files
+- New: Docker configuration for frontend deployment
+- Documentation and user guides
+
+---
+
 ## Template for New Enhancements
