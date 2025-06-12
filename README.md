@@ -86,6 +86,26 @@ The STAGE layer provides comprehensive data transformation and AI enrichment:
 - **Quality Validation**: Comprehensive data quality scoring and language detection
 - **Enhanced Job Search**: Modern HTML report generation with interactive filtering capabilities
 
+##### LLM Data Standardization Pipeline 🔄 **ACTIVE DEVELOPMENT**
+![STAGE Standardization Pipeline](media/3-stage_standardization_dagsterpipeline.png)
+
+The LLM Standardization group transforms AI-extracted VARIANT/JSON data into normalized relational structures:
+- **Skills Normalization** ✅ **COMPLETED**: 8,302 skills standardized with 149,477 job-skill relationships and family classification (as of June 11, 2025)
+- **Keywords Standardization** ✅ **COMPLETED**: 2,847 keywords normalized with industry and role type classifications (as of June 11, 2025)
+- **Location Standardization** 🚧 **NEXT PHASE**: Geographic hierarchy and tech hub classification with work arrangement context
+- **Data Quality Validation** 📋 **PLANNED**: Comprehensive quality monitoring, anomaly detection, and automated alerting
+- **Analytics Enablement** 📋 **PLANNED**: Pre-aggregated views and performance optimization for downstream analytics
+
+**Current Progress:**
+- **Phase 1 & 2 Complete**: Skills and keywords fully normalized with 97.6% job coverage
+- **Confidence Scoring**: Advanced confidence tracking with manual review flagging for low-confidence items
+- **Bridge Tables**: Many-to-many relationships with source tracking and context classification
+
+**Upcoming Phases:**
+- **Phase 3**: Location standardization with geographic enrichment and remote work indicators
+- **Phase 4**: Automated data quality monitoring with trend analysis and anomaly detection
+- **Phase 5**: Analytics-optimized views and materialized tables for Gold layer integration
+
 #### GOLD (Presentation) Layer Pipeline 🔮 **COMING SOON**
 *Diagram will be added as assets are developed*
 
@@ -105,14 +125,11 @@ The planned GOLD layer will provide business-ready analytics and reporting:
 #### Upcoming Enhancements:
 - **Additional ATS Platforms**: Lever, Jobvite, iCIMS integration
 - **Advanced Analytics**: Predictive hiring models and market forecasting
-- **Real-time Dashboards**: Live job market monitoring and alerting
 - **API Endpoints**: External access to processed job market data
-- **Machine Learning Models**: Job classification, salary prediction, and skills matching
 
 ### Analytics & Reporting
 - **Job Market Trends**: Track hiring patterns across industries and companies
 - **Company Analysis**: Monitor job posting frequency and patterns by company
-- **ATS Platform Insights**: Compare job posting volumes across different platforms
 - **Geographic Distribution**: Analyze job opportunities by location
 - **Skills & Requirements**: Extract insights from job descriptions and requirements
 

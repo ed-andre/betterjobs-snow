@@ -3992,4 +3992,222 @@ def adhoc_search_ui_sensor(context):
 
 ---
 
+## ENHANCEMENT-019: Data Warehouse Initial Setup Automation
+
+**Status:** 📋 **Planned**
+**Priority:** High
+**Component:** Infrastructure & Configuration Management
+**Date Planned:** 2025-06-12
+
+### Description
+Create a standardized, automated process for initially setting up the data warehouse with schemas, tables, views, and static data through the first upstream asset. Replace manual setup steps and custom scripts with CSV-based configuration management for rules and pattern tables.
+
+### Business Justification
+- **Reduced Manual Setup**: Eliminate ~90% of manual database setup steps across environments
+- **Environment Consistency**: Ensure identical setup across dev, staging, and production environments
+- **Faster Deployment**: New environment setup from hours to minutes
+- **Version Control**: All configuration data (rules, patterns) tracked in version control
+- **Business User Accessibility**: Non-technical users can maintain rules via CSV files
+- **Disaster Recovery**: Faster recovery with automated infrastructure recreation
+- **Compliance**: Auditable configuration changes through version control
+- **Developer Productivity**: Developers can spin up complete environments instantly
+
+### Technical Approach
+
+**Core Architecture:**
+```python
+@asset(
+    description="Initialize data warehouse schemas, tables, and static configuration data",
+    group_name="infrastructure",
+    kinds={"snowflake", "python", "SQL"},
+    freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24)  # Daily check
+)
+def data_warehouse_initial_setup(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Automated data warehouse initialization with CSV-based configuration.
+
+    Setup Process:
+    1. Create all required schemas and databases
+    2. Create all tables with proper clustering and constraints
+    3. Create views and materialized views
+    4. Load static configuration data from CSV files
+    5. Validate setup completeness and data integrity
+    """
+```
+
+**CSV-Based Configuration Management:**
+```
+config/
+├── schemas/
+│   ├── schemas_definition.csv           # Database and schema definitions
+│   └── table_definitions.csv           # Table structure definitions
+├── static_data/
+│   ├── skill_standardization_rules.csv      # Skill name standardization rules
+│   ├── skill_category_patterns.csv          # Skill category detection patterns
+│   ├── skill_family_mappings.csv            # Skill family classification
+│   ├── location_standardization_rules.csv   # Location standardization rules
+│   ├── keyword_standardization_rules.csv    # Keyword standardization rules
+│   ├── keyword_type_mappings.csv            # Keyword type classifications
+│   └── company_platform_mappings.csv        # Platform-specific configurations
+├── views/
+│   ├── analytical_views.csv            # Analytical view definitions
+│   └── monitoring_views.csv            # Monitoring and quality views
+└── validation/
+    ├── data_validation_rules.csv       # Data quality validation rules
+    └── business_rules.csv              # Business logic validation rules
+```
+
+**Configuration Schema Examples:**
+
+*schemas_definition.csv:*
+```csv
+database_name,schema_name,description,cluster_keys,retention_days
+BETTERJOBS_DB,STAGE,Stage layer tables and views,NULL,90
+BETTERJOBS_DB,GOLD,Gold layer dimensional model,NULL,2555
+BETTERJOBS_DB,MONITORING,Monitoring and quality tables,NULL,30
+```
+
+*skill_standardization_rules.csv:*
+```csv
+rule_id,pattern,standardized_name,skill_category,skill_subcategory,confidence_score,rule_type,description
+rule_001,python,Python,languages,backend_language,1.0,exact_match,Python programming language
+rule_002,python3,Python,languages,backend_language,0.95,exact_match,Python 3 variant
+rule_003,js,JavaScript,languages,frontend_language,0.9,exact_match,JavaScript abbreviation
+```
+
+*table_definitions.csv:*
+```csv
+schema_name,table_name,create_sql_file,cluster_keys,constraints,description
+STAGE,SKILLS_NORMALIZED,skills_normalized.sql,"SKILL_CATEGORY,SKILL_NAME","FK_SKILLS_CATEGORY",Normalized skills master table
+STAGE,JOB_SKILLS_BRIDGE,job_skills_bridge.sql,"JOB_UID,SKILL_CATEGORY","FK_JOB_UID,FK_SKILL_ID",Job-skill relationships
+```
+
+### Implementation Plan
+
+**Phase 1: Infrastructure Setup Framework**
+1. **Create Configuration Schema**:
+   - Design CSV schema for all configuration types
+   - Create validation rules for CSV data integrity
+   - Implement CSV parsing and validation utilities
+
+2. **Create Base Setup Asset**:
+   - Implement `data_warehouse_initial_setup` asset
+   - Add schema and database creation logic
+   - Implement table creation from SQL template files
+   - Add comprehensive logging and error handling
+
+3. **CSV Management Utilities**:
+   ```python
+   class CSVConfigurationManager:
+       """Manage CSV-based configuration loading and validation"""
+
+       def load_configuration(self, config_type: str) -> DataFrame
+       def validate_csv_data(self, df: DataFrame, schema: dict) -> List[str]
+       def apply_configuration(self, config_data: DataFrame) -> Dict[str, Any]
+   ```
+
+**Phase 2: Static Data Management**
+1. **Convert Existing SQL Scripts to CSV**:
+   - Migrate `insert_skill_standardization_rules.sql` → CSV
+   - Migrate `insert_skill_category_patterns.sql` → CSV
+   - Migrate `insert_location_standardization_rules.sql` → CSV
+   - Migrate all other rule insertion scripts → CSV
+
+2. **Implement CSV Ingestion Logic**:
+   ```python
+   def load_static_data_from_csv(self, table_name: str, csv_file: str) -> Dict[str, Any]:
+       """Load static data from CSV with validation and conflict resolution"""
+   ```
+
+3. **Version Control Integration**:
+   - CSV files tracked in Git with proper diff capabilities
+   - Automated validation in CI/CD pipeline
+   - Change approval process for rule modifications
+
+**Phase 3: Advanced Features**
+1. **Environment-Specific Configuration**:
+   - Support for dev/staging/prod-specific overrides
+   - Environment variable interpolation in CSV files
+   - Configuration inheritance and merging
+
+2. **Incremental Updates**:
+   - Change detection for CSV modifications
+   - Incremental application of configuration changes
+   - Rollback capabilities for configuration errors
+
+3. **Self-Healing and Monitoring**:
+   - Configuration drift detection
+   - Automated remediation for missing tables/data
+   - Configuration health monitoring and alerting
+
+**Phase 4: Integration and Migration**
+1. **Update Existing Assets**:
+   - Remove manual setup steps from current assets
+   - Add dependency on `data_warehouse_initial_setup`
+   - Update documentation and deployment guides
+
+2. **Testing and Validation**:
+   - Test complete environment setup from scratch
+   - Validate data consistency with current manual approach
+   - Performance testing for large-scale configurations
+
+### Success Criteria
+- **Setup Time Reduction**: New environment setup reduced from 2+ hours to <15 minutes
+- **Manual Steps Elimination**: ≥90% reduction in manual setup steps
+- **Configuration Coverage**: 100% of current static data managed via CSV
+- **Environment Consistency**: Identical setup across all environments
+- **Business User Enablement**: Non-technical users can modify rules via CSV
+- **Error Reduction**: ≥95% reduction in setup-related errors
+- **Documentation**: Complete CSV schema documentation and examples
+- **Rollback Capability**: Safe rollback of configuration changes within 5 minutes
+
+### Benefits Over Current Approach
+
+**Current Challenges Addressed:**
+- ❌ Manual SQL script execution across environments
+- ❌ Inconsistent setup between environments
+- ❌ Difficult rule management for non-technical users
+- ❌ No version control for configuration data
+- ❌ Time-consuming environment setup
+- ❌ Error-prone manual steps
+
+**New Approach Benefits:**
+- ✅ Fully automated environment setup
+- ✅ CSV-based rule management accessible to business users
+- ✅ Version-controlled configuration with audit trails
+- ✅ Environment consistency guarantees
+- ✅ Fast deployment and recovery capabilities
+- ✅ Comprehensive validation and error handling
+- ✅ Self-documenting configuration through CSV schemas
+
+### Technical Considerations
+
+**CSV Validation Schema:**
+```python
+CSV_SCHEMAS = {
+    "skill_standardization_rules": {
+        "required_columns": ["rule_id", "pattern", "standardized_name", "skill_category"],
+        "data_types": {"confidence_score": float, "rule_id": str},
+        "constraints": {
+            "rule_id": {"unique": True, "format": r"^rule_\d{3}$"},
+            "confidence_score": {"min": 0.0, "max": 1.0}
+        }
+    }
+}
+```
+
+**Error Handling Strategy:**
+- **Validation Errors**: Fail fast with clear error messages
+- **Partial Failures**: Continue setup with warnings for non-critical components
+- **Rollback**: Automatic rollback on critical failures
+- **Idempotency**: Safe to re-run setup multiple times
+
+**Performance Considerations:**
+- **Batch Processing**: Bulk load operations for large CSV files
+- **Parallel Execution**: Concurrent table creation where possible
+- **Caching**: Cache validated configurations to avoid re-parsing
+- **Incremental Updates**: Only apply changes for modified CSV data
+
+---
+
 ## Template for New Enhancements
