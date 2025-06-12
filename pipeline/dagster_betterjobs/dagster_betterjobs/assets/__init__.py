@@ -40,6 +40,14 @@ from dagster_betterjobs.assets.llm_standardization.skills_normalization import (
     stage_job_skills_bridge
 )
 
+from dagster_betterjobs.assets.llm_standardization.keywords_normalization import (
+    stage_llm_keywords_raw_extraction,
+    stage_keywords_standardization_rules,
+    stage_keyword_type_mapping,
+    stage_keywords_normalized,
+    stage_job_keywords_bridge
+)
+
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
 __all__ = [
@@ -69,10 +77,16 @@ __all__ = [
     "stage_jobs_llm_enriched_smartrecruiters",
     # LLM enrichment coordinator
     "stage_jobs_llm_enriched_unified",
-    # LLM data standardization assets
+    # LLM data standardization assets - Phase 1: Skills
     "stage_llm_skills_raw_extraction",
     "stage_skills_standardization_rules",
     "stage_skills_normalized",
     "stage_job_skills_bridge",
+    # LLM data standardization assets - Phase 2: Keywords
+    "stage_llm_keywords_raw_extraction",
+    "stage_keywords_standardization_rules",
+    "stage_keyword_type_mapping",
+    "stage_keywords_normalized",
+    "stage_job_keywords_bridge",
     "snowflake_master_company_urls"
 ]

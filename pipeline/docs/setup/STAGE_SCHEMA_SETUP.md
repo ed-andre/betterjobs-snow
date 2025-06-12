@@ -601,6 +601,20 @@ INSERT INTO LOCATION_STANDARDIZATION_RULES VALUES
 ('loc_008', 'seattle', 'Seattle, WA', 'Seattle', 'Washington', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
 ('loc_009', 'austin', 'Austin, TX', 'Austin', 'Texas', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
 ('loc_010', 'boston', 'Boston, MA', 'Boston', 'Massachusetts', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP);
+
+-- Keyword standardization rules table
+CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES (
+            RULE_ID STRING PRIMARY KEY,
+            PATTERN STRING NOT NULL,                         -- Pattern to match (regex or exact)
+            STANDARDIZED_TEXT STRING NOT NULL,               -- Standard form
+            KEYWORD_TYPE STRING NOT NULL,                    -- industry, role_type, company_stage, etc.
+            KEYWORD_CATEGORY STRING,                         -- specific category within type
+            CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
+            RULE_TYPE STRING DEFAULT 'exact_match',          -- exact_match, regex_pattern, fuzzy_match
+            IS_ACTIVE BOOLEAN DEFAULT TRUE,
+            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+        ) CLUSTER BY (KEYWORD_TYPE, IS_ACTIVE)
 ```
 
 ### 6. Create Views for Easy Querying

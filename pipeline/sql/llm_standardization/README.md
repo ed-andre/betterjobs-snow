@@ -2,6 +2,11 @@
 
 This directory contains SQL files for managing static data used in the LLM standardization process. This keeps static data separate from Dagster asset logic for better maintainability and version control.
 
+## Coverage
+
+- **Phase 1: Skills Normalization** - Complete configuration files for skills standardization
+- **Phase 2: Keywords Normalization** - Complete configuration files for keywords and classification
+
 ## Philosophy
 
 **Static data should be managed separately from application code to:**
@@ -16,14 +21,24 @@ This directory contains SQL files for managing static data used in the LLM stand
 ```
 pipeline/sql/llm_standardization/
 ├── README.md                                    # This file
+│
+├─── Phase 1: Skills Normalization ─────
 ├── insert_skill_standardization_rules.sql      # Comprehensive skill aliases and variants
 ├── insert_skill_category_patterns.sql          # Skill category detection patterns
+├── insert_skill_family_mappings.sql            # Skill family classification mappings
+│
+├─── Phase 2: Keywords Normalization ───
+├── insert_keyword_standardization_rules.sql    # Keyword standardization and aliases
+├── insert_keyword_type_mappings.sql            # Keyword type and category classifications
+│
+├─── Location Standardization ───────────
 ├── insert_location_standardization_rules.sql   # Location standardization rules
-├── insert_keyword_standardization_rules.sql    # Keyword classification rules (future)
+│
 └── migrations/                                 # Version-controlled rule updates
     ├── 001_initial_skill_rules.sql
     ├── 002_add_microsoft_tools.sql
-    └── 003_update_confidence_scores.sql
+    ├── 003_update_confidence_scores.sql
+    └── 004_add_keyword_rules.sql
 ```
 
 ## Standard Process
@@ -33,11 +48,17 @@ pipeline/sql/llm_standardization/
 Run the comprehensive rule files once during initial setup:
 
 ```sql
--- Execute in order
+-- Phase 1: Skills Normalization
 @insert_skill_standardization_rules.sql
 @insert_skill_category_patterns.sql
-@insert_location_standardization_rules.sql
+@insert_skill_family_mappings.sql
+
+-- Phase 2: Keywords Normalization
 @insert_keyword_standardization_rules.sql
+@insert_keyword_type_mappings.sql
+
+-- Location Standardization
+@insert_location_standardization_rules.sql
 ```
 
 ### 2. Adding New Rules
