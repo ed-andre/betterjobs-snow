@@ -16,20 +16,8 @@
  * to populate it with type classification mappings.
  */
 
--- Create table if it doesn't exist already
--- Keyword type mapping table
-CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING (
-            MAPPING_ID STRING PRIMARY KEY,
-            KEYWORD_TEXT STRING NOT NULL,                    -- Keyword to classify
-            KEYWORD_TYPE STRING NOT NULL,                    -- industry, role_type, company_stage, etc.
-            KEYWORD_CATEGORY STRING NOT NULL,                -- specific category within type
-            CATEGORY_DESCRIPTION STRING,                     -- Human-readable description
-            CONFIDENCE_SCORE FLOAT DEFAULT 1.0,             -- Confidence in classification
-            BUSINESS_RELEVANCE STRING DEFAULT 'medium',     -- high, medium, low
-            IS_ACTIVE BOOLEAN DEFAULT TRUE,
-            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-        ) CLUSTER BY (KEYWORD_TYPE, IS_ACTIVE)
+USE DATABASE BETTERJOBS_DB;
+USE SCHEMA STAGE;
 
 -- Clear existing mappings (optional - use for clean setup)
 -- DELETE FROM BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING;
