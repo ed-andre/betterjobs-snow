@@ -567,155 +567,7 @@ ADD CONSTRAINT FK_JOB_KEYWORDS_KEYWORD_ID
 FOREIGN KEY (KEYWORD_ID) REFERENCES KEYWORDS_NORMALIZED(KEYWORD_ID);
 ```
 
-### Phase 3: Location Normalization Infrastructure
 
-#### 3.1 Create Locations Master Table
-
-```sql
-CREATE TABLE IF NOT EXISTS LOCATIONS_NORMALIZED (
-    LOCATION_ID STRING PRIMARY KEY,
-    LOCATION_NAME STRING NOT NULL,                 -- Standardized location name
-    LOCATION_NAME_CLEAN STRING NOT NULL,           -- Cleaned version for matching
-    LOCATION_NAME_ORIGINAL STRING,                 -- Most common original variant
-
-    -- Geographic Classification
-    CITY STRING,
-    STATE_PROVINCE STRING,
-    COUNTRY STRING,
-    METRO_AREA STRING,
-    REGION STRING,                                 -- Northeast, West Coast, etc.
-
-    -- Location Type
-    LOCATION_TYPE STRING,                          -- office, headquarters, remote, hybrid
-    IS_REMOTE_FRIENDLY BOOLEAN DEFAULT FALSE,      -- Supports remote work
-    IS_MAJOR_TECH_HUB BOOLEAN DEFAULT FALSE,       -- Silicon Valley, Seattle, etc.
-
-    -- Economic Data
-    COST_OF_LIVING_INDEX FLOAT,
-    AVERAGE_SALARY_ADJUSTMENT FLOAT,               -- Regional salary multiplier
-
-    -- Standardization Metadata
-    ORIGINAL_VARIANTS VARIANT,                     -- All variations found
-    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
-    FREQUENCY_COUNT INTEGER DEFAULT 0,
-    FIRST_SEEN_DATE DATE,
-    LAST_SEEN_DATE DATE,
-
-    -- Quality & Confidence
-    MANUAL_REVIEW_FLAG BOOLEAN DEFAULT FALSE,      -- Needs human review
-    APPROVED_BY_ADMIN BOOLEAN DEFAULT FALSE,       -- Admin approved
-
-    -- Audit Fields
-    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    CREATED_BY STRING DEFAULT 'system'
-) CLUSTER BY (COUNTRY, STATE_PROVINCE, CITY);
-```
-
-#### 3.2 Create Job-Locations Bridge Table
-
-```sql
-CREATE TABLE IF NOT EXISTS JOB_LOCATIONS_BRIDGE (
-    BRIDGE_ID STRING PRIMARY KEY,
-    JOB_UID STRING NOT NULL,                       -- FK to JOBS_UNIFIED
-    LOCATION_ID STRING NOT NULL,                   -- FK to LOCATIONS_NORMALIZED
-
-    -- Source Information
-    LOCATION_SOURCE STRING NOT NULL,               -- 'office_locations', 'location_standardized', 'headquarters'
-    ORIGINAL_TEXT STRING,                          -- Original text from LLM/source
-
-    -- Location Context
-    LOCATION_CONTEXT STRING,                       -- primary, secondary, remote_option
-    WORK_ARRANGEMENT STRING,                       -- on_site, hybrid, remote
-
-    -- Confidence & Quality
-    EXTRACTION_CONFIDENCE FLOAT,                   -- LLM extraction confidence
-    STANDARDIZATION_CONFIDENCE FLOAT,              -- Location matching confidence
-    OVERALL_CONFIDENCE FLOAT,                      -- Combined confidence score
-
-    -- Processing Metadata
-    PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction
-    NEEDS_REVIEW BOOLEAN DEFAULT FALSE,
-
-    -- Audit Fields
-    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    CREATED_BY STRING DEFAULT 'system'
-) CLUSTER BY (JOB_UID, LOCATION_SOURCE);
-
--- Add foreign key constraints for locations
-ALTER TABLE JOB_LOCATIONS_BRIDGE
-ADD CONSTRAINT FK_JOB_LOCATIONS_JOB_UID
-FOREIGN KEY (JOB_UID) REFERENCES JOBS_UNIFIED(JOB_UID);
-
-ALTER TABLE JOB_LOCATIONS_BRIDGE
-ADD CONSTRAINT FK_JOB_LOCATIONS_LOCATION_ID
-FOREIGN KEY (LOCATION_ID) REFERENCES LOCATIONS_NORMALIZED(LOCATION_ID);
-```
-
-#### 3.3 Location Extraction and Standardization
-
-```sql
--- Location extraction view
-CREATE OR REPLACE VIEW STAGE_LOCATIONS_RAW_EXTRACTION AS
-WITH OFFICE_LOCATIONS_EXPLODED AS (
-    -- Extract office locations from VARIANT array
-    SELECT
-        JOB_UID,
-        'office_locations' as LOCATION_SOURCE,
-        TRIM(LOCATION.VALUE::STRING) as LOCATION_NAME_RAW,
-        LOCATION.VALUE::STRING as LOCATION_NAME_ORIGINAL
-    FROM STAGE.JOBS_LLM_ENRICHED,
-    LATERAL FLATTEN(input => OFFICE_LOCATIONS) LOCATION
-    WHERE OFFICE_LOCATIONS IS NOT NULL
-      AND LOCATION.VALUE IS NOT NULL
-      AND LENGTH(TRIM(LOCATION.VALUE::STRING)) > 0
-      AND LOWER(TRIM(LOCATION.VALUE::STRING)) NOT IN ('null', 'none', 'n/a')
-),
-
-BASE_LOCATIONS AS (
-    -- Include basic location from jobs_unified
-    SELECT
-        JOB_UID,
-        'location_standardized' as LOCATION_SOURCE,
-        TRIM(LOCATION_STANDARDIZED) as LOCATION_NAME_RAW,
-        LOCATION_STANDARDIZED as LOCATION_NAME_ORIGINAL
-    FROM STAGE.JOBS_UNIFIED
-    WHERE LOCATION_STANDARDIZED IS NOT NULL
-      AND LENGTH(TRIM(LOCATION_STANDARDIZED)) > 0
-      AND LOWER(TRIM(LOCATION_STANDARDIZED)) NOT IN ('null', 'none', 'n/a', 'no location found')
-)
-
-SELECT * FROM OFFICE_LOCATIONS_EXPLODED
-UNION ALL
-SELECT * FROM BASE_LOCATIONS;
-
--- Location standardization rules
-CREATE OR REPLACE TABLE LOCATION_STANDARDIZATION_RULES (
-    RULE_ID STRING PRIMARY KEY,
-    PATTERN STRING,                                 -- Pattern to match
-    STANDARDIZED_NAME STRING,                       -- Standard form
-    CITY STRING,
-    STATE_PROVINCE STRING,
-    COUNTRY STRING,
-    LOCATION_TYPE STRING,                           -- office, remote, hybrid
-    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
-    RULE_TYPE STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern, fuzzy_match
-    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-);
-
--- Example location standardization rules
-INSERT INTO LOCATION_STANDARDIZATION_RULES VALUES
-('loc_001', 'san francisco', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
-('loc_002', 'sf', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 0.9, 'exact_match', CURRENT_TIMESTAMP),
-('loc_003', 'san francisco, ca', 'San Francisco, CA', 'San Francisco', 'California', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
-('loc_004', 'new york', 'New York, NY', 'New York', 'New York', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
-('loc_005', 'nyc', 'New York, NY', 'New York', 'New York', 'United States', 'office', 0.95, 'exact_match', CURRENT_TIMESTAMP),
-('loc_006', 'remote', 'Remote', NULL, NULL, 'Global', 'remote', 1.0, 'exact_match', CURRENT_TIMESTAMP),
-('loc_007', 'work from home', 'Remote', NULL, NULL, 'Global', 'remote', 0.9, 'exact_match', CURRENT_TIMESTAMP),
-('loc_008', 'seattle', 'Seattle, WA', 'Seattle', 'Washington', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
-('loc_009', 'austin', 'Austin, TX', 'Austin', 'Texas', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP),
-('loc_010', 'boston', 'Boston, MA', 'Boston', 'Massachusetts', 'United States', 'office', 1.0, 'exact_match', CURRENT_TIMESTAMP);
-```
 
 ### Phase 4: Data Extraction and Normalization Process
 
@@ -788,7 +640,7 @@ CREATE OR REPLACE TABLE SKILL_STANDARDIZATION_RULES (
     SKILL_CATEGORY STRING,                          -- Correct category
     SKILL_SUBCATEGORY STRING,                       -- Correct subcategory
     CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
-    RULE_TYPE STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern, fuzzy_match
+    RULE_TYPE STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern,
     CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -1385,13 +1237,301 @@ CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE (
 
 ### 🚧 Phase 3: Location Standardization Assets - **NEXT PLANNED**
 
-Phase 3 will focus on standardizing and enriching location data from the LLM enriched data, building on the successful patterns established in Phases 1 and 2.
+Phase 3 focuses on standardizing and enriching location data from the LLM enriched data, building on the successful patterns established in Phases 1 and 2. This phase will transform location VARIANT data into normalized relational structures with geographic intelligence and work arrangement context.
 
-**Next Steps:**
-- `stage_locations_normalized`: Standardize location data with geographic hierarchy
-- `stage_job_locations_bridge`: Create job-location relationships with work arrangement context
-- Implement geographic enrichment (tech hub classification, cost of living data)
-- Apply proven lookup table and two-pass matching patterns from previous phases
+#### Data Sources Available:
+- **office_locations**: VARIANT array from LLM containing office location strings (e.g., "San Francisco, CA", "New York, NY", "Remote")
+- **location_standardized**: Basic location string from jobs_unified table
+- **headquarters**: Company location data for geographic context
+
+#### 3.1 `stage_llm_locations_raw_extraction`
+**Purpose**: Extract and flatten location data from multiple VARIANT and text sources
+**Dependencies**: `stage_jobs_llm_enriched_unified`, `stage_jobs_unified`
+**Output**: Raw locations with source tracking and frequency metrics
+
+**Asset Implementation:**
+```python
+@asset(
+    deps=["stage_jobs_llm_enriched_unified", "stage_jobs_unified"],
+    description="Extract and flatten locations from multiple data sources",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"}
+)
+def stage_llm_locations_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Extract all locations from VARIANT columns and text fields into workable format.
+
+    Processes:
+    - office_locations: VARIANT array from LLM with office location strings
+    - location_standardized: Basic location from jobs_unified table
+    - headquarters: Company location data for context
+
+    Output: Raw locations with source tracking, deduplication, and frequency analysis
+    """
+```
+
+**SQL Logic:**
+```sql
+CREATE OR REPLACE VIEW BETTERJOBS_DB.STAGE.LOCATIONS_RAW_EXTRACTION AS
+WITH OFFICE_LOCATIONS_EXPLODED AS (
+    -- Extract office locations from VARIANT array
+    SELECT
+        jle.JOB_UID,
+        'office_locations' as LOCATION_SOURCE,
+        'office' as LOCATION_TYPE,
+        TRIM(LOWER(LOCATION.VALUE::STRING)) as LOCATION_NAME_RAW,
+        LOCATION.VALUE::STRING as LOCATION_NAME_ORIGINAL
+    FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
+    LATERAL FLATTEN(input => jle.OFFICE_LOCATIONS) LOCATION
+    WHERE jle.OFFICE_LOCATIONS IS NOT NULL
+      AND LOCATION.VALUE IS NOT NULL
+      AND LENGTH(TRIM(LOCATION.VALUE::STRING)) > 1
+      AND LOWER(TRIM(LOCATION.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '', 'unknown')
+),
+
+BASE_LOCATIONS AS (
+    -- Include basic location from jobs_unified
+    SELECT
+        ju.JOB_UID,
+        'location_standardized' as LOCATION_SOURCE,
+        'standard' as LOCATION_TYPE,
+        TRIM(LOWER(ju.LOCATION_STANDARDIZED)) as LOCATION_NAME_RAW,
+        ju.LOCATION_STANDARDIZED as LOCATION_NAME_ORIGINAL
+    FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+    WHERE ju.LOCATION_STANDARDIZED IS NOT NULL
+      AND LENGTH(TRIM(ju.LOCATION_STANDARDIZED)) > 1
+      AND LOWER(TRIM(ju.LOCATION_STANDARDIZED)) NOT IN ('null', 'none', 'n/a', '', 'no location found', 'unknown')
+),
+
+HEADQUARTERS_LOCATIONS AS (
+    -- Include company headquarters for geographic context
+    SELECT
+        ju.JOB_UID,
+        'headquarters' as LOCATION_SOURCE,
+        'headquarters' as LOCATION_TYPE,
+        TRIM(LOWER(cu.HEADQUARTERS)) as LOCATION_NAME_RAW,
+        cu.HEADQUARTERS as LOCATION_NAME_ORIGINAL
+    FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+    JOIN BETTERJOBS_DB.STAGE.COMPANIES_UNIFIED cu ON ju.COMPANY_ID = cu.COMPANY_ID
+    WHERE cu.HEADQUARTERS IS NOT NULL
+      AND LENGTH(TRIM(cu.HEADQUARTERS)) > 1
+      AND LOWER(TRIM(cu.HEADQUARTERS)) NOT IN ('null', 'none', 'n/a', '', 'unknown')
+)
+
+SELECT * FROM OFFICE_LOCATIONS_EXPLODED
+UNION ALL
+SELECT * FROM BASE_LOCATIONS
+UNION ALL
+SELECT * FROM HEADQUARTERS_LOCATIONS
+```
+
+#### 3.2 `stage_location_standardization_rules`
+**Purpose**: Manage location standardization rules and geographic mappings
+**Dependencies**: None (reference data)
+**Output**: Location standardization rules table with geographic hierarchy
+
+**Features:**
+- **Geographic Standardization**: Common abbreviations and variations (SF → San Francisco, NYC → New York)
+- **Remote Work Detection**: Patterns for remote work indicators (Remote, Work from Home, Distributed)
+- **Tech Hub Classification**: Major technology centers and startup hubs included in rules
+- **Geographic Hierarchy**: City, State/Province, Country mapping
+- **Work Arrangement Classification**: Office, Remote, Hybrid location types
+
+**Table Structure (Already Exists):**
+```sql
+-- Table already exists in STAGE schema - matches existing definition
+CREATE TABLE BETTERJOBS_DB.STAGE.LOCATION_STANDARDIZATION_RULES (
+    RULE_ID VARCHAR(16777216) NOT NULL,
+    PATTERN VARCHAR(16777216),                      -- Pattern to match (case-insensitive)
+    STANDARDIZED_NAME VARCHAR(16777216),            -- Standard form
+    CITY VARCHAR(16777216),
+    STATE_PROVINCE VARCHAR(16777216),
+    COUNTRY VARCHAR(16777216),
+    LOCATION_TYPE VARCHAR(16777216),                -- office, remote, hybrid
+    CONFIDENCE_SCORE FLOAT DEFAULT 1,
+    RULE_TYPE VARCHAR(16777216) DEFAULT 'exact_match',
+    CREATED_TIMESTAMP TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    PRIMARY KEY (RULE_ID)
+);
+```
+
+**SQL Configuration File:** `insert_location_standardization_rules.sql` ✅ **ALREADY EXISTS**
+- **500+ comprehensive rules** covering major US cities, international locations, and remote work patterns
+- **Tech hub coverage** for Silicon Valley, Seattle, Austin, Boston, NYC, and other major centers
+- **Remote work patterns** including "remote", "work from home", "wfh", "fully remote", "hybrid"
+- **Geographic hierarchy** with proper city, state, country mapping
+- **International coverage** for Canada, UK, Germany, Netherlands, France, Australia
+
+#### 3.3 `stage_locations_normalized`
+**Purpose**: Apply standardization rules and create locations master table with geographic intelligence
+**Dependencies**: `stage_llm_locations_raw_extraction`, `stage_location_standardization_rules`
+**Output**: Normalized locations with geographic hierarchy and market intelligence
+
+**Table Structure (Already Exists):**
+```sql
+-- Table already exists in STAGE schema - matches existing definition
+CREATE TABLE BETTERJOBS_DB.STAGE.LOCATIONS_NORMALIZED cluster by (COUNTRY, STATE_PROVINCE, CITY)(
+    LOCATION_ID VARCHAR(16777216) NOT NULL,
+    LOCATION_NAME VARCHAR(16777216) NOT NULL,       -- Standardized location name
+    LOCATION_NAME_CLEAN VARCHAR(16777216) NOT NULL, -- Cleaned version for matching
+    LOCATION_NAME_ORIGINAL VARCHAR(16777216),       -- Most common original variant
+
+    -- Geographic Classification
+    CITY VARCHAR(16777216),
+    STATE_PROVINCE VARCHAR(16777216),
+    COUNTRY VARCHAR(16777216),
+    METRO_AREA VARCHAR(16777216),
+    REGION VARCHAR(16777216),
+
+    -- Location Type and Intelligence
+    LOCATION_TYPE VARCHAR(16777216),                -- office, remote, hybrid
+    IS_REMOTE_FRIENDLY BOOLEAN DEFAULT FALSE,       -- Supports remote work
+    IS_MAJOR_TECH_HUB BOOLEAN DEFAULT FALSE,        -- Major technology center
+
+    -- Economic Data (for future enhancement)
+    COST_OF_LIVING_INDEX FLOAT,
+    AVERAGE_SALARY_ADJUSTMENT FLOAT,                -- Regional salary multiplier
+
+    -- Standardization Metadata
+    ORIGINAL_VARIANTS VARIANT,                      -- All variations found
+    CONFIDENCE_SCORE FLOAT DEFAULT 1,
+    FREQUENCY_COUNT NUMBER(38,0) DEFAULT 0,
+    FIRST_SEEN_DATE DATE,
+    LAST_SEEN_DATE DATE,
+
+    -- Quality & Confidence
+    MANUAL_REVIEW_FLAG BOOLEAN DEFAULT FALSE,       -- Needs human review
+    APPROVED_BY_ADMIN BOOLEAN DEFAULT FALSE,        -- Admin approved
+
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_BY VARCHAR(16777216) DEFAULT 'system',
+    PRIMARY KEY (LOCATION_ID)
+);
+```
+
+**Processing Features:**
+- Apply proven two-pass matching logic from previous phases
+- Geographic hierarchy enrichment with metro area and region classification
+- Tech hub detection for major technology centers
+- Remote work pattern recognition and classification
+- **Facility type extraction and standardization (Plant, Office, Campus, etc.)**
+- Confidence scoring combining extraction and standardization confidence
+- Frequency analysis for trending locations
+
+#### 3.4 `stage_job_locations_bridge`
+**Purpose**: Create job-location relationships with work arrangement context tracking
+**Dependencies**: `stage_locations_normalized`, `stage_jobs_unified`
+**Output**: Job-location bridge with context tracking and confidence scoring
+
+**Bridge Table Structure (Already Exists):**
+```sql
+-- Table already exists in STAGE schema - matches existing definition
+CREATE TABLE BETTERJOBS_DB.STAGE.JOB_LOCATIONS_BRIDGE cluster by (JOB_UID, LOCATION_SOURCE)(
+    BRIDGE_ID VARCHAR(16777216) NOT NULL,
+    JOB_UID VARCHAR(16777216) NOT NULL,             -- FK to JOBS_UNIFIED
+    LOCATION_ID VARCHAR(16777216) NOT NULL,         -- FK to LOCATIONS_NORMALIZED
+
+    -- Source Information
+    LOCATION_SOURCE VARCHAR(16777216) NOT NULL,     -- 'office_locations', 'location_standardized', 'headquarters'
+    ORIGINAL_TEXT VARCHAR(16777216),                -- Original text from LLM/source
+
+    -- Work Arrangement Context
+    LOCATION_CONTEXT VARCHAR(16777216),             -- primary, secondary, remote_option
+    WORK_ARRANGEMENT VARCHAR(16777216),             -- on_site, hybrid, remote
+    FACILITY_TYPE VARCHAR(16777216),                -- plant, office, campus, warehouse, lab, remote
+
+    -- Confidence & Quality
+    EXTRACTION_CONFIDENCE FLOAT,                    -- LLM extraction confidence
+    STANDARDIZATION_CONFIDENCE FLOAT,               -- Location matching confidence
+    OVERALL_CONFIDENCE FLOAT,                       -- Combined confidence score
+
+    -- Processing Metadata
+    PROCESSING_METHOD VARCHAR(16777216) DEFAULT 'llm_auto',  -- llm_auto, manual_override, admin_correction
+    NEEDS_REVIEW BOOLEAN DEFAULT FALSE,
+
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ(9) DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_BY VARCHAR(16777216) DEFAULT 'system',
+    PRIMARY KEY (BRIDGE_ID),
+    CONSTRAINT FK_JOB_LOCATIONS_JOB_UID FOREIGN KEY (JOB_UID) REFERENCES BETTERJOBS_DB.STAGE.JOBS_UNIFIED(JOB_UID),
+    CONSTRAINT FK_JOB_LOCATIONS_LOCATION_ID FOREIGN KEY (LOCATION_ID) REFERENCES BETTERJOBS_DB.STAGE.LOCATIONS_NORMALIZED(LOCATION_ID)
+);
+```
+
+#### Implementation Architecture:
+
+The Phase 3 implementation leverages existing infrastructure and follows the proven patterns from Phases 1 and 2:
+
+**Existing SQL Configuration Files:**
+1. **`insert_location_standardization_rules.sql`** ✅ **ALREADY EXISTS**
+   - **500+ comprehensive rules** covering all planned functionality
+   - US major cities and common abbreviations (SF, NYC, LA, etc.)
+   - International city standardization (Canada, UK, Germany, Australia, etc.)
+   - Remote work pattern detection (Remote, WFH, Distributed, Hybrid, etc.)
+   - State abbreviation mapping (CA → California, NY → New York)
+   - Common location variations and misspellings
+
+**Processing Logic (Following Phase 1-2 Patterns):**
+- **Two-Pass Matching**: Standardized rules lookup + direct pattern matching
+- **Confidence Scoring**: Rule-based confidence with manual review flagging
+- **Tech Hub Detection**: Implemented via location standardization rules
+- **Geographic Enrichment**: City, state, country hierarchy from rules data
+
+#### Sample Data Patterns Identified:
+
+Based on the jobs_llm_enriched_sample.csv analysis, the following location patterns require handling:
+
+**OFFICE_LOCATIONS Patterns:**
+- **Empty arrays**: `[]` (majority of records - ~75% of sample)
+- **Standard format**: `["Rockville, MD"]`, `["Glendale, AZ"]` (City, State)
+- **Facility context**: `["Decatur, IL Plant"]` - requires facility type extraction
+
+**Integration with Work Arrangement Data:**
+- **WORK_TYPE**: On-site, Hybrid, Flexible (matches existing plan)
+- **REMOTE_FLEXIBILITY**: Specific remote work policies (e.g., "Not to exceed 1-day WFH")
+- **TRAVEL_REQUIREMENTS**: Travel percentage and requirements (e.g., "Up to 20% domestically")
+
+**Enhanced Processing Logic:**
+```sql
+-- Facility type extraction pattern in location processing
+CASE
+    WHEN CONTAINS(UPPER(LOCATION_NAME_ORIGINAL), 'PLANT') THEN 'plant'
+    WHEN CONTAINS(UPPER(LOCATION_NAME_ORIGINAL), 'OFFICE') THEN 'office'
+    WHEN CONTAINS(UPPER(LOCATION_NAME_ORIGINAL), 'CAMPUS') THEN 'campus'
+    WHEN CONTAINS(UPPER(LOCATION_NAME_ORIGINAL), 'WAREHOUSE') THEN 'warehouse'
+    WHEN CONTAINS(UPPER(LOCATION_NAME_ORIGINAL), 'LAB')
+         OR CONTAINS(UPPER(LOCATION_NAME_ORIGINAL), 'LABORATORY') THEN 'lab'
+    WHEN CONTAINS(UPPER(LOCATION_NAME_ORIGINAL), 'REMOTE') THEN 'remote'
+    ELSE 'office'  -- default assumption
+END as FACILITY_TYPE
+```
+
+#### Expected Production Metrics:
+- **Locations Normalized**: ~1,500-2,000 unique locations
+- **Job-Location Relationships**: ~15,000-25,000 total relationships
+- **Coverage**: ~6,500+ jobs with normalized location data (≥95% coverage)
+- **Empty Location Handling**: Proper handling of ~75% empty OFFICE_LOCATIONS arrays
+- **Facility Type Classification**: ~15-20% of locations with facility type context
+- **Remote Work Detection**: ~20-30% of relationships flagged as remote-eligible
+- **Tech Hub Classification**: ~40-50% of locations in major tech centers
+- **High Confidence Relationships**: >85%
+- **Geographic Hierarchy Completion**: >90% with complete city/state/country data
+
+#### Technical Architecture Decisions:
+- **Existing Infrastructure**: Leverage established table schemas and standardization rules
+- **Two-Pass Matching**: Apply proven Phase 1-2 pattern for comprehensive rule coverage
+- **Geographic Enrichment**: Tech hub classification via standardization rules and post-processing
+- **Work Arrangement Detection**: Rule-based remote/hybrid/office classification
+- **Performance Optimization**: Follow existing clustering strategy (JOB_UID, LOCATION_SOURCE)
+- **Error Handling**: Apply established patterns with comprehensive logging and retry logic
+
+#### Schema Compatibility:
+- **Existing Tables**: All Phase 3 tables already exist with proper schemas and constraints
+- **Foreign Key Relationships**: Established between JOB_LOCATIONS_BRIDGE and master tables
+- **Clustering Strategy**: Optimized for analytics queries with proper clustering keys
+- **Data Types**: Aligned with existing VARCHAR(16777216) and FLOAT standards
 
 ### 🚧 Phase 4: Data Quality and Validation Assets - **PLANNED**
 
