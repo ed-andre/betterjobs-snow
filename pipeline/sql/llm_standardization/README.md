@@ -31,8 +31,10 @@ pipeline/sql/llm_standardization/
 ├── insert_keyword_standardization_rules.sql    # Keyword standardization and aliases
 ├── insert_keyword_type_mappings.sql            # Keyword type and category classifications
 │
-├─── Location Standardization ───────────
+├─── Phase 3: Location Standardization ───────────
 ├── insert_location_standardization_rules.sql   # Location standardization rules
+├── insert_us_states_mapping.sql               # US states for automatic country inference
+├── insert_countries_mapping.sql               # World countries for international location parsing
 │
 └── migrations/                                 # Version-controlled rule updates
     ├── 001_initial_skill_rules.sql
@@ -57,8 +59,10 @@ Run the comprehensive rule files once during initial setup:
 @insert_keyword_standardization_rules.sql
 @insert_keyword_type_mappings.sql
 
--- Location Standardization
+-- Phase 3: Location Standardization
 @insert_location_standardization_rules.sql
+@insert_us_states_mapping.sql
+@insert_countries_mapping.sql
 ```
 
 ### 2. Adding New Rules
@@ -179,9 +183,76 @@ GROUP BY PATTERN
 HAVING COUNT(*) > 1;
 ```
 
+## US States Country Inference
+
+The `insert_us_states_mapping.sql` file creates a comprehensive lookup table for automatically inferring country as "United States" when state information is present:
+
+### Problem Solved
+Many locations like "Sunnyvale, CA" or "Bozeman, MT" don't have explicit rules in the location standardization table, resulting in null country values despite having clear US state indicators.
+
+### Solution
+- **Comprehensive Mapping**: All 50 US states + territories (DC, PR, VI, GU, AS, MP)
+- **Dual Format Support**: Both full names ("California") and abbreviations ("CA")
+- **Automatic Inference**: During location normalization, if state matches any US state, country is set to "United States"
+- **Efficient Lookup**: Uses `US_STATES_LOOKUP` view that combines both formats for fast matching
+
+### Usage in Location Normalization
+```sql
+-- Enhanced country inference logic
+COALESCE(
+    lsr.COUNTRY,                    -- First try explicit rules
+    CASE
+        WHEN usl.COUNTRY IS NOT NULL THEN usl.COUNTRY  -- Then US states lookup
+        ELSE NULL
+    END
+) as country
+```
+
+## International Location Parsing
+
+The `insert_countries_mapping.sql` file enables intelligent parsing of international locations like "gurugram, india" and "singapore, singapore":
+
+### Problem Solved
+Previously, international locations like:
+- `"gurugram, india"` → CITY: "Gurugram", STATE_PROVINCE: "India", COUNTRY: null
+- `"singapore, singapore"` → CITY: "Singapore", STATE_PROVINCE: "Singapore", COUNTRY: null
+
+Were incorrectly parsed with countries ending up in the STATE_PROVINCE field.
+
+### Enhanced Solution
+- **Comprehensive Countries Database**: 100+ countries with official names, common variations, and ISO codes
+- **Tech Hub Classification**: Major technology centers marked for business intelligence
+- **Smart Parsing Logic**: Priority-based parsing (US states > Countries > Fallback)
+- **Combined Lookup View**: `LOCATION_PARSING_LOOKUP` includes both US states and countries
+
+### New Parsing Logic
+```sql
+-- Priority-based location parsing
+CASE
+    -- 1. Check if second part is a US state
+    WHEN lpl_state.LOCATION_TYPE = 'US_STATE' THEN
+        CITY: first_part, STATE: second_part, COUNTRY: "United States"
+
+    -- 2. Check if second part is a country
+    WHEN lpl_country.LOCATION_TYPE = 'COUNTRY' THEN
+        CITY: first_part, STATE: null, COUNTRY: second_part
+
+    -- 3. Fallback to existing logic
+    ELSE original_parsing_logic
+END
+```
+
+### Expected Results After Implementation
+- `"gurugram, india"` → CITY: "Gurugram", STATE_PROVINCE: null, COUNTRY: "India"
+- `"singapore, singapore"` → CITY: "Singapore", STATE_PROVINCE: null, COUNTRY: "Singapore"
+- `"toronto, canada"` → CITY: "Toronto", STATE_PROVINCE: null, COUNTRY: "Canada"
+- `"sunnyvale, ca"` → CITY: "Sunnyvale", STATE_PROVINCE: "CA", COUNTRY: "United States" (unchanged)
+
 This approach provides:
 - 🎯 **Clean separation** between static data and application logic
 - 🔄 **Easy maintenance** of rules without code changes
 - 📊 **Database-driven** configuration that can be queried and analyzed
 - 🚀 **Scalable** approach that supports growing rule sets
 - 🔒 **Version controlled** rule changes with audit trails
+- 🇺🇸 **Automatic country inference** for US locations based on state data
+- 🌍 **International location parsing** for worldwide coverage with smart city/country detection

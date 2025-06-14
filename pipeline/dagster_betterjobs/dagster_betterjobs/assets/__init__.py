@@ -48,6 +48,15 @@ from dagster_betterjobs.assets.llm_standardization.keywords_normalization import
     stage_job_keywords_bridge
 )
 
+from dagster_betterjobs.assets.llm_standardization.locations_normalization import (
+    stage_llm_locations_raw_extraction,
+    stage_location_standardization_rules,
+    stage_countries_mapping,
+    stage_us_states_mapping,
+    stage_locations_normalized,
+    stage_job_locations_bridge
+)
+
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
 __all__ = [
@@ -88,5 +97,12 @@ __all__ = [
     "stage_keyword_type_mapping",
     "stage_keywords_normalized",
     "stage_job_keywords_bridge",
+    # LLM data standardization assets - Phase 3: Locations
+    "stage_llm_locations_raw_extraction",
+    "stage_location_standardization_rules",
+    "stage_countries_mapping",
+    "stage_us_states_mapping",
+    "stage_locations_normalized",
+    "stage_job_locations_bridge",
     "snowflake_master_company_urls"
 ]
