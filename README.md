@@ -67,7 +67,7 @@ The job search reports show:
 
 The following diagrams show the current structure of our evolving Dagster pipeline, implementing a medallion architecture with parallel processing and AI-powered enrichment. **This is an active work in progress** with additional assets and a complete Gold layer coming soon.
 
-#### RAW (Bronze) Layer Pipeline ✅ **COMPLETED**
+#### RAW (Bronze) Layer  ✅ **PRODUCTION READY**
 ![RAW Layer Pipeline](media/1-raw_dagsterpipeline.png)
 
 The RAW layer handles data ingestion and initial discovery:
@@ -76,7 +76,7 @@ The RAW layer handles data ingestion and initial discovery:
 - **Company Profile Extraction**: Automated company information gathering
 - **Sensor-Based Processing**: Adhoc company processing with automatic detection
 
-#### STAGE (Silver) Layer Pipeline 🚧 **IN PROGRESS**
+#### STAGE (Silver) Layer  🚧 **IN PROGRESS**
 ![STAGE Layer Pipeline](media/2-stage_dagsterpipeline.png)
 
 The STAGE layer provides comprehensive data transformation and AI enrichment:
@@ -86,27 +86,37 @@ The STAGE layer provides comprehensive data transformation and AI enrichment:
 - **Quality Validation**: Comprehensive data quality scoring and language detection
 - **Enhanced Job Search**: Modern HTML report generation with interactive filtering capabilities
 
-##### LLM Data Standardization Pipeline 🔄 **ACTIVE DEVELOPMENT**
+##### LLM Data Standardization sub-layer ✅ **PRODUCTION READY**
 ![STAGE Standardization Pipeline](media/3-stage_standardization_dagsterpipeline.png)
 
 The LLM Standardization group transforms AI-extracted VARIANT/JSON data into normalized relational structures:
 - **Skills Normalization** ✅ **COMPLETED**: 8,302 skills standardized with 149,477 job-skill relationships and family classification (as of June 11, 2025)
 - **Keywords Standardization** ✅ **COMPLETED**: 2,847 keywords normalized with industry and role type classifications (as of June 11, 2025)
-- **Location Standardization** 🚧 **COMPLETED**: Geographic hierarchy and tech hub classification with work arrangement context
-- **Data Quality Validation** 📋 **PLANNED**: Comprehensive quality monitoring, anomaly detection, and automated alerting
+- **Location Standardization** ✅ **COMPLETED**: Geographic hierarchy and tech hub classification with work arrangement context
+- **Data Quality Validation** ✅ **COMPLETED**: Comprehensive quality monitoring, anomaly detection, and automated alerting
 - **Analytics Enablement** 📋 **PLANNED**: Pre-aggregated views and performance optimization for downstream analytics
 
-**Current Progress:**
-- **Phase 1 & 2 Complete**: Skills and keywords fully normalized with 97.6% job coverage
-- **Confidence Scoring**: Advanced confidence tracking with manual review flagging for low-confidence items
-- **Bridge Tables**: Many-to-many relationships with source tracking and context classification
-- **Phase 3**: Location standardization with geographic enrichment and remote work indicators
+##### Data Quality & Governance sub-layer ✅ **COMPLETED**
+![Data Quality Governance sub-layer](media/4-stage_data_quality_dagsterpipeline.png)
 
-**Upcoming Phases:**
-- **Phase 4**: Automated data quality monitoring with trend analysis and anomaly detection
+The Data Quality Governance group provides comprehensive monitoring and validation capabilities:
+- **Quality Validation** ✅ **COMPLETED**: Cross-asset validation with 6 validation categories (referential integrity, completeness, consistency, accuracy, freshness, business logic)
+- **Operational Metrics** ✅ **COMPLETED**: Real-time KPI tracking with GREEN/YELLOW/RED status indicators and trend analysis
+- **Coverage Analysis** ✅ **COMPLETED**: Multi-dimensional coverage analysis by company size, salary range, and job characteristics
+- **Confidence Monitoring** ✅ **COMPLETED**: Quality distribution monitoring with automated review queue prioritization
+- **Manual Review Management** ✅ **COMPLETED**: Intelligent review queue with priority scoring and workflow automation
+
+**Production Achievements:**
+- **Phase 1-3 Complete**: Skills, keywords, and locations fully normalized with 97.8% job coverage
+- **Phase 4 Complete**: Comprehensive data governance framework with automated quality monitoring
+- **Quality Standards**: Need to achieve >90% quality score across all validation categories
+- **Bridge Tables**: Many-to-many relationships with source tracking and context classification
+- **Geographic Intelligence**: Enhanced location parsing with US states and international support
+
+**Next Phase:**
 - **Phase 5**: Analytics-optimized views and materialized tables for Gold layer integration
 
-#### GOLD (Presentation) Layer Pipeline 🔮 **COMING SOON**
+#### GOLD (Presentation) Layer 🔮 **COMING SOON**
 *Diagram will be added as assets are developed*
 
 The planned GOLD layer will provide business-ready analytics and reporting:
