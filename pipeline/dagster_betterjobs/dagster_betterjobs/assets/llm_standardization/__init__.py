@@ -7,6 +7,7 @@ from the STAGE layer into proper relational structures for analytics.
 Phase 1: Skills Normalization Assets
 Phase 2: Keywords Normalization Assets
 Phase 3: Location Standardization Assets
+Phase 4: Data Quality and Validation Assets
 """
 
 from .skills_normalization import (
@@ -33,6 +34,14 @@ from .locations_normalization import (
     stage_job_locations_bridge
 )
 
+from .data_quality import (
+    stage_llm_data_quality_validation,
+    stage_llm_quality_metrics,
+    stage_llm_coverage_analysis,
+    stage_llm_confidence_monitoring,
+    stage_llm_manual_review_queue
+)
+
 __all__ = [
     # Phase 1: Skills Normalization Assets
     "stage_llm_skills_raw_extraction",
@@ -53,5 +62,12 @@ __all__ = [
     "stage_countries_mapping",
     "stage_us_states_mapping",
     "stage_locations_normalized",
-    "stage_job_locations_bridge"
+    "stage_job_locations_bridge",
+
+    # Phase 4: Data Quality and Validation Assets
+    "stage_llm_data_quality_validation",
+    "stage_llm_quality_metrics",
+    "stage_llm_coverage_analysis",
+    "stage_llm_confidence_monitoring",
+    "stage_llm_manual_review_queue"
 ]
