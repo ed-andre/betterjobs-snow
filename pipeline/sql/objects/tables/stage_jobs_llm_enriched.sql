@@ -1,4 +1,4 @@
-create or replace TABLE BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED cluster by (llm_processing_timestamp)(
+create if not exists TABLE BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED cluster by (llm_processing_timestamp)(
 	JOB_UID VARCHAR(16777216) NOT NULL,
 	SALARY_MIN NUMBER(38,0),
 	SALARY_MAX NUMBER(38,0),

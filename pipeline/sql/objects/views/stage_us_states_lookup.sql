@@ -1,4 +1,4 @@
-create or replace view BETTERJOBS_DB.STAGE.US_STATES_LOOKUP(
+create if not exists view BETTERJOBS_DB.STAGE.US_STATES_LOOKUP(
 	STATE_NAME,
 	COUNTRY
 ) as

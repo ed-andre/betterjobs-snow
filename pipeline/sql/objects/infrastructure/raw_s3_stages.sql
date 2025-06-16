@@ -1,7 +1,7 @@
 /*********** STAGES ***********/
 
 -- COMPANY_URLS_STAGE - External stage for S3 company URLs CSV files
-create or replace STAGE BETTERJOBS_DB.RAW.COMPANY_URLS_STAGE
+create if not exists STAGE BETTERJOBS_DB.RAW.COMPANY_URLS_STAGE
     STORAGE_INTEGRATION = betterjobs_s3_integration
     URL = 's3://betterjobs-dagster/company_urls/'
     FILE_FORMAT = (
@@ -17,7 +17,7 @@ create or replace STAGE BETTERJOBS_DB.RAW.COMPANY_URLS_STAGE
     );
 
 -- RAW_COMPANY_PROFILES_STAGE - External stage for S3 company profiles CSV files
-create or replace STAGE BETTERJOBS_DB.RAW.RAW_COMPANY_PROFILES_STAGE
+create if not exists STAGE BETTERJOBS_DB.RAW.RAW_COMPANY_PROFILES_STAGE
     STORAGE_INTEGRATION = betterjobs_s3_integration
     URL = 's3://betterjobs-dagster/company_profiles/'
     FILE_FORMAT = (

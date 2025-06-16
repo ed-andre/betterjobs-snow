@@ -1,4 +1,4 @@
-create or replace view BETTERJOBS_DB.STAGE.JOBS_ENGLISH(
+create if not exists view BETTERJOBS_DB.STAGE.JOBS_ENGLISH(
 	JOB_ID,
 	COMPANY_ID,
 	PLATFORM,

@@ -1,4 +1,4 @@
-create or replace view BETTERJOBS_DB.STAGE.JOBS_RECENT(
+create if not exists view BETTERJOBS_DB.STAGE.JOBS_RECENT(
 	JOB_ID,
 	COMPANY_ID,
 	PLATFORM,

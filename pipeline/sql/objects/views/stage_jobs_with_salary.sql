@@ -264,7 +264,7 @@ View Definition
 52
 53
 54
-create or replace view BETTERJOBS_DB.STAGE.JOBS_WITH_SALARY(
+create if not exists view BETTERJOBS_DB.STAGE.JOBS_WITH_SALARY(
 	JOB_ID,
 	COMPANY_ID,
 	PLATFORM,
