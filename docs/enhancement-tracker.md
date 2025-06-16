@@ -4375,27 +4375,34 @@ def stage_jobs_bamboohr(context: AssetExecutionContext, snowflake: SnowflakeReso
    - Use naming convention: `{schema}_{object_name}.sql`
 
 **Phase 2: Utility Function Implementation (Day 1)**
-1. **Core Functions**:
-   - Implement `ensure_object_exists()` utility function
-   - Implement `object_exists()` check using SELECT query
-   - Implement `extract_object_name_from_file()` naming converter
-   - Add error handling with helpful infrastructure asset suggestions
+1. **Core Functions**: ✅ **COMPLETED**
+   - ✅ Implement `ensure_object_exists()` utility function
+   - ✅ Implement `object_exists()` check using SELECT query
+   - ✅ Implement `extract_object_name_from_file()` naming converter
+   - ✅ Add error handling with helpful infrastructure asset suggestions
+   - ✅ Created `pipeline/dagster_betterjobs/dagster_betterjobs/utils/schema_utils.py`
 
-2. **Testing & Validation**:
-   - Test object existence detection across different object types
-   - Validate SQL file execution and error handling
-   - Test file-to-object name mapping logic
+2. **Testing & Validation**: ✅ **PARTIALLY COMPLETED**
+   - ✅ Create quick test cases for utility functions
+   - ✅ Test file-to-object name mapping logic with comprehensive test cases
+   - ✅ Validate SQL file parsing and statement extraction
+   - ✅ Test error handling for invalid naming conventions
+   - ✅ Test environment configuration support (custom database names)
+   - ✅ All 5 test cases passing with 100% success rate
+   - 🔄 Full integration testing scheduled after asset migration
 
 **Phase 3: Asset Migration (Day 1)**
-1. **Update Existing Assets**:
+1. **Infrastructure Layer Updates**:
+   - Update infrastructure setup assets to use object files
+   - Maintain orchestrated setup for full environment deployment
+   - Add validation for object file completeness
+
+2. **Update Existing Assets**:
    - Replace CREATE statements with `ensure_object_exists()` calls
    - Remove duplicate object creation logic
    - Update asset dependencies to use object files
 
-2. **Infrastructure Layer Updates**:
-   - Update infrastructure setup assets to use object files
-   - Maintain orchestrated setup for full environment deployment
-   - Add validation for object file completeness
+
 
 **Phase 4: Testing & Integration (Day 2)**
 1. **End-to-End Testing**:
