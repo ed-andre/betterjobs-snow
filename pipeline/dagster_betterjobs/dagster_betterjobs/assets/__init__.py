@@ -71,9 +71,9 @@ from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_ma
 # Infrastructure Setup Assets
 from dagster_betterjobs.assets.snowflake_setup import (
     database_schema_setup,
-    raw_schema_setup,
-    stage_schema_setup,
-    analytics_schema_setup,
+    infrastructure_setup,
+    tables_setup,
+    views_setup,
     static_data_population,
     setup_validation
 )
@@ -132,9 +132,9 @@ __all__ = [
     "snowflake_master_company_urls",
     # Infrastructure setup assets
     "database_schema_setup",
-    "raw_schema_setup",
-    "stage_schema_setup",
-    "analytics_schema_setup",
+    "infrastructure_setup",
+    "tables_setup",
+    "views_setup",
     "static_data_population",
     "setup_validation"
 ]

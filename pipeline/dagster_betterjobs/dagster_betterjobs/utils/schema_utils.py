@@ -77,7 +77,7 @@ def ensure_object_exists(sql_file_path: str, snowflake: SnowflakeResource, conte
 
         context.log.info(f"✅ HEALED: Successfully created {object_name}")
     else:
-        context.log.debug(f"Object already exists: {object_name}")
+        context.log.info(f"🔍 SKIPPED: Object {object_name} already exists")
 
     return object_name
 
