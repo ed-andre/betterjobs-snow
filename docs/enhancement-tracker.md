@@ -4243,8 +4243,8 @@ def database_schema_setup(context: AssetExecutionContext, snowflake: SnowflakeRe
 **Status:** 📋 **Planned**
 **Priority:** High
 **Component:** Infrastructure & Database Management
-**Date Planned:** 2025-01-28
-**Estimated Effort:** 3-4 days
+**Date Planned:** 2025-06-15
+**Estimated Effort:** 1-2 days
 **Business Impact:** High - Improves development workflow, eliminates schema conflicts, enables true single source of truth
 
 ### Problem Statement
@@ -4364,17 +4364,17 @@ def stage_jobs_bamboohr(context: AssetExecutionContext, snowflake: SnowflakeReso
 
 ### Implementation Plan
 
-**Phase 1: File Structure Creation (Day 1)**
+**Phase 1: File Structure Creation (Day 1)** ✅ **COMPLETED**
 1. **Create Object Directory Structure**:
    - Set up `pipeline/sql/objects/` directory structure
    - Create subdirectories for tables, views, infrastructure
 
-2. **Extract Existing Objects**:
+2. **Extract Existing Objects**: ✅ **COMPLETED**
    - Identify all CREATE statements across current assets
    - Extract each table/view definition into individual SQL files
    - Use naming convention: `{schema}_{object_name}.sql`
 
-**Phase 2: Utility Function Implementation (Day 2)**
+**Phase 2: Utility Function Implementation (Day 1)**
 1. **Core Functions**:
    - Implement `ensure_object_exists()` utility function
    - Implement `object_exists()` check using SELECT query
@@ -4386,7 +4386,7 @@ def stage_jobs_bamboohr(context: AssetExecutionContext, snowflake: SnowflakeReso
    - Validate SQL file execution and error handling
    - Test file-to-object name mapping logic
 
-**Phase 3: Asset Migration (Day 3)**
+**Phase 3: Asset Migration (Day 1)**
 1. **Update Existing Assets**:
    - Replace CREATE statements with `ensure_object_exists()` calls
    - Remove duplicate object creation logic
@@ -4397,7 +4397,7 @@ def stage_jobs_bamboohr(context: AssetExecutionContext, snowflake: SnowflakeReso
    - Maintain orchestrated setup for full environment deployment
    - Add validation for object file completeness
 
-**Phase 4: Testing & Integration (Day 4)**
+**Phase 4: Testing & Integration (Day 2)**
 1. **End-to-End Testing**:
    - Test individual asset execution without infrastructure setup
    - Test full infrastructure deployment using object files
@@ -4433,6 +4433,208 @@ def stage_jobs_bamboohr(context: AssetExecutionContext, snowflake: SnowflakeReso
 - **File Naming**: Consistent convention for mapping files to objects
 - **Dependency Resolution**: On-demand creation handles dependencies naturally
 - **Migration Strategy**: Gradual migration without breaking existing functionality
+
+---
+
+## ENHANCEMENT-099: SQL-as-Files for Database Platform Migration
+
+**Status:** 📋 **Planned**
+**Priority:** Medium
+**Component:** Database Migration & Code Organization
+**Date Planned:** 2025-06-30 (Post-Snowflake completion)
+**Estimated Effort:** 2-3 days
+**Business Impact:** High - Critical for smooth Snowflake → BigQuery migration
+
+### Problem Statement
+With upcoming migration from Snowflake to BigQuery, complex SQL transformations embedded within assets will be difficult to convert, test, and maintain across different database platforms. Current inline SQL approach makes it challenging to:
+- Track platform-specific syntax differences
+- Test SQL logic independently of Dagster assets
+- Maintain parallel versions during migration
+- Review and optimize complex transformations
+
+### Description
+Extend the schema-as-code approach (ENHANCEMENT-020) to include complex SQL transformations and platform-specific queries in external files. Implement a hybrid approach that separates reusable/complex SQL logic into files while keeping simple operations inline, enabling smooth database platform migration.
+
+### Business Justification
+- **Migration Enablement**: Essential for cost-effective move from Snowflake to BigQuery
+- **Platform Flexibility**: Ability to maintain parallel database implementations
+- **Code Maintainability**: Complex SQL transformations easier to review and optimize
+- **Testing Capability**: SQL logic testable independently of Dagster pipeline
+- **Version Control**: Better tracking of SQL changes and platform differences
+- **Developer Experience**: IDE support for SQL with syntax highlighting and formatting
+
+### Technical Approach
+
+**Extended File Organization Structure:**
+```
+pipeline/sql/
+├── objects/           # Database objects (from ENHANCEMENT-020)
+│   ├── tables/
+│   ├── views/
+│   └── infrastructure/
+├── transformations/   # Complex reusable SQL logic
+│   ├── job_standardization.sql
+│   ├── company_deduplication.sql
+│   ├── skill_extraction.sql
+│   ├── location_normalization.sql
+│   └── llm_data_quality_checks.sql
+├── queries/          # Platform-specific implementations
+│   ├── snowflake/
+│   │   ├── advanced_analytics.sql
+│   │   ├── performance_optimized_aggregates.sql
+│   │   └── window_function_patterns.sql
+│   └── bigquery/
+│       ├── advanced_analytics.sql      # BigQuery syntax version
+│       ├── performance_optimized_aggregates.sql
+│       └── window_function_patterns.sql
+└── functions/        # Reusable SQL functions/macros
+    ├── date_utilities.sql
+    ├── string_cleaning.sql
+    └── data_quality_functions.sql
+```
+
+**SQL File Loading Utility:**
+```python
+def load_sql_file(file_path: str, platform: str = "snowflake", **params) -> str:
+    """
+    Load SQL file with platform-specific path resolution and parameter substitution
+
+    Args:
+        file_path: Path relative to pipeline/sql/ (e.g., "transformations/job_standardization.sql")
+        platform: Database platform ("snowflake" or "bigquery")
+        **params: Parameters for SQL template substitution
+
+    Returns:
+        SQL string with parameters substituted
+    """
+
+    # Try platform-specific version first, fall back to generic
+    platform_path = f"pipeline/sql/queries/{platform}/{Path(file_path).name}"
+    generic_path = f"pipeline/sql/{file_path}"
+
+    sql_file = platform_path if Path(platform_path).exists() else generic_path
+
+    with open(sql_file, 'r') as f:
+        sql_content = f.read()
+
+    # Simple parameter substitution
+    for key, value in params.items():
+        sql_content = sql_content.replace(f"{{{key}}}", str(value))
+
+    return sql_content
+
+def get_current_platform() -> str:
+    """Get current database platform from environment or config"""
+    return os.environ.get('DATABASE_PLATFORM', 'snowflake')
+```
+
+**Asset Implementation Pattern:**
+```python
+@asset(
+    description="Standardize job data with platform-agnostic transformations"
+)
+def stage_jobs_unified(context: AssetExecutionContext, database_resource) -> Dict[str, Any]:
+    """Transform jobs data using external SQL files for complex logic"""
+
+    # Simple inline SQL - stays in asset
+    with database_resource.get_connection() as conn:
+        basic_count = conn.execute("SELECT COUNT(*) FROM raw_jobs").fetchone()[0]
+        context.log.info(f"Processing {basic_count} raw jobs")
+
+        # Complex transformation - external file (platform-agnostic)
+        standardization_sql = load_sql_file(
+            "transformations/job_standardization.sql",
+            batch_date=context.partition_key,
+            processing_threshold=0.8
+        )
+        result = conn.execute(standardization_sql)
+
+        # Platform-specific optimization - external file
+        platform = get_current_platform()
+        analytics_sql = load_sql_file(
+            f"advanced_analytics.sql",  # Will resolve to queries/{platform}/advanced_analytics.sql
+            platform=platform,
+            analysis_window_days=30
+        )
+        analytics_result = conn.execute(analytics_sql)
+
+    return {
+        "status": "success",
+        "rows_processed": result.rowcount,
+        "platform": platform
+    }
+```
+
+**Hybrid Strategy - What Goes Where:**
+
+**✅ EXTERNAL FILES FOR:**
+- **Complex Transformations**: Multi-CTE queries, advanced analytics, data quality checks
+- **Platform-Specific Logic**: Functions/syntax that differ between Snowflake/BigQuery
+- **Reusable Logic**: SQL used across multiple assets or environments
+- **Large Queries**: >20 lines or complex business logic requiring review
+- **Migration-Critical Code**: Anything that needs parallel platform versions
+
+**✅ INLINE FOR:**
+- **Simple Operations**: Basic INSERT, UPDATE, DELETE, SELECT
+- **Dynamic Queries**: SQL with runtime conditionals or dynamic table names
+- **Asset-Specific Logic**: SQL tightly coupled to single asset's workflow
+- **Short Queries**: <10 lines, straightforward operations
+
+### Implementation Plan
+
+**Phase 1: File Structure & Utilities (Day 1)**
+1. **Extend SQL Directory Structure**:
+   - Add transformations/, queries/, functions/ directories
+   - Create platform subdirectories (snowflake/, bigquery/)
+   - Set up file organization standards
+
+2. **Implement SQL Loading Utilities**:
+   - Create `load_sql_file()` with platform resolution
+   - Add parameter substitution for dynamic queries
+   - Implement platform detection and configuration
+
+**Phase 2: Complex SQL Extraction (Day 2)**
+1. **Identify Migration-Critical SQL**:
+   - Audit existing assets for complex transformations
+   - Identify platform-specific functions and syntax
+   - Prioritize SQL that will need BigQuery conversion
+
+2. **Extract to Files**:
+   - Move complex transformations to external files
+   - Create initial Snowflake-specific versions in queries/snowflake/
+   - Update assets to use `load_sql_file()` utility
+
+**Phase 3: BigQuery Preparation (Day 3)**
+1. **Create BigQuery Versions**:
+   - Convert Snowflake SQL to BigQuery syntax
+   - Create parallel files in queries/bigquery/
+   - Test SQL files independently where possible
+
+2. **Migration Testing**:
+   - Test platform switching capability
+   - Validate SQL file loading and parameter substitution
+   - Ensure assets work with both platforms
+
+### Success Criteria
+- **Platform Independence**: Assets can switch between Snowflake and BigQuery via configuration
+- **SQL Reusability**: Complex transformations available to multiple assets
+- **Migration Readiness**: All platform-specific SQL identified and converted
+- **Code Organization**: Clear separation between simple inline and complex external SQL
+- **Testing Capability**: SQL files testable independently of Dagster pipeline
+- **Version Control**: Clean tracking of SQL changes and platform differences
+
+### Migration Benefits
+- ✅ **Cost Optimization**: Enables move from expensive Snowflake to cost-effective BigQuery
+- ✅ **Risk Reduction**: Platform-specific code isolated and testable
+- ✅ **Parallel Development**: Can develop BigQuery versions while Snowflake runs
+- ✅ **Smooth Transition**: Gradual migration with confidence
+- ✅ **Code Quality**: Complex SQL easier to review and optimize
+- ✅ **Maintenance**: Platform differences clearly documented and managed
+
+### Dependencies
+- **ENHANCEMENT-020**: Schema-as-code database objects (prerequisite)
+- **Snowflake Pipeline Completion**: Full production deployment on Snowflake
+- **BigQuery Setup**: Target BigQuery environment and credentials
 
 ---
 
