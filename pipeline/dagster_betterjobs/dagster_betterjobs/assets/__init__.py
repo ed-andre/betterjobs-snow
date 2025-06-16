@@ -68,6 +68,16 @@ from dagster_betterjobs.assets.llm_standardization.data_quality import (
 
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
+# Infrastructure Setup Assets
+from dagster_betterjobs.assets.snowflake_setup import (
+    database_schema_setup,
+    raw_schema_setup,
+    stage_schema_setup,
+    analytics_schema_setup,
+    static_data_population,
+    setup_validation
+)
+
 __all__ = [
     "adhoc_company_urls",
     "job_search_results",
@@ -119,5 +129,12 @@ __all__ = [
     "stage_llm_coverage_analysis",
     "stage_llm_confidence_monitoring",
     "stage_llm_manual_review_queue",
-    "snowflake_master_company_urls"
+    "snowflake_master_company_urls",
+    # Infrastructure setup assets
+    "database_schema_setup",
+    "raw_schema_setup",
+    "stage_schema_setup",
+    "analytics_schema_setup",
+    "static_data_population",
+    "setup_validation"
 ]
