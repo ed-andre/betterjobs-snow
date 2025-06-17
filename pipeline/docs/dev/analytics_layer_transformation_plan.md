@@ -125,488 +125,332 @@ The ANALYTICS layer will implement a star schema optimized for time-series analy
 
 #### Core Fact Tables
 
-##### 1. `fact_job_postings` (Primary Fact Table)
-**Grain**: One record per job posting per day (for historical tracking)
+##### 1. `FACT_JOB_POSTINGS` (Primary Fact Table)
+**Grain**: One record per unique job posting (simplified for actual business needs)
+**Source**: STAGE.JOBS_UNIFIED + STAGE.JOBS_LLM_ENRICHED
 
 ```sql
-CREATE TABLE ANALYTICS.fact_job_postings (
-    -- Surrogate Keys
-    job_posting_key STRING PRIMARY KEY,
-    date_key STRING,
+CREATE TABLE ANALYTICS.FACT_JOB_POSTINGS (
+    -- Surrogate Key
+    job_posting_key STRING PRIMARY KEY,  -- One key per unique job posting
+
+    -- Dimension Keys
+    date_posted_key STRING,              -- When job was first posted
     company_key STRING,
     location_key STRING,
     job_family_key STRING,
     platform_key STRING,
 
     -- Degenerate Dimensions
-    job_uid STRING,  -- Natural key from STAGE
-    job_title STRING,
-    posting_url STRING,
+    job_uid STRING,                      -- Natural key from STAGE.JOBS_UNIFIED.JOB_UID
+    job_title STRING,                    -- From STAGE.JOBS_UNIFIED.JOB_TITLE_CLEAN
+    posting_url STRING,                  -- From STAGE.JOBS_UNIFIED.JOB_URL
 
-    -- Measures (Additive)
-    salary_min NUMBER,
-    salary_max NUMBER,
-    salary_midpoint NUMBER,  -- Calculated: (min + max) / 2
-    experience_min_years NUMBER,
-    experience_max_years NUMBER,
-    experience_midpoint_years NUMBER,
+    -- Salary Measures (from STAGE.JOBS_LLM_ENRICHED)
+    salary_min NUMBER,                   -- From STAGE.JOBS_LLM_ENRICHED.SALARY_MIN
+    salary_max NUMBER,                   -- From STAGE.JOBS_LLM_ENRICHED.SALARY_MAX
+    salary_currency STRING,              -- From STAGE.JOBS_LLM_ENRICHED.SALARY_CURRENCY
+    salary_period STRING,                -- From STAGE.JOBS_LLM_ENRICHED.SALARY_PERIOD
 
-    -- Measures (Semi-Additive)
-    posting_age_days NUMBER,  -- Days since first posted
+    -- Experience Measures (from STAGE.JOBS_LLM_ENRICHED)
+    experience_min_years NUMBER,         -- From STAGE.JOBS_LLM_ENRICHED.MIN_YEARS_EXPERIENCE
+    experience_max_years NUMBER,         -- From STAGE.JOBS_LLM_ENRICHED.MAX_YEARS_EXPERIENCE
+    experience_level STRING,             -- From STAGE.JOBS_LLM_ENRICHED.EXPERIENCE_LEVEL
 
-    -- Measures (Non-Additive - Ratios/Percentages)
-    salary_confidence_score FLOAT,
-    extraction_confidence_score FLOAT,
-    data_quality_score FLOAT,
-    remote_work_score FLOAT,  -- 0=On-site, 0.5=Hybrid, 1=Remote
+    -- Quality and Confidence Measures
+    salary_confidence FLOAT,             -- From STAGE.JOBS_LLM_ENRICHED.SALARY_CONFIDENCE
+    llm_overall_confidence FLOAT,        -- From STAGE.JOBS_LLM_ENRICHED.LLM_OVERALL_CONFIDENCE
+    data_quality_score FLOAT,            -- From STAGE.JOBS_UNIFIED.DATA_QUALITY_SCORE
 
-    -- Flags (Additive for Counts)
-    is_active_posting BOOLEAN,
-    is_new_posting BOOLEAN,  -- New this week
-    is_salary_disclosed BOOLEAN,
-    is_remote_eligible BOOLEAN,
-    is_equity_mentioned BOOLEAN,
-    is_bonus_mentioned BOOLEAN,
-    has_education_requirement BOOLEAN,
-    has_certification_requirement BOOLEAN,
+    -- Job Classification (from STAGE.JOBS_LLM_ENRICHED)
+    job_family STRING,                   -- From STAGE.JOBS_LLM_ENRICHED.JOB_FAMILY
+    job_sub_family STRING,               -- From STAGE.JOBS_LLM_ENRICHED.JOB_SUB_FAMILY
+    seniority_level STRING,              -- From STAGE.JOBS_LLM_ENRICHED.SENIORITY_LEVEL
 
-    -- Dates
-    first_posted_date DATE,
-    last_seen_date DATE,
+    -- Work Arrangement (from STAGE.JOBS_LLM_ENRICHED)
+    work_type STRING,                    -- From STAGE.JOBS_LLM_ENRICHED.WORK_TYPE
+    remote_flexibility STRING,           -- From STAGE.JOBS_LLM_ENRICHED.REMOTE_FLEXIBILITY
+
+    -- Boolean Flags (from STAGE tables)
+    is_active_posting BOOLEAN,           -- From STAGE.JOBS_UNIFIED.IS_ACTIVE
+    is_equity_mentioned BOOLEAN,         -- From STAGE.JOBS_LLM_ENRICHED.EQUITY_MENTIONED
+    is_bonus_mentioned BOOLEAN,          -- From STAGE.JOBS_LLM_ENRICHED.BONUS_MENTIONED
+    llm_needs_manual_review BOOLEAN,     -- From STAGE.JOBS_LLM_ENRICHED.LLM_NEEDS_MANUAL_REVIEW
+
+    -- Important Dates
+    first_posted_date DATE,              -- From STAGE.JOBS_UNIFIED.DATE_POSTED
+    date_retrieved DATE,                 -- From STAGE.JOBS_UNIFIED.DATE_RETRIEVED
 
     -- Audit Fields
     created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
     updated_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    source_stage_table STRING,
 
-    -- Partitioning
-    partition_date DATE
+    -- Partitioning by posting month for query performance
+    partition_date DATE                  -- DATE_TRUNC('month', first_posted_date)
 ) PARTITION BY (partition_date)
-CLUSTER BY (date_key, company_key, location_key, job_family_key);
+CLUSTER BY (date_posted_key, company_key, location_key, job_family_key);
 ```
 
-##### 2. `fact_skills_demand` (Skills Analysis Fact)
-**Grain**: One record per skill per time period per job family
+##### 2. `FACT_SKILLS_DEMAND_WEEKLY` (Skills Demand Aggregates)
+**Grain**: One record per skill per week (enables responsive trend analysis)
+**Business Need**: Track skill demand trends with weekly granularity for timely market intelligence
 
 ```sql
-CREATE TABLE ANALYTICS.fact_skills_demand (
-    -- Surrogate Keys
-    skills_demand_key STRING PRIMARY KEY,
-    date_key STRING,
-    skill_key STRING,
-    job_family_key STRING,
-    location_key STRING,
+CREATE TABLE ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY (
+    SKILLS_WEEKLY_KEY STRING PRIMARY KEY,
+    WEEK_KEY STRING,                        -- YYYY-WW format
+    SKILL_KEY STRING,
+    JOB_FAMILY_KEY STRING,
+    LOCATION_KEY STRING,
 
-    -- Measures
-    jobs_requiring_skill INTEGER,
-    total_jobs_in_category INTEGER,
-    skill_demand_percentage FLOAT,  -- jobs_requiring / total_jobs
-    average_salary_premium FLOAT,  -- Salary boost for this skill
-    median_salary_with_skill NUMBER,
-    skill_growth_rate_weekly FLOAT,
-    skill_growth_rate_monthly FLOAT,
+    -- Core Demand Metrics
+    ACTIVE_JOBS_WITH_SKILL INTEGER,         -- Active jobs requiring this skill
+    TOTAL_ACTIVE_JOBS INTEGER,              -- Total active jobs in category
+    SKILL_PENETRATION_RATE FLOAT,           -- Percentage requiring this skill
 
-    -- Rankings
-    skill_rank_overall INTEGER,
-    skill_rank_in_category INTEGER,
-    skill_rank_change_weekly INTEGER,
+    -- Salary Analysis
+    AVG_SALARY_WITH_SKILL NUMBER,           -- Average salary for jobs with this skill
+    SALARY_PREMIUM_PERCENTAGE FLOAT,        -- Premium this skill commands
 
-    -- Flags
-    is_emerging_skill BOOLEAN,  -- New to top rankings
-    is_declining_skill BOOLEAN, -- Dropping in rankings
-    is_hot_skill BOOLEAN,       -- High growth + high demand
-
-    -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    partition_date DATE
-) PARTITION BY (partition_date)
-CLUSTER BY (date_key, skill_key, job_family_key);
-```
-
-##### 3. `fact_salary_benchmarks` (Compensation Analysis Fact)
-**Grain**: One record per job family per location per experience level per time period
-
-```sql
-CREATE TABLE ANALYTICS.fact_salary_benchmarks (
-    -- Surrogate Keys
-    salary_benchmark_key STRING PRIMARY KEY,
-    date_key STRING,
-    job_family_key STRING,
-    location_key STRING,
-    experience_level_key STRING,
-
-    -- Statistical Measures
-    salary_count INTEGER,            -- Sample size
-    salary_min NUMBER,              -- Minimum observed
-    salary_max NUMBER,              -- Maximum observed
-    salary_mean NUMBER,             -- Average
-    salary_median NUMBER,           -- Median (50th percentile)
-    salary_p25 NUMBER,              -- 25th percentile
-    salary_p75 NUMBER,              -- 75th percentile
-    salary_p90 NUMBER,              -- 90th percentile
-    salary_stddev NUMBER,           -- Standard deviation
-
-    -- Growth Metrics
-    salary_growth_mom FLOAT,        -- Month-over-month growth
-    salary_growth_yoy FLOAT,        -- Year-over-year growth
-
-    -- Market Indicators
-    market_competitiveness_score FLOAT,  -- 0-100 scale
-    salary_inflation_indicator FLOAT,    -- Compared to general inflation
-
-    -- Quality Metrics
-    confidence_interval_95_lower NUMBER,
-    confidence_interval_95_upper NUMBER,
-    data_quality_score FLOAT,
-
-    -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    partition_date DATE
-) PARTITION BY (partition_date)
-CLUSTER BY (date_key, job_family_key, location_key);
-```
-
-##### 4. `fact_company_hiring_velocity` (Company Intelligence Fact)
-**Grain**: One record per company per time period
-
-```sql
-CREATE TABLE ANALYTICS.fact_company_hiring_velocity (
-    -- Surrogate Keys
-    hiring_velocity_key STRING PRIMARY KEY,
-    date_key STRING,
-    company_key STRING,
-
-    -- Hiring Metrics
-    jobs_posted_count INTEGER,
-    net_new_postings INTEGER,        -- New postings this period
-
-    -- Velocity Indicators
-    posting_velocity_daily FLOAT,    -- Jobs per day
-    posting_velocity_weekly FLOAT,   -- Jobs per week
-    velocity_change_percentage FLOAT, -- Week-over-week change
-
-    -- Hiring Patterns
-    avg_salary_offered NUMBER,
-    remote_jobs_percentage FLOAT,
-    senior_roles_percentage FLOAT,
+    -- Trend Analysis
+    WEEK_OVER_WEEK_CHANGE FLOAT,            -- Change in job count
+    TREND_DIRECTION STRING,                 -- 'GROWING', 'STABLE', 'DECLINING'
 
     -- Market Position
-    hiring_rank_in_industry INTEGER,
-    hiring_rank_overall INTEGER,
-
-    -- Company Health Indicators
-    hiring_intensity_score FLOAT,    -- Based on posting frequency and volume
+    SKILL_RANK_IN_FAMILY INTEGER,           -- Rank within job family
+    SKILL_RANK_OVERALL INTEGER,             -- Overall market rank
 
     -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    partition_date DATE
-) PARTITION BY (partition_date)
-CLUSTER BY (date_key, company_key);
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    WEEK_START_DATE DATE                    -- First day of week for partitioning
+) PARTITION BY (WEEK_START_DATE)
+CLUSTER BY (WEEK_KEY, SKILL_KEY, JOB_FAMILY_KEY);
+```
+
+##### 3. `FACT_COMPANY_HIRING_WEEKLY` (Company Hiring Intelligence)
+**Grain**: One record per company per week (aligned with weekly job market intelligence)
+**Business Need**: Weekly hiring trends for company intelligence and competitive analysis
+
+```sql
+CREATE TABLE ANALYTICS.FACT_COMPANY_HIRING_WEEKLY (
+    COMPANY_HIRING_KEY STRING PRIMARY KEY,
+    WEEK_KEY STRING,                        -- YYYY-WW format
+    COMPANY_KEY STRING,
+
+    -- Core Hiring Metrics
+    JOBS_POSTED_COUNT INTEGER,              -- Total jobs posted this week
+    ACTIVE_JOBS_COUNT INTEGER,              -- Jobs still active at week end
+    NEW_JOBS_THIS_WEEK INTEGER,             -- Net new postings
+
+    -- Hiring Velocity & Trends
+    WEEK_OVER_WEEK_CHANGE FLOAT,            -- Change in hiring volume
+    HIRING_TREND_DIRECTION STRING,          -- 'ACCELERATING', 'STABLE', 'DECLINING'
+
+    -- Job Portfolio Analysis (from STAGE.JOBS_LLM_ENRICHED)
+    AVG_SALARY_OFFERED NUMBER,              -- Average across all roles
+    MEDIAN_SALARY_OFFERED NUMBER,           -- Median salary
+    SALARY_RANGE_WIDTH FLOAT,               -- Max - Min salary span
+
+    -- Work Arrangement Patterns (from STAGE.JOBS_LLM_ENRICHED)
+    REMOTE_JOBS_PERCENTAGE FLOAT,           -- % of remote-eligible jobs
+    HYBRID_JOBS_PERCENTAGE FLOAT,           -- % of hybrid jobs
+    ONSITE_JOBS_PERCENTAGE FLOAT,           -- % of on-site only jobs
+
+    -- Role Distribution (from STAGE.JOBS_LLM_ENRICHED)
+    ENTRY_LEVEL_PERCENTAGE FLOAT,           -- % of entry-level roles
+    SENIOR_LEVEL_PERCENTAGE FLOAT,          -- % of senior+ roles
+    MANAGEMENT_ROLES_PERCENTAGE FLOAT,      -- % of management positions
+
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    WEEK_START_DATE DATE                    -- First day of week for partitioning
+) PARTITION BY (WEEK_START_DATE)
+CLUSTER BY (WEEK_KEY, COMPANY_KEY);
 ```
 
 #### Dimension Tables
 
-##### 1. `dim_date` (Date Dimension)
-**Business Calendar with Job Market Context**
+##### 1. `DIM_DATE` (Date Dimension)
+**Essential Date Attributes for Job Market Analytics**
 
 ```sql
-CREATE TABLE ANALYTICS.dim_date (
-    date_key STRING PRIMARY KEY,
-    full_date DATE,
+CREATE TABLE ANALYTICS.DIM_DATE (
+    DATE_KEY STRING PRIMARY KEY,
+    FULL_DATE DATE,
 
-    -- Standard Date Attributes
-    day_name STRING,
-    day_of_week INTEGER,
-    day_of_month INTEGER,
-    day_of_year INTEGER,
-    week_number INTEGER,
-    week_beginning_date DATE,
-    week_ending_date DATE,
-    month_number INTEGER,
-    month_name STRING,
-    month_beginning_date DATE,
-    month_ending_date DATE,
-    quarter_number INTEGER,
-    quarter_name STRING,
-    year_number INTEGER,
+    -- Essential Date Attributes
+    DAY_NAME STRING,
+    DAY_OF_WEEK INTEGER,
+    WEEK_BEGINNING_DATE DATE,
+    WEEK_ENDING_DATE DATE,
+    MONTH_NUMBER INTEGER,
+    MONTH_NAME STRING,
+    QUARTER_NUMBER INTEGER,
+    YEAR_NUMBER INTEGER,
 
     -- Business Context
-    is_business_day BOOLEAN,
-    is_weekend BOOLEAN,
-    is_holiday BOOLEAN,
-    holiday_name STRING,
-    is_quarter_end BOOLEAN,
-    is_month_end BOOLEAN,
-    is_year_end BOOLEAN,
-
-    -- Job Market Context
-    is_peak_hiring_season BOOLEAN,    -- Typically Jan-Mar, Sep-Oct
-    is_slow_hiring_period BOOLEAN,    -- Typically Nov-Dec, July-Aug
-    hiring_season STRING,             -- 'Peak', 'Normal', 'Slow'
-
-    -- Relative Date Attributes
-    days_ago INTEGER,                 -- Days from current date
-    weeks_ago INTEGER,                -- Weeks from current date
-    months_ago INTEGER,               -- Months from current date
-    years_ago INTEGER,                -- Years from current date
-
-    -- Fiscal Calendar (if needed)
-    fiscal_year INTEGER,
-    fiscal_quarter INTEGER,
-    fiscal_month INTEGER,
+    IS_BUSINESS_DAY BOOLEAN,
+    IS_WEEKEND BOOLEAN,
 
     created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
 ) CLUSTER BY (full_date);
 ```
 
-##### 2. `dim_company` (Company Dimension)
-**Type 2 SCD for Company Changes**
+##### 2. `DIM_COMPANY` (Company Dimension)
+**Type 2 SCD for Company Changes (Built from STAGE.COMPANY_PROFILES and STAGE.JOBS_UNIFIED)**
 
 ```sql
-CREATE TABLE ANALYTICS.dim_company (
-    company_key STRING PRIMARY KEY,
-    company_id STRING,              -- Natural key from STAGE
+CREATE TABLE ANALYTICS.DIM_COMPANY (
+    COMPANY_KEY STRING PRIMARY KEY,
+    COMPANY_ID STRING,              -- Natural key from STAGE.JOBS_UNIFIED.COMPANY_ID
 
-    -- Company Identity
-    company_name STRING,
-    company_name_clean STRING,
-    company_legal_name STRING,
-    company_ticker_symbol STRING,
-    company_website STRING,
+    -- Company Identity (from STAGE.COMPANY_PROFILES and STAGE.JOBS_UNIFIED)
+    COMPANY_NAME STRING,            -- From STAGE.JOBS_UNIFIED.COMPANY_NAME_CLEAN
+    COMPANY_NAME_STANDARDIZED STRING, -- From STAGE.COMPANY_PROFILES.COMPANY_NAME_STANDARDIZED
 
-    -- Company Classification
-    industry STRING,
-    industry_category STRING,       -- Standardized categories
-    sub_industry STRING,
-    business_model STRING,          -- B2B, B2C, B2B2C, Marketplace
+    -- Company Classification (from STAGE.COMPANY_PROFILES)
+    INDUSTRY STRING,                -- From STAGE.COMPANY_PROFILES.COMPANY_INDUSTRY_STANDARDIZED
 
-    -- Company Size
-    employee_count_range STRING,
-    employee_count_min INTEGER,
-    employee_count_max INTEGER,
-    company_size_category STRING,   -- Startup, Small, Medium, Large, Enterprise
+    -- Company Size (from STAGE.COMPANY_PROFILES)
+    EMPLOYEE_COUNT_RANGE STRING,    -- From STAGE.COMPANY_PROFILES.EMPLOYEE_COUNT_RANGE
+    COMPANY_SIZE_CATEGORY STRING,   -- From STAGE.COMPANY_PROFILES.COMPANY_SIZE_CATEGORY
 
-    -- Company Location
-    headquarters_city STRING,
-    headquarters_state STRING,
-    headquarters_country STRING,
-    headquarters_region STRING,
-    is_multinational BOOLEAN,
+    -- Company Location (from STAGE.COMPANY_PROFILES)
+    HEADQUARTERS_LOCATION STRING,   -- From STAGE.COMPANY_PROFILES.HEADQUARTERS_LOCATION
 
-    -- Company Stage & Funding
-    funding_stage STRING,           -- Seed, Series A, B, C, IPO, etc.
-    total_funding_usd NUMBER,
-    last_funding_date DATE,
-    is_public_company BOOLEAN,
-    is_unicorn BOOLEAN,             -- Valuation > $1B
-
-    -- Company Metrics
-    estimated_revenue_range STRING,
-    revenue_growth_stage STRING,    -- Growth, Mature, Declining
-    technology_stack_profile STRING, -- Modern, Legacy, Mixed
-
-    -- Hiring Characteristics
-    typical_hiring_velocity STRING,  -- High, Medium, Low
-    remote_work_policy STRING,       -- Full Remote, Hybrid, On-site
-    geographic_hiring_scope STRING,  -- Local, National, Global
+    -- Company Stage & Funding (from STAGE.COMPANY_PROFILES)
+    FUNDING_STAGE STRING,           -- From STAGE.COMPANY_PROFILES.FUNDING_STAGE
 
     -- SCD Type 2 Fields
-    effective_date DATE,
-    expiration_date DATE,
-    is_current BOOLEAN,
-    version_number INTEGER,
+    EFFECTIVE_DATE DATE,
+    EXPIRATION_DATE DATE,
+    IS_CURRENT BOOLEAN,
+    VERSION_NUMBER INTEGER,
 
     -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    source_stage_table STRING
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    SOURCE_STAGE_TABLE STRING
 ) CLUSTER BY (company_id, is_current);
 ```
 
-##### 3. `dim_location` (Location Dimension)
-**Geographic Hierarchy with Market Context**
+##### 3. `DIM_LOCATION` (Location Dimension)
+**Geographic Hierarchy (Built from STAGE.LOCATIONS_NORMALIZED)**
 
 ```sql
-CREATE TABLE ANALYTICS.dim_location (
-    location_key STRING PRIMARY KEY,
+CREATE TABLE ANALYTICS.DIM_LOCATION (
+    LOCATION_KEY STRING PRIMARY KEY,
+    LOCATION_ID STRING,              -- FK to STAGE.LOCATIONS_NORMALIZED.LOCATION_ID
 
-    -- Location Hierarchy
-    city STRING,
-    state STRING,
-    state_abbreviation STRING,
-    country STRING,
-    country_code STRING,
-    region STRING,                   -- West Coast, East Coast, Midwest, etc.
+    -- Location Hierarchy (from STAGE.LOCATIONS_NORMALIZED)
+    LOCATION_NAME STRING,
+    CITY STRING,
+    STATE_PROVINCE STRING,
+    COUNTRY STRING,
+    REGION STRING,
+    METRO_AREA STRING,
 
-    -- Metropolitan Area
-    metro_area STRING,
-    metro_area_code STRING,
-    metro_population INTEGER,
-
-    -- Geographic Coordinates (for mapping)
-    latitude FLOAT,
-    longitude FLOAT,
-    timezone STRING,
-
-    -- Market Characteristics
-    cost_of_living_index FLOAT,      -- Relative to national average
-    median_home_price INTEGER,
-    tech_job_market_rank INTEGER,    -- Based on job volume & competition
-    university_count INTEGER,        -- Talent pipeline indicator
-
-    -- Market Classification
-    market_tier STRING,              -- Tier 1, Tier 2, Tier 3
-    is_tech_hub BOOLEAN,
-    is_financial_center BOOLEAN,
-    is_government_center BOOLEAN,
-
-    -- Remote Work Context
-    is_remote_location BOOLEAN,      -- For fully remote jobs
-    remote_work_adoption_rate FLOAT, -- Local companies offering remote
-
-    -- Economic Indicators
-    unemployment_rate FLOAT,
-    job_growth_rate FLOAT,
-    startup_density_score FLOAT,
-
-    -- Quality of Life
-    walkability_score INTEGER,
-    public_transit_score INTEGER,
-    weather_rating STRING,
+    -- Location Intelligence from STAGE
+    LOCATION_TYPE STRING,            -- office, remote, hybrid
+    IS_REMOTE_FRIENDLY BOOLEAN,      -- From STAGE.LOCATIONS_NORMALIZED
+    IS_MAJOR_TECH_HUB BOOLEAN,       -- From STAGE.LOCATIONS_NORMALIZED
+    COST_OF_LIVING_INDEX FLOAT,      -- From STAGE.LOCATIONS_NORMALIZED
+    AVERAGE_SALARY_ADJUSTMENT FLOAT, -- From STAGE.LOCATIONS_NORMALIZED
+    STAGE_CONFIDENCE_SCORE FLOAT,    -- From STAGE.LOCATIONS_NORMALIZED.CONFIDENCE_SCORE
+    FREQUENCY_COUNT INTEGER,         -- From STAGE.LOCATIONS_NORMALIZED.FREQUENCY_COUNT
 
     created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (state, city);
+) CLUSTER BY (country, state_province, city);
 ```
 
-##### 4. `dim_job_family` (Job Classification Dimension)
+##### 4. `DIM_JOB_FAMILY` (Job Classification Dimension)
 **Hierarchical Job Taxonomy**
 
 ```sql
-CREATE TABLE ANALYTICS.dim_job_family (
+CREATE TABLE ANALYTICS.DIM_JOB_FAMILY (
     job_family_key STRING PRIMARY KEY,
 
     -- Job Hierarchy
-    job_family STRING,               -- Engineering, Data, Product, Sales, etc.
-    job_sub_family STRING,          -- Backend Engineering, Data Science, etc.
-    job_specialty STRING,           -- Python Developer, ML Engineer, etc.
+    JOB_FAMILY STRING,               -- Engineering, Data, Product, Sales, etc.
+    JOB_SUB_FAMILY STRING,          -- Backend Engineering, Data Science, etc.
+    JOB_SPECIALTY STRING,           -- Python Developer, ML Engineer, etc.
 
     -- Seniority Classification
-    seniority_level STRING,         -- Entry, Mid, Senior, Staff, Principal, Executive
-    seniority_order INTEGER,        -- 1-7 for ordering
-    experience_min_years INTEGER,
-    experience_max_years INTEGER,
+    SENIORITY_LEVEL STRING,         -- Entry, Mid, Senior, Staff, Principal, Executive
+    SENIORITY_ORDER INTEGER,        -- 1-7 for ordering
+    EXPERIENCE_MIN_YEARS INTEGER,
+    EXPERIENCE_MAX_YEARS INTEGER,
 
     -- Role Type
-    role_type STRING,               -- Individual Contributor, Manager, Director, VP
-    management_level INTEGER,       -- 0=IC, 1=Manager, 2=Director, 3=VP, 4=C-Level
-    is_management_role BOOLEAN,
+    ROLE_TYPE STRING,               -- Individual Contributor, Manager, Director, VP
+    MANAGEMENT_LEVEL INTEGER,       -- 0=IC, 1=Manager, 2=Director, 3=VP, 4=C-Level
+    IS_MANAGEMENT_ROLE BOOLEAN,
 
     -- Department & Function
-    department STRING,              -- Engineering, Sales, Marketing, etc.
-    business_function STRING,       -- Core Product, Growth, Support, etc.
+    DEPARTMENT STRING,              -- Engineering, Sales, Marketing, etc.
+    BUSINESS_FUNCTION STRING,       -- Core Product, Growth, Support, etc.
 
     -- Job Characteristics
-    typical_team_size_min INTEGER,
-    typical_team_size_max INTEGER,
-    requires_security_clearance BOOLEAN,
-    travel_requirement_level STRING, -- None, Low, Medium, High
+    TYPICAL_TEAM_SIZE_MIN INTEGER,
+    TYPICAL_TEAM_SIZE_MAX INTEGER,
+    REQUIRES_SECURITY_CLEARANCE BOOLEAN,
+    TRAVEL_REQUIREMENT_LEVEL STRING, -- None, Low, Medium, High
 
     -- Market Data
-    market_demand_level STRING,     -- Very High, High, Medium, Low
-    salary_growth_trend STRING,     -- Growing, Stable, Declining
-    automation_risk_level STRING,   -- Low, Medium, High
+    MARKET_DEMAND_LEVEL STRING,     -- Very High, High, Medium, Low
+    SALARY_GROWTH_TREND STRING,     -- Growing, Stable, Declining
+    AUTOMATION_RISK_LEVEL STRING,   -- Low, Medium, High
 
     -- Skills Context
     primary_skill_category STRING,  -- Technical, Creative, Sales, etc.
-    requires_coding BOOLEAN,
-    requires_certification BOOLEAN,
+    REQUIRES_CODING BOOLEAN,
+    REQUIRES_CERTIFICATION BOOLEAN,
 
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
 ) CLUSTER BY (job_family, seniority_level);
 ```
 
-##### 5. `dim_platform` (ATS Platform Dimension)
-**Job Platform Characteristics**
+##### 5. `DIM_PLATFORM` (ATS Platform Dimension)
+**Platform Characteristics from Job Data**
 
 ```sql
-CREATE TABLE ANALYTICS.dim_platform (
-    platform_key STRING PRIMARY KEY,
-    platform_name STRING,
-    platform_code STRING,           -- workday, greenhouse, bamboohr, etc.
+CREATE TABLE ANALYTICS.DIM_PLATFORM (
+    PLATFORM_KEY STRING PRIMARY KEY,
+    PLATFORM_NAME STRING,              -- From STAGE.JOBS_UNIFIED.PLATFORM
+    PLATFORM_CODE STRING,              -- workday, greenhouse, bamboohr, etc.
 
-    -- Platform Classification
-    ats_type STRING,                -- Enterprise, Mid-market, Small Business
-    platform_category STRING,      -- ATS, Job Board, Company Site
+    -- Derived Platform Characteristics (from actual job data)
+    SUPPORTS_SALARY_DISCLOSURE BOOLEAN, -- Calculated from salary disclosure rates
+    DATA_RICHNESS_SCORE FLOAT,         -- Calculated from job description quality metrics
+    JOB_VOLUME_CATEGORY STRING,        -- High, Medium, Low (derived from actual job counts)
 
-    -- Platform Characteristics
-    typical_company_size STRING,    -- Enterprise, Mid-market, Small
-    industry_focus STRING,          -- Technology, Healthcare, General, etc.
-    geographic_focus STRING,        -- Global, North America, US Only
-
-    -- Platform Features
-    supports_salary_disclosure BOOLEAN,
-    supports_remote_filtering BOOLEAN,
-    supports_skills_tagging BOOLEAN,
-    data_richness_score FLOAT,      -- Quality of job descriptions
-
-    -- Market Share
-    estimated_job_volume STRING,    -- High, Medium, Low
-    market_share_percentage FLOAT,
-    growth_trend STRING,            -- Growing, Stable, Declining
-
-    -- Technical Characteristics
-    data_extraction_difficulty STRING, -- Easy, Medium, Hard
-    update_frequency_hours INTEGER,     -- How often jobs are updated
-    historical_data_retention_days INTEGER,
-
-    is_active BOOLEAN,
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+    IS_ACTIVE BOOLEAN,                  -- Currently processing jobs from this platform
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
 ) CLUSTER BY (platform_name);
 ```
 
-##### 6. `dim_skills` (Skills Taxonomy Dimension)
-**Hierarchical Skills Classification (Built from STAGE.skills_normalized)**
+##### 6. `DIM_SKILLS` (Skills Taxonomy Dimension)
+**Skills Classification (Built from STAGE.SKILLS_NORMALIZED)**
 
 ```sql
-CREATE TABLE ANALYTICS.dim_skills (
-    skill_key STRING PRIMARY KEY,
-    skill_id STRING,               -- FK to STAGE.skills_normalized
-    skill_name STRING,
-    skill_name_clean STRING,
+CREATE TABLE ANALYTICS.DIM_SKILLS (
+    SKILL_KEY STRING PRIMARY KEY,
+    SKILL_ID STRING,               -- FK to STAGE.SKILLS_NORMALIZED.SKILL_ID
+    SKILL_NAME STRING,
 
-    -- Skill Hierarchy (from STAGE.skills_normalized)
-    skill_category STRING,          -- Programming Language, Database, Cloud, etc.
-    skill_subcategory STRING,      -- Backend Language, NoSQL Database, etc.
-    skill_family STRING,           -- Development, Data, DevOps, etc.
+    -- Skill Hierarchy (from STAGE.SKILLS_NORMALIZED)
+    SKILL_CATEGORY STRING,          -- From STAGE.SKILLS_NORMALIZED.SKILL_CATEGORY
+    SKILL_SUBCATEGORY STRING,      -- From STAGE.SKILLS_NORMALIZED.SKILL_SUBCATEGORY
 
-    -- Enhanced Skill Characteristics (ANALYTICS layer enrichment)
-    skill_type STRING,             -- Technical, Soft, Business, Certification
-    complexity_level STRING,       -- Beginner, Intermediate, Advanced
-    learning_curve STRING,         -- Easy, Medium, Hard
+    -- STAGE Data Fields
+    CANONICAL_FORM STRING,          -- From STAGE.SKILLS_NORMALIZED.CANONICAL_FORM
+    COMMON_ALIASES VARIANT,         -- From STAGE.SKILLS_NORMALIZED.COMMON_ALIASES
+    ORIGINAL_VARIANTS VARIANT,      -- From STAGE.SKILLS_NORMALIZED.ORIGINAL_VARIANTS
+    STAGE_CONFIDENCE_SCORE FLOAT,   -- From STAGE.SKILLS_NORMALIZED.CONFIDENCE_SCORE
+    FREQUENCY_COUNT INTEGER,        -- From STAGE.SKILLS_NORMALIZED.FREQUENCY_COUNT
+    TREND_DIRECTION STRING,         -- From STAGE.SKILLS_NORMALIZED.TREND_DIRECTION
 
-    -- Market Context (calculated from fact tables)
-    demand_trend STRING,           -- Rising, Stable, Declining
-    supply_level STRING,           -- Abundant, Moderate, Scarce
-    salary_impact STRING,          -- High Premium, Medium Premium, Low Premium
-
-    -- Skill Relationships (derived from co-occurrence analysis)
-    complementary_skills VARIANT,   -- JSON array of related skills
-    prerequisite_skills VARIANT,   -- JSON array of prerequisite skills
-    alternative_skills VARIANT,    -- JSON array of alternative skills
-
-    -- Industry Context (calculated from job patterns)
-    primary_industries VARIANT,    -- JSON array of main industries using this skill
-    adoption_maturity STRING,      -- Emerging, Growing, Mature, Legacy
-
-    -- Certification Context
-    is_certifiable BOOLEAN,
-    certification_providers VARIANT, -- JSON array of cert providers
-    typical_cert_cost_range STRING,
-
-    -- Source tracking
-    source_stage_skill_id STRING,   -- Reference to STAGE.skills_normalized.skill_id
-
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
 ) CLUSTER BY (skill_category, skill_name);
 ```
 
@@ -614,421 +458,365 @@ CREATE TABLE ANALYTICS.dim_skills (
 
 ### Market Intelligence Tables
 
-##### 1. `market_weekly_summary` (Executive Dashboard)
+##### 1. `MARKET_WEEKLY_SUMMARY` (Executive Dashboard)
 **Weekly market snapshots for instant reporting**
 
 ```sql
-CREATE TABLE ANALYTICS.market_weekly_summary (
-    summary_key STRING PRIMARY KEY,
-    week_ending_date DATE,
-    report_date DATE,
+CREATE TABLE ANALYTICS.MARKET_WEEKLY_SUMMARY (
+    SUMMARY_KEY STRING PRIMARY KEY,
+    WEEK_ENDING_DATE DATE,
+    WEEK_KEY STRING,                        -- YYYY-WW format
 
-    -- Overall Market Metrics
-    total_jobs_posted INTEGER,
-    total_active_jobs INTEGER,
-    new_jobs_posted INTEGER,
-    net_new_postings INTEGER,
+    -- Core Market Metrics
+    TOTAL_JOBS_POSTED INTEGER,
+    TOTAL_ACTIVE_JOBS INTEGER,
+    NEW_JOBS_POSTED INTEGER,
 
     -- Velocity Metrics
-    posting_velocity_daily FLOAT,
-    week_over_week_growth_rate FLOAT,
-    month_over_month_growth_rate FLOAT,
-    year_over_year_growth_rate FLOAT,
-
-    -- Market Temperature (0-100 scale)
-    market_temperature_score FLOAT,
-    hiring_intensity_score FLOAT,
-    candidate_competition_score FLOAT,
+    WEEK_OVER_WEEK_GROWTH_RATE FLOAT,
+    POSTING_VELOCITY_DAILY FLOAT,
 
     -- Salary Intelligence
-    median_salary_all_roles INTEGER,
-    salary_inflation_rate FLOAT,
-    salary_growth_mom FLOAT,
-    salary_growth_yoy FLOAT,
+    MEDIAN_SALARY_ALL_ROLES INTEGER,
+    AVG_SALARY_ALL_ROLES INTEGER,
 
-    -- Skills & Technology
-    top_demanded_skills VARIANT,         -- JSON array of top 20 skills
-    fastest_growing_skills VARIANT,      -- JSON array with growth rates
-    emerging_technologies VARIANT,       -- JSON array of new trending skills
-    declining_technologies VARIANT,      -- JSON array of declining skills
-
-    -- Company Intelligence
-    most_active_hiring_companies VARIANT,  -- JSON array of top hiring companies
-    fastest_growing_companies VARIANT,     -- JSON array with growth metrics
-    average_company_hiring_velocity FLOAT,
-
-    -- Geographic Intelligence
-    top_hiring_locations VARIANT,        -- JSON array of top locations
-    remote_work_percentage FLOAT,
-    hybrid_work_percentage FLOAT,
-    location_demand_shifts VARIANT,      -- JSON array of location changes
-
-    -- Platform Intelligence
-    platform_job_distribution VARIANT,   -- JSON object with platform breakdown
-    platform_growth_rates VARIANT,       -- JSON object with platform growth
+    -- Work Arrangement Trends
+    REMOTE_WORK_PERCENTAGE FLOAT,
+    HYBRID_WORK_PERCENTAGE FLOAT,
+    ONSITE_WORK_PERCENTAGE FLOAT,
 
     -- Quality Metrics
-    data_freshness_hours INTEGER,
-    sample_size INTEGER,
-    confidence_score FLOAT,
+    SAMPLE_SIZE INTEGER,
+    DATA_QUALITY_SCORE FLOAT,
 
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (week_ending_date);
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) PARTITION BY (WEEK_ENDING_DATE)
+CLUSTER BY (WEEK_KEY);
 ```
 
-##### 2. `skills_trend_analysis` (Skills Intelligence)
-**Comprehensive skills market analysis**
+##### 2. `SKILLS_TREND_ANALYSIS` (Skills Intelligence)
+**Skills market analysis with essential metrics**
 
 ```sql
-CREATE TABLE ANALYTICS.skills_trend_analysis (
-    analysis_key STRING PRIMARY KEY,
-    analysis_date DATE,
-    skill_key STRING,
+CREATE TABLE ANALYTICS.SKILLS_TREND_ANALYSIS (
+    ANALYSIS_KEY STRING PRIMARY KEY,
+    ANALYSIS_DATE DATE,
+    SKILL_KEY STRING,
+    WEEK_KEY STRING,                        -- YYYY-WW format
 
     -- Current Demand Metrics
-    jobs_requiring_skill INTEGER,
-    total_jobs_analyzed INTEGER,
-    market_penetration_rate FLOAT,     -- Percentage of jobs requiring this skill
-    demand_rank_overall INTEGER,
-    demand_rank_in_category INTEGER,
+    JOBS_REQUIRING_SKILL INTEGER,
+    TOTAL_JOBS_ANALYZED INTEGER,
+    MARKET_PENETRATION_RATE FLOAT,          -- Percentage of jobs requiring this skill
+    DEMAND_RANK_OVERALL INTEGER,
 
     -- Growth Metrics
-    demand_growth_weekly FLOAT,
-    demand_growth_monthly FLOAT,
-    demand_growth_quarterly FLOAT,
-    demand_growth_yearly FLOAT,
+    DEMAND_GROWTH_WEEKLY FLOAT,
+    DEMAND_GROWTH_MONTHLY FLOAT,
 
     -- Ranking Changes
-    rank_change_weekly INTEGER,
-    rank_change_monthly INTEGER,
-    rank_change_quarterly INTEGER,
+    RANK_CHANGE_WEEKLY INTEGER,
+    RANK_CHANGE_MONTHLY INTEGER,
 
     -- Salary Impact
-    average_salary_with_skill NUMBER,
-    average_salary_without_skill NUMBER,
-    salary_premium_amount NUMBER,
-    salary_premium_percentage FLOAT,
+    AVERAGE_SALARY_WITH_SKILL NUMBER,
+    SALARY_PREMIUM_PERCENTAGE FLOAT,
 
-    -- Market Characteristics
-    supply_demand_ratio FLOAT,         -- Estimated supply vs demand
-    competition_level STRING,          -- Low, Medium, High, Very High
-    market_saturation_level STRING,    -- Undersupplied, Balanced, Oversupplied
+    -- Work Arrangement
+    REMOTE_AVAILABILITY_RATE FLOAT,         -- Percentage of remote jobs with this skill
 
-    -- Geographic Distribution
-    top_locations_for_skill VARIANT,   -- JSON array of top cities/states
-    remote_availability_rate FLOAT,    -- Percentage of remote jobs with this skill
-
-    -- Industry Distribution
-    top_industries_for_skill VARIANT,  -- JSON array of industries
-    industry_concentration_score FLOAT, -- How concentrated in specific industries
-
-    -- Career Progression
-    entry_level_demand INTEGER,
-    mid_level_demand INTEGER,
-    senior_level_demand INTEGER,
-    career_progression_score FLOAT,    -- Demand across all levels
-
-    -- Skill Ecosystem
-    commonly_paired_skills VARIANT,    -- JSON array of frequently co-occurring skills
-    prerequisite_skills VARIANT,       -- JSON array of typical prerequisites
-    career_path_skills VARIANT,        -- JSON array of typical next skills
-
-    -- Market Predictions (if applicable)
-    demand_forecast_next_quarter FLOAT,
-    growth_sustainability_score FLOAT,
-    automation_risk_score FLOAT,
+    -- Seniority Distribution
+    ENTRY_LEVEL_DEMAND INTEGER,
+    MID_LEVEL_DEMAND INTEGER,
+    SENIOR_LEVEL_DEMAND INTEGER,
 
     -- Quality Metrics
-    sample_size INTEGER,
-    confidence_interval_95 VARIANT,    -- JSON object with upper/lower bounds
-    data_quality_score FLOAT,
+    SAMPLE_SIZE INTEGER,
+    DATA_QUALITY_SCORE FLOAT,
 
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (analysis_date, skill_key);
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) PARTITION BY (ANALYSIS_DATE)
+CLUSTER BY (ANALYSIS_DATE, SKILL_KEY);
 ```
 
-##### 3. `company_hiring_intelligence` (Company Analysis)
+##### 3. `COMPANY_HIRING_INTELLIGENCE` (Company Analysis)
 **Company-specific hiring patterns and intelligence**
 
 ```sql
-CREATE TABLE ANALYTICS.company_hiring_intelligence (
-    intelligence_key STRING PRIMARY KEY,
-    analysis_date DATE,
-    company_key STRING,
+CREATE TABLE ANALYTICS.COMPANY_HIRING_INTELLIGENCE (
+    INTELLIGENCE_KEY STRING PRIMARY KEY,
+    ANALYSIS_DATE DATE,
+    COMPANY_KEY STRING,
+    WEEK_KEY STRING,                        -- YYYY-WW format
 
     -- Hiring Velocity
-    jobs_posted_last_7_days INTEGER,
-    jobs_posted_last_30_days INTEGER,
-    jobs_posted_last_90_days INTEGER,
-    current_job_postings INTEGER,
+    JOBS_POSTED_LAST_7_DAYS INTEGER,
+    JOBS_POSTED_LAST_30_DAYS INTEGER,
+    CURRENT_JOB_POSTINGS INTEGER,
 
     -- Growth Indicators
-    hiring_velocity_trend STRING,      -- Accelerating, Stable, Decelerating
-    headcount_growth_rate FLOAT,
-    department_expansion_areas VARIANT, -- JSON array of growing departments
-
-    -- Hiring Patterns
-    seasonal_hiring_pattern STRING,    -- High Q1, Steady, etc.
-    preferred_platforms VARIANT,       -- JSON array of most-used platforms
+    HIRING_VELOCITY_TREND STRING,           -- 'ACCELERATING', 'STABLE', 'DECELERATING'
+    WEEK_OVER_WEEK_GROWTH_RATE FLOAT,
 
     -- Compensation Strategy
-    salary_competitiveness_score FLOAT, -- Compared to market
-    salary_transparency_rate FLOAT,     -- Percentage of jobs with salary
-    equity_offering_rate FLOAT,         -- Percentage mentioning equity
-    benefits_competitiveness_score FLOAT,
+    SALARY_TRANSPARENCY_RATE FLOAT,         -- Percentage of jobs with salary disclosed
+    AVG_SALARY_OFFERED NUMBER,
 
     -- Role Distribution
-    ic_vs_management_ratio FLOAT,
-    entry_vs_senior_ratio FLOAT,
-    technical_vs_business_ratio FLOAT,
-    remote_job_percentage FLOAT,
+    ENTRY_VS_SENIOR_RATIO FLOAT,
+    TECHNICAL_VS_BUSINESS_RATIO FLOAT,
+    REMOTE_JOB_PERCENTAGE FLOAT,
 
-    -- Geographic Strategy
-    hiring_locations VARIANT,          -- JSON array of locations
-    remote_work_policy STRING,         -- Full Remote, Hybrid, On-site
-    geographic_expansion_trend STRING, -- Expanding, Stable, Consolidating
-
-    -- Skills & Technology Focus
-    top_required_skills VARIANT,       -- JSON array of most-required skills
-    technology_stack_profile VARIANT,  -- JSON object with tech categories
-    skills_evolution_trend VARIANT,    -- JSON array of changing skill requirements
+    -- Work Arrangement Policy
+    REMOTE_WORK_POLICY STRING,              -- 'FULL_REMOTE', 'HYBRID', 'ONSITE'
 
     -- Market Position
-    hiring_rank_in_industry INTEGER,
-    hiring_rank_by_size INTEGER,
-    hiring_competitiveness_score FLOAT,
-
-    -- Company Health Indicators
-    hiring_consistency_score FLOAT,       -- Based on posting patterns and frequency
-    growth_sustainability_score FLOAT,    -- Based on hiring patterns
-
-    -- Benchmarking
-    vs_industry_hiring_velocity FLOAT,    -- Multiple of industry average
-    vs_size_peer_hiring_velocity FLOAT,   -- Multiple of size peer average
-    vs_location_hiring_velocity FLOAT,    -- Multiple of location average
+    HIRING_RANK_IN_INDUSTRY INTEGER,
+    HIRING_COMPETITIVENESS_SCORE FLOAT,
 
     -- Quality Metrics
-    sample_size INTEGER,
-    confidence_score FLOAT,
-    data_completeness_score FLOAT,
+    SAMPLE_SIZE INTEGER,
+    DATA_COMPLETENESS_SCORE FLOAT,
 
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (analysis_date, company_key);
+    -- Audit Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) PARTITION BY (ANALYSIS_DATE)
+CLUSTER BY (ANALYSIS_DATE, COMPANY_KEY);
 ```
 
 ## Business Views & Analytics Layer
 
 ### Executive Dashboard Views
 
-##### 1. `view_executive_dashboard` (Weekly Market Overview)
+##### 1. `WEEKLY_MARKET_OVERVIEW` (Weekly Market Overview)
 ```sql
-CREATE VIEW ANALYTICS.view_executive_dashboard AS
+CREATE VIEW ANALYTICS.WEEKLY_MARKET_OVERVIEW AS
 SELECT
-    DATE_TRUNC('week', f.first_posted_date) as report_week,
+    DATE_TRUNC('week', F.FIRST_POSTED_DATE) AS REPORT_WEEK,
 
     -- Key Metrics
-    COUNT(*) as total_job_postings,
-    COUNT(DISTINCT f.company_key) as active_companies,
-    COUNT(CASE WHEN f.is_new_posting THEN 1 END) as new_postings,
+    COUNT(*) AS TOTAL_JOB_POSTINGS,
+    COUNT(DISTINCT F.COMPANY_KEY) AS ACTIVE_COMPANIES,
+    COUNT(CASE WHEN F.IS_ACTIVE_POSTING THEN 1 END) AS ACTIVE_POSTINGS,
 
     -- Salary Intelligence
-    AVG(f.salary_midpoint) as avg_salary_midpoint,
-    MEDIAN(f.salary_midpoint) as median_salary_midpoint,
-    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY f.salary_midpoint) as p75_salary,
-
-    -- Market Temperature
-    AVG(CASE
-        WHEN f.posting_age_days <= 7 THEN 100
-        WHEN f.posting_age_days <= 14 THEN 75
-        WHEN f.posting_age_days <= 30 THEN 50
-        ELSE 25
-    END) as market_temperature_score,
+    AVG(F.SALARY_MIN + F.SALARY_MAX) / 2 AS AVG_SALARY_MIDPOINT,
+    MEDIAN((F.SALARY_MIN + F.SALARY_MAX) / 2) AS MEDIAN_SALARY_MIDPOINT,
+    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY (F.SALARY_MIN + F.SALARY_MAX) / 2) AS P75_SALARY,
 
     -- Remote Work Trends
-    AVG(f.remote_work_score) as avg_remote_score,
-    COUNT(CASE WHEN f.is_remote_eligible THEN 1 END)::FLOAT / COUNT(*) * 100 as remote_percentage,
+    COUNT(CASE WHEN F.WORK_TYPE = 'Remote' THEN 1 END)::FLOAT / COUNT(*) * 100 AS REMOTE_PERCENTAGE,
+    COUNT(CASE WHEN F.WORK_TYPE = 'Hybrid' THEN 1 END)::FLOAT / COUNT(*) * 100 AS HYBRID_PERCENTAGE,
+    COUNT(CASE WHEN F.WORK_TYPE = 'On-site' THEN 1 END)::FLOAT / COUNT(*) * 100 AS ONSITE_PERCENTAGE,
 
     -- Geographic Distribution
-    MODE() WITHIN GROUP (ORDER BY l.metro_area) as top_metro_area,
-    COUNT(DISTINCT l.metro_area) as unique_metro_areas,
+    COUNT(DISTINCT L.LOCATION_KEY) AS UNIQUE_LOCATIONS,
 
-    -- Skills Intelligence
-    COUNT(CASE WHEN s.skill_category = 'Programming Language' THEN 1 END) as programming_roles,
-    COUNT(CASE WHEN s.skill_category = 'Cloud Platform' THEN 1 END) as cloud_roles,
+    -- Experience Level Distribution
+    COUNT(CASE WHEN F.SENIORITY_LEVEL = 'Entry' THEN 1 END) AS ENTRY_LEVEL_JOBS,
+    COUNT(CASE WHEN F.SENIORITY_LEVEL = 'Mid' THEN 1 END) AS MID_LEVEL_JOBS,
+    COUNT(CASE WHEN F.SENIORITY_LEVEL = 'Senior' THEN 1 END) AS SENIOR_LEVEL_JOBS,
 
     -- Growth Metrics
-    LAG(COUNT(*)) OVER (ORDER BY DATE_TRUNC('week', f.first_posted_date)) as prev_week_postings,
-    (COUNT(*)::FLOAT / LAG(COUNT(*)) OVER (ORDER BY DATE_TRUNC('week', f.first_posted_date)) - 1) * 100 as wow_growth_rate
+    LAG(COUNT(*)) OVER (ORDER BY DATE_TRUNC('week', F.FIRST_POSTED_DATE)) AS PREV_WEEK_POSTINGS,
+    (COUNT(*)::FLOAT / LAG(COUNT(*)) OVER (ORDER BY DATE_TRUNC('week', F.FIRST_POSTED_DATE)) - 1) * 100 AS WOW_GROWTH_RATE,
 
-FROM ANALYTICS.fact_job_postings f
-JOIN ANALYTICS.dim_date d ON f.date_key = d.date_key
-JOIN ANALYTICS.dim_company c ON f.company_key = c.company_key
-JOIN ANALYTICS.dim_location l ON f.location_key = l.location_key
-LEFT JOIN STAGE.job_skills_bridge jsb ON f.job_uid = jsb.job_uid
-LEFT JOIN ANALYTICS.dim_skills s ON jsb.skill_id = s.source_stage_skill_id
+    -- Quality Metrics
+    AVG(F.DATA_QUALITY_SCORE) AS AVG_DATA_QUALITY_SCORE,
+    COUNT(CASE WHEN F.SALARY_MIN IS NOT NULL AND F.SALARY_MAX IS NOT NULL THEN 1 END)::FLOAT / COUNT(*) * 100 AS SALARY_DISCLOSURE_RATE
 
-WHERE d.full_date >= CURRENT_DATE - 90
-  AND f.is_active_posting = TRUE
+FROM ANALYTICS.FACT_JOB_POSTINGS F
+JOIN ANALYTICS.DIM_DATE D ON F.DATE_POSTED_KEY = D.DATE_KEY
+JOIN ANALYTICS.DIM_COMPANY C ON F.COMPANY_KEY = C.COMPANY_KEY
+JOIN ANALYTICS.DIM_LOCATION L ON F.LOCATION_KEY = L.LOCATION_KEY
 
-GROUP BY DATE_TRUNC('week', f.first_posted_date)
-ORDER BY report_week DESC;
+WHERE D.FULL_DATE >= CURRENT_DATE - 90
+  AND F.IS_ACTIVE_POSTING = TRUE
+
+GROUP BY DATE_TRUNC('week', F.FIRST_POSTED_DATE)
+ORDER BY REPORT_WEEK DESC;
 ```
 
-##### 2. `view_salary_intelligence` (Compensation Analysis)
+##### 2. `SALARY_INTELLIGENCE` (Compensation Analysis)
 ```sql
-CREATE VIEW ANALYTICS.view_salary_intelligence AS
+CREATE VIEW ANALYTICS.SALARY_INTELLIGENCE AS
 SELECT
-    jf.job_family,
-    jf.seniority_level,
-    l.metro_area,
-    DATE_TRUNC('month', f.first_posted_date) as salary_month,
+    JF.JOB_FAMILY,
+    JF.SENIORITY_LEVEL,
+    L.METRO_AREA,
+    L.COUNTRY,
+    DATE_TRUNC('month', F.FIRST_POSTED_DATE) AS SALARY_MONTH,
 
     -- Statistical Measures
-    COUNT(*) as sample_size,
-    AVG(f.salary_midpoint) as mean_salary,
-    MEDIAN(f.salary_midpoint) as median_salary,
-    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY f.salary_midpoint) as p25_salary,
-    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY f.salary_midpoint) as p75_salary,
-    PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY f.salary_midpoint) as p90_salary,
+    COUNT(*) AS SAMPLE_SIZE,
+    AVG((F.SALARY_MIN + F.SALARY_MAX) / 2) AS MEAN_SALARY,
+    MEDIAN((F.SALARY_MIN + F.SALARY_MAX) / 2) AS MEDIAN_SALARY,
+    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY (F.SALARY_MIN + F.SALARY_MAX) / 2) AS P25_SALARY,
+    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY (F.SALARY_MIN + F.SALARY_MAX) / 2) AS P75_SALARY,
+    PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY (F.SALARY_MIN + F.SALARY_MAX) / 2) AS P90_SALARY,
 
-    -- Growth Rates
-    LAG(AVG(f.salary_midpoint)) OVER (
-        PARTITION BY jf.job_family, jf.seniority_level, l.metro_area
-        ORDER BY DATE_TRUNC('month', f.first_posted_date)
-    ) as prev_month_avg_salary,
+    -- Growth Metrics
+    LAG(AVG((F.SALARY_MIN + F.SALARY_MAX) / 2)) OVER (
+        PARTITION BY JF.JOB_FAMILY, JF.SENIORITY_LEVEL, L.METRO_AREA
+        ORDER BY DATE_TRUNC('month', F.FIRST_POSTED_DATE)
+    ) AS PREV_MONTH_AVG_SALARY,
 
-    ((AVG(f.salary_midpoint) / LAG(AVG(f.salary_midpoint)) OVER (
-        PARTITION BY jf.job_family, jf.seniority_level, l.metro_area
-        ORDER BY DATE_TRUNC('month', f.first_posted_date)
-    )) - 1) * 100 as mom_salary_growth,
+    ((AVG((F.SALARY_MIN + F.SALARY_MAX) / 2) / LAG(AVG((F.SALARY_MIN + F.SALARY_MAX) / 2)) OVER (
+        PARTITION BY JF.JOB_FAMILY, JF.SENIORITY_LEVEL, L.METRO_AREA
+        ORDER BY DATE_TRUNC('month', F.FIRST_POSTED_DATE)
+    )) - 1) * 100 AS MOM_SALARY_GROWTH,
 
-    -- Market Context
-    AVG(f.salary_midpoint) - LAG(AVG(f.salary_midpoint), 12) OVER (
-        PARTITION BY jf.job_family, jf.seniority_level, l.metro_area
-        ORDER BY DATE_TRUNC('month', f.first_posted_date)
-    ) as yoy_salary_change,
-
-    -- Cost of Living Adjustment
-    AVG(f.salary_midpoint) / l.cost_of_living_index as cola_adjusted_salary,
+    -- Work Arrangement Impact
+    AVG(CASE WHEN F.WORK_TYPE = 'Remote' THEN (F.SALARY_MIN + F.SALARY_MAX) / 2 END) AS AVG_REMOTE_SALARY,
+    AVG(CASE WHEN F.WORK_TYPE = 'On-site' THEN (F.SALARY_MIN + F.SALARY_MAX) / 2 END) AS AVG_ONSITE_SALARY,
 
     -- Quality Indicators
-    AVG(f.salary_confidence_score) as avg_confidence_score,
-    COUNT(CASE WHEN f.is_salary_disclosed THEN 1 END)::FLOAT / COUNT(*) as disclosure_rate
+    AVG(F.SALARY_CONFIDENCE) AS AVG_CONFIDENCE_SCORE,
+    COUNT(CASE WHEN F.SALARY_MIN IS NOT NULL AND F.SALARY_MAX IS NOT NULL THEN 1 END)::FLOAT / COUNT(*) * 100 AS DISCLOSURE_RATE
 
-FROM ANALYTICS.fact_job_postings f
-JOIN ANALYTICS.dim_job_family jf ON f.job_family_key = jf.job_family_key
-JOIN ANALYTICS.dim_location l ON f.location_key = l.location_key
-JOIN ANALYTICS.dim_date d ON f.date_key = d.date_key
+FROM ANALYTICS.FACT_JOB_POSTINGS F
+JOIN ANALYTICS.DIM_JOB_FAMILY JF ON F.JOB_FAMILY_KEY = JF.JOB_FAMILY_KEY
+JOIN ANALYTICS.DIM_LOCATION L ON F.LOCATION_KEY = L.LOCATION_KEY
+JOIN ANALYTICS.DIM_DATE D ON F.DATE_POSTED_KEY = D.DATE_KEY
 
-WHERE f.salary_midpoint IS NOT NULL
-  AND f.salary_midpoint BETWEEN 30000 AND 500000  -- Reasonable bounds
-  AND f.is_active_posting = TRUE
-  AND d.full_date >= CURRENT_DATE - 365
+WHERE F.SALARY_MIN IS NOT NULL
+  AND F.SALARY_MAX IS NOT NULL
+  AND (F.SALARY_MIN + F.SALARY_MAX) / 2 BETWEEN 30000 AND 500000  -- Reasonable bounds
+  AND F.IS_ACTIVE_POSTING = TRUE
+  AND D.FULL_DATE >= CURRENT_DATE - 365
 
-GROUP BY jf.job_family, jf.seniority_level, l.metro_area, DATE_TRUNC('month', f.first_posted_date)
+GROUP BY JF.JOB_FAMILY, JF.SENIORITY_LEVEL, L.METRO_AREA, L.COUNTRY, DATE_TRUNC('month', F.FIRST_POSTED_DATE)
 HAVING COUNT(*) >= 5  -- Minimum sample size for statistical validity
-ORDER BY jf.job_family, jf.seniority_level, l.metro_area, salary_month DESC;
+ORDER BY JF.JOB_FAMILY, JF.SENIORITY_LEVEL, L.METRO_AREA, SALARY_MONTH DESC;
 ```
 
-##### 3. `view_skills_market_intelligence` (Technology Trends)
+##### 3. `SKILLS_MARKET_INTELLIGENCE` (Technology Trends)
 ```sql
-CREATE VIEW ANALYTICS.view_skills_market_intelligence AS
-WITH skill_demand_trends AS (
+CREATE VIEW ANALYTICS.SKILLS_MARKET_INTELLIGENCE AS
+WITH SKILL_DEMAND_TRENDS AS (
     SELECT
-        s.skill_name,
-        s.skill_category,
-        DATE_TRUNC('week', f.first_posted_date) as demand_week,
-        COUNT(DISTINCT f.job_posting_key) as jobs_requiring_skill,
-        COUNT(DISTINCT f.job_posting_key) / (
-            SELECT COUNT(DISTINCT job_posting_key)
-            FROM ANALYTICS.fact_job_postings
-            WHERE DATE_TRUNC('week', first_posted_date) = DATE_TRUNC('week', f.first_posted_date)
-        )::FLOAT * 100 as market_penetration_rate,
+        S.SKILL_NAME,
+        S.SKILL_CATEGORY,
+        S.SKILL_SUBCATEGORY,
+        DATE_TRUNC('week', F.FIRST_POSTED_DATE) AS DEMAND_WEEK,
+        COUNT(DISTINCT F.JOB_POSTING_KEY) AS JOBS_REQUIRING_SKILL,
 
-        AVG(f.salary_midpoint) as avg_salary_with_skill,
+        -- Market Penetration Calculation
+        COUNT(DISTINCT F.JOB_POSTING_KEY)::FLOAT /
+        SUM(COUNT(DISTINCT F.JOB_POSTING_KEY)) OVER (PARTITION BY DATE_TRUNC('week', F.FIRST_POSTED_DATE)) * 100 AS MARKET_PENETRATION_RATE,
 
-        -- Calculate salary premium vs. market average
-        AVG(f.salary_midpoint) - (
-            SELECT AVG(salary_midpoint)
-            FROM ANALYTICS.fact_job_postings
-            WHERE DATE_TRUNC('week', first_posted_date) = DATE_TRUNC('week', f.first_posted_date)
-              AND salary_midpoint IS NOT NULL
-        ) as salary_premium
+        -- Salary Analysis
+        AVG((F.SALARY_MIN + F.SALARY_MAX) / 2) AS AVG_SALARY_WITH_SKILL,
 
-    FROM ANALYTICS.fact_job_postings f
-JOIN STAGE.job_skills_bridge jsb ON f.job_uid = jsb.job_uid
-JOIN ANALYTICS.dim_skills s ON jsb.skill_id = s.source_stage_skill_id
-JOIN ANALYTICS.dim_date d ON f.date_key = d.date_key
+        -- Remote Work Analysis
+        COUNT(CASE WHEN F.WORK_TYPE = 'Remote' THEN 1 END)::FLOAT / COUNT(*) * 100 AS REMOTE_AVAILABILITY_RATE
 
-    WHERE d.full_date >= CURRENT_DATE - 90
-      AND f.is_active_posting = TRUE
-      AND s.skill_type = 'Technical'
-      AND f.salary_midpoint IS NOT NULL
+    FROM ANALYTICS.FACT_JOB_POSTINGS F
+    JOIN STAGE.JOB_SKILLS_BRIDGE JSB ON F.JOB_UID = JSB.JOB_UID
+    JOIN ANALYTICS.DIM_SKILLS S ON JSB.SKILL_ID = S.SKILL_ID
+    JOIN ANALYTICS.DIM_DATE D ON F.DATE_POSTED_KEY = D.DATE_KEY
 
-    GROUP BY s.skill_name, s.skill_category, DATE_TRUNC('week', f.first_posted_date)
-    HAVING COUNT(DISTINCT f.job_posting_key) >= 10  -- Minimum threshold
+    WHERE D.FULL_DATE >= CURRENT_DATE - 90
+      AND F.IS_ACTIVE_POSTING = TRUE
+      AND F.SALARY_MIN IS NOT NULL
+      AND F.SALARY_MAX IS NOT NULL
+
+    GROUP BY S.SKILL_NAME, S.SKILL_CATEGORY, S.SKILL_SUBCATEGORY, DATE_TRUNC('week', F.FIRST_POSTED_DATE)
+    HAVING COUNT(DISTINCT F.JOB_POSTING_KEY) >= 5  -- Minimum threshold for reliability
 )
 
 SELECT
-    skill_name,
-    skill_category,
-    demand_week,
-    jobs_requiring_skill,
-    market_penetration_rate,
+    SKILL_NAME,
+    SKILL_CATEGORY,
+    SKILL_SUBCATEGORY,
+    DEMAND_WEEK,
+    JOBS_REQUIRING_SKILL,
+    MARKET_PENETRATION_RATE,
 
-    -- Trend Analysis
-    LAG(jobs_requiring_skill, 1) OVER (PARTITION BY skill_name ORDER BY demand_week) as prev_week_demand,
-    LAG(jobs_requiring_skill, 4) OVER (PARTITION BY skill_name ORDER BY demand_week) as four_weeks_ago_demand,
-
-    -- Growth Calculations
-    ((jobs_requiring_skill::FLOAT / LAG(jobs_requiring_skill, 1) OVER (PARTITION BY skill_name ORDER BY demand_week)) - 1) * 100 as wow_growth_rate,
-    ((jobs_requiring_skill::FLOAT / LAG(jobs_requiring_skill, 4) OVER (PARTITION BY skill_name ORDER BY demand_week)) - 1) * 100 as four_week_growth_rate,
+    -- Growth Analysis
+    LAG(JOBS_REQUIRING_SKILL, 1) OVER (PARTITION BY SKILL_NAME ORDER BY DEMAND_WEEK) AS PREV_WEEK_DEMAND,
+    ((JOBS_REQUIRING_SKILL::FLOAT / LAG(JOBS_REQUIRING_SKILL, 1) OVER (PARTITION BY SKILL_NAME ORDER BY DEMAND_WEEK)) - 1) * 100 AS WOW_GROWTH_RATE,
 
     -- Salary Intelligence
-    avg_salary_with_skill,
-    salary_premium,
-    CASE
-        WHEN salary_premium > 10000 THEN 'High Premium'
-        WHEN salary_premium > 5000 THEN 'Medium Premium'
-        WHEN salary_premium > 0 THEN 'Low Premium'
-        ELSE 'No Premium'
-    END as premium_category,
+    AVG_SALARY_WITH_SKILL,
+    REMOTE_AVAILABILITY_RATE,
 
     -- Market Classification
     CASE
-        WHEN market_penetration_rate > 50 THEN 'Mainstream'
-        WHEN market_penetration_rate > 20 THEN 'Popular'
-        WHEN market_penetration_rate > 5 THEN 'Niche'
-        ELSE 'Specialized'
-    END as market_adoption_level,
+        WHEN MARKET_PENETRATION_RATE > 20 THEN 'POPULAR'
+        WHEN MARKET_PENETRATION_RATE > 5 THEN 'NICHE'
+        ELSE 'SPECIALIZED'
+    END AS MARKET_ADOPTION_LEVEL,
 
     -- Trend Classification
     CASE
-        WHEN ((jobs_requiring_skill::FLOAT / LAG(jobs_requiring_skill, 4) OVER (PARTITION BY skill_name ORDER BY demand_week)) - 1) * 100 > 25 THEN 'Hot'
-        WHEN ((jobs_requiring_skill::FLOAT / LAG(jobs_requiring_skill, 4) OVER (PARTITION BY skill_name ORDER BY demand_week)) - 1) * 100 > 10 THEN 'Growing'
-        WHEN ((jobs_requiring_skill::FLOAT / LAG(jobs_requiring_skill, 4) OVER (PARTITION BY skill_name ORDER BY demand_week)) - 1) * 100 > -10 THEN 'Stable'
-        ELSE 'Declining'
-    END as trend_category
+        WHEN ((JOBS_REQUIRING_SKILL::FLOAT / LAG(JOBS_REQUIRING_SKILL, 1) OVER (PARTITION BY SKILL_NAME ORDER BY DEMAND_WEEK)) - 1) * 100 > 25 THEN 'HOT'
+        WHEN ((JOBS_REQUIRING_SKILL::FLOAT / LAG(JOBS_REQUIRING_SKILL, 1) OVER (PARTITION BY SKILL_NAME ORDER BY DEMAND_WEEK)) - 1) * 100 > 10 THEN 'GROWING'
+        WHEN ((JOBS_REQUIRING_SKILL::FLOAT / LAG(JOBS_REQUIRING_SKILL, 1) OVER (PARTITION BY SKILL_NAME ORDER BY DEMAND_WEEK)) - 1) * 100 > -10 THEN 'STABLE'
+        ELSE 'DECLINING'
+    END AS TREND_CATEGORY
 
-FROM skill_demand_trends
-ORDER BY demand_week DESC, jobs_requiring_skill DESC;
+FROM SKILL_DEMAND_TRENDS
+ORDER BY DEMAND_WEEK DESC, JOBS_REQUIRING_SKILL DESC;
 ```
+
+## Phase 5 Analytics Layer - Summary of Key Updates
+
+### Major Changes Made:
+
+#### Latest Update: Grain Simplification for Business Reality
+**Root Cause**: Original plan used unnecessarily granular time dimensions that don't align with actual business needs and decision-making cycles.
+
+1. **`FACT_JOB_POSTINGS`**: Changed from "one record per job per day" to "one record per unique job posting"
+   - **Problem**: Daily grain added 90% more records without business value since job attributes rarely change daily
+   - **Solution**: Simplified to natural grain with `FIRST_POSTED_DATE` for trends, `IS_ACTIVE_POSTING` for status tracking
+   - **Benefit**: Simpler analytics, better performance, easier to understand
+
+2. **`FACT_SKILLS_DEMAND_WEEKLY`**: Replaced `fact_skills_demand_monthly` with weekly aggregation
+   - **Problem**: Monthly skill demand tracking was too slow for responsive market intelligence
+   - **Solution**: Weekly trends provide timely insights for skill analysis and strategic decision-making
+   - **Benefit**: Enables responsive trend analysis while maintaining analytical value
+
+3. **`FACT_COMPANY_HIRING_WEEKLY`**: Changed to weekly tracking for business alignment
+   - **Problem**: Monthly tracking doesn't align with the primary business goal of weekly job market intelligence
+   - **Solution**: Weekly hiring patterns provide timely insights for competitive analysis and trend detection
+   - **Benefit**: Aligns with weekly reporting requirements and enables early trend detection
+
+#### Previous Updates:
+1. **Table Reference Standardization**: Updated all table references to match actual STAGE schema implementation
+2. **Enhanced Dimension Tables**: Added fields from actual STAGE implementation (e.g., `CANONICAL_FORM`, `COMMON_ALIASES`, `FREQUENCY_COUNT` in `DIM_SKILLS`)
+3. **Improved Location Intelligence**: Added international support, tech hub classification, and geographic hierarchy from STAGE
+4. **Enhanced Job Classification**: Updated `FACT_JOB_POSTINGS` with actual LLM enrichment fields and confidence scores
+5. **Corrected SQL Queries**: Fixed column names and skill category values to match STAGE implementation
+6. **Aligned Business Views**: Updated all business views to use correct table and column names from STAGE
+
+**Result**: Analytics layer now focuses on business-driven grain and timing that aligns with real-world decision-making processes, eliminating unnecessary complexity while maintaining full analytical capability.
 
 ## Implementation Phases
 
-**Prerequisites**: STAGE layer LLM data normalization must be completed before beginning ANALYTICS implementation. This includes `STAGE.skills_normalized`, `STAGE.job_skills_bridge`, and `STAGE.keywords_normalized` tables.
+**Prerequisites**: STAGE layer LLM data normalization must be completed before beginning ANALYTICS implementation. This includes `STAGE.SKILLS_NORMALIZED`, `STAGE.JOB_SKILLS_BRIDGE`, `STAGE.KEYWORDS_NORMALIZED`, `STAGE.LOCATIONS_NORMALIZED`, and `STAGE.JOB_LOCATIONS_BRIDGE` tables.
+
+**✅ UPDATED PLAN ALIGNED WITH STAGE IMPLEMENTATION** (January 2025):
+- **Table References**: Updated all SQL references to use actual STAGE table names (e.g., `STAGE.SKILLS_NORMALIZED` instead of `stage.skills_normalized`)
+- **Schema Alignment**: Updated column references to match actual STAGE schema (e.g., `SKILL_ID`, `JOB_UID`, `SKILL_CATEGORY`)
+- **Enhanced Data Sources**: Incorporated additional STAGE capabilities including international location support, skill family classification, and enhanced confidence scoring
+- **Improved Dimensions**: Enhanced `DIM_SKILLS` and `DIM_LOCATION` with actual STAGE data fields like `CANONICAL_FORM`, `COMMON_ALIASES`, `IS_MAJOR_TECH_HUB`, and geographic hierarchy
+- **Fact Table Enhancement**: Added LLM confidence fields, job classification, and work arrangement data from `STAGE.JOBS_LLM_ENRICHED`
+- **Ready for Implementation**: All dimensional model components now accurately reference implemented STAGE layer structure
 
 ### Phase 1: Foundation & Core Dimensional Model
 **Objective**: Establish the core star schema structure and essential dimension tables
 
 **Components**:
 - Create ANALYTICS schema and core dimension tables
-- Implement `dim_date` with business calendar
-- Build `dim_company` with Type 2 SCD logic
-- Create `dim_location` with geographic hierarchy
-- Develop `dim_job_family` with role taxonomy
-- Build `dim_platform` for ATS classification
-- Create `dim_skills` with skills taxonomy
+- Implement `DIM_DATE` with business calendar
+- Build `DIM_COMPANY` with Type 2 SCD logic
+- Create `DIM_LOCATION` with geographic hierarchy
+- Develop `DIM_JOB_FAMILY` with role taxonomy
+- Build `DIM_PLATFORM` for ATS classification
+- Create `DIM_SKILLS` with skills taxonomy
 
 **Key Deliverables**:
 - Fully populated dimension tables with proper hierarchies
@@ -1037,42 +825,41 @@ ORDER BY demand_week DESC, jobs_requiring_skill DESC;
 - Foreign key relationships and referential integrity
 
 ### Phase 2: Primary Fact Table Implementation
-**Objective**: Create the main `fact_job_postings` table with complete measure library
+**Objective**: Create the main `FACT_JOB_POSTINGS` table with complete measure library
 
 **Components**:
-- Design and implement `fact_job_postings` grain and measures
+- Design and implement `FACT_JOB_POSTINGS` grain and measures
 - Build ETL pipeline from STAGE to ANALYTICS layer
 - Implement incremental loading and SCD processing
 - Create data quality monitoring and validation
 - Establish partitioning and clustering strategy
 
 **Key Deliverables**:
-- Production-ready `fact_job_postings` table
+- Production-ready `FACT_JOB_POSTINGS` table
 - Automated daily refresh processes
 - Data lineage tracking and audit capabilities
 - Performance-optimized table structure
 
-### Phase 3: Specialized Fact Tables
-**Objective**: Build domain-specific fact tables for advanced analytics
+### Phase 3: Specialized Aggregate Tables
+**Objective**: Build domain-specific aggregate tables for advanced analytics (revised for business-appropriate grain)
 
 **Components**:
-- Implement `fact_skills_demand` for technology trend analysis
-- Create `fact_salary_benchmarks` for compensation intelligence
-- Build `fact_company_hiring_velocity` for company analysis
-- Develop aggregation and rollup strategies
+- Implement `FACT_SKILLS_DEMAND_WEEKLY` for technology trend analysis (weekly grain)
+- Build `FACT_COMPANY_HIRING_WEEKLY` for company analysis (weekly grain)
+- Develop efficient aggregation strategies aligned with business decision cycles
 
 **Key Deliverables**:
-- Specialized fact tables with appropriate grain and measures
-- Cross-fact table consistency and alignment
-- Advanced analytics capabilities for each domain
+- Business-aligned aggregate tables with appropriate grain and measures
+- Cross-table consistency and performance optimization
+- Advanced analytics capabilities that match real business needs
 
 ### Phase 4: Pre-Aggregated Metrics & KPIs
 **Objective**: Create business-ready metric tables for fast reporting
 
 **Components**:
-- Build `market_weekly_summary` for executive dashboards
-- Create `skills_trend_analysis` for technology intelligence
-- Implement `company_hiring_intelligence` for company analysis
+- Build `MARKET_WEEKLY_SUMMARY` for executive dashboards
+- Create `SKILLS_TREND_ANALYSIS` for technology intelligence
+- Implement `COMPANY_HIRING_INTELLIGENCE` for company analysis
 - Develop automated refresh and calculation processes
 
 **Key Deliverables**:
