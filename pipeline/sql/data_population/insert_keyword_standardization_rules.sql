@@ -1,26 +1,24 @@
-/*
- * Keyword Standardization Rules Configuration
- *
- * This file contains INSERT statements for populating the KEYWORD_STANDARDIZATION_RULES table
- * with comprehensive keyword standardization and normalization rules.
- *
- * Categories covered:
- * - Industry keyword standardization (FinTech -> Financial Technology)
- * - Role type normalization (IC -> Individual Contributor)
- * - Company stage standardization (Series A -> Growth Stage)
- * - Function type standardization
- * - Work style normalization
- *
- * Usage:
- * Execute this file after creating the KEYWORD_STANDARDIZATION_RULES table
- * to populate it with standardization rules.
- */
+-- =========================================================================
+-- Keyword Standardization Rules Configuration
+-- =========================================================================
+-- This file contains INSERT statements for populating the KEYWORD_STANDARDIZATION_RULES table
+-- with comprehensive keyword standardization and normalization rules.
+--
+-- Categories covered:
+-- - Industry keyword standardization (FinTech -> Financial Technology)
+-- - Role type normalization (IC -> Individual Contributor)
+-- - Company stage standardization (Series A -> Growth Stage)
+-- - Function type standardization
+-- - Work style normalization
+--
+-- Usage: Executed automatically by static_data_population asset
+-- Target Table: STAGE.KEYWORD_STANDARDIZATION_RULES
+-- =========================================================================
 
 USE DATABASE BETTERJOBS_DB;
 USE SCHEMA STAGE;
 
-
--- Clear existing rules (optional - use for clean setup)
+-- Clear existing rules (optional - comment out to preserve existing data)
 -- DELETE FROM BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES;
 
 -- Industry Keyword Standardization Rules
@@ -183,11 +181,5 @@ INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES VALUES
 ('ksr_124', 'robotics', 'Robotics & Automation', 'technology', 'hardware', 1.0, 'exact_match', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
 ('ksr_125', 'automation', 'Robotics & Automation', 'technology', 'hardware', 0.8, 'exact_match', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
--- Summary Information
-SELECT
-    'Keyword Standardization Rules Loaded' as status,
-    COUNT(*) as total_rules,
-    COUNT(DISTINCT KEYWORD_TYPE) as types_covered,
-    COUNT(DISTINCT KEYWORD_CATEGORY) as categories_covered,
-    COUNT(CASE WHEN IS_ACTIVE THEN 1 END) as active_rules
-FROM BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES;
+-- Commit the transaction
+COMMIT;

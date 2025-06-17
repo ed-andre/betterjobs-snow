@@ -410,12 +410,16 @@ def static_data_population(context: AssetExecutionContext, snowflake: SnowflakeR
 
     # Define the order of data population scripts
     data_population_files = [
-        "pipeline/sql/data_population/insert_ats_platforms.sql",
-        "pipeline/sql/data_population/insert_company_size_ranges.sql",
-        "pipeline/sql/data_population/insert_job_levels.sql",
-        "pipeline/sql/data_population/insert_job_types.sql",
-        "pipeline/sql/data_population/insert_skills.sql",
+        "pipeline/sql/data_population/insert_countries_mapping.sql",
+        "pipeline/sql/data_population/insert_keyword_standardization_rules.sql",
         "pipeline/sql/data_population/insert_keyword_type_mappings.sql",
+        "pipeline/sql/data_population/insert_location_metro_area_mapping.sql",
+        "pipeline/sql/data_population/insert_location_region_mapping.sql",
+        "pipeline/sql/data_population/insert_location_tech_hub_mapping.sql",
+        "pipeline/sql/data_population/insert_location_standardization_rules.sql",
+        "pipeline/sql/data_population/insert_skill_family_mappings.sql",
+        "pipeline/sql/data_population/insert_skill_standardization_rules.sql",
+        "pipeline/sql/data_population/insert_skill_category_patterns.sql",
         "pipeline/sql/data_population/insert_us_states_mapping.sql"
     ]
 
@@ -469,11 +473,17 @@ def setup_validation(context: AssetExecutionContext, snowflake: SnowflakeResourc
         "SHOW TABLES IN SCHEMA BETTERJOBS_DB.RAW",
         "SHOW TABLES IN SCHEMA BETTERJOBS_DB.STAGE",
         "SHOW TABLES IN SCHEMA BETTERJOBS_DB.ANALYTICS",
-        "SELECT COUNT(*) as ats_platforms_count FROM BETTERJOBS_DB.STAGE.ats_platforms",
-        "SELECT COUNT(*) as company_size_ranges_count FROM BETTERJOBS_DB.STAGE.company_size_ranges",
-        "SELECT COUNT(*) as job_levels_count FROM BETTERJOBS_DB.STAGE.job_levels",
-        "SELECT COUNT(*) as job_types_count FROM BETTERJOBS_DB.STAGE.job_types",
-        "SELECT COUNT(*) as skills_count FROM BETTERJOBS_DB.STAGE.skills",
+        "SELECT COUNT(*) as COUNTRIES_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.COUNTRIES_MAPPING",
+        "SELECT COUNT(*) as KEYWORD_STANDARDIZATION_RULES_COUNT FROM BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES",
+        "SELECT COUNT(*) as KEYWORD_TYPE_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING",
+        "SELECT COUNT(*) as LOCATION_METRO_AREA_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_METRO_AREA_MAPPING",
+        "SELECT COUNT(*) as LOCATION_REGION_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_REGION_MAPPING",
+        "SELECT COUNT(*) as LOCATION_TECH_HUB_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_TECH_HUB_MAPPING",
+        "SELECT COUNT(*) as LOCATION_STANDARDIZATION_RULES_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_STANDARDIZATION_RULES",
+        "SELECT COUNT(*) as SKILL_FAMILY_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.SKILL_FAMILY_MAPPING",
+        "SELECT COUNT(*) as SKILL_STANDARDIZATION_RULES_COUNT FROM BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES",
+        "SELECT COUNT(*) as SKILL_CATEGORY_PATTERNS_COUNT FROM BETTERJOBS_DB.STAGE.SKILL_CATEGORY_PATTERNS",
+        "SELECT COUNT(*) as US_STATES_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.US_STATES_MAPPING",
         "SELECT COUNT(*) as us_states_count FROM BETTERJOBS_DB.STAGE.us_states_mapping"
     ]
 

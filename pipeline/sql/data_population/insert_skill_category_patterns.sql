@@ -5,8 +5,8 @@
 -- These patterns help categorize skills when they don't match exact
 -- standardization rules.
 --
--- Usage:
---   Run this file once during initial setup or when patterns need updates
+-- Usage: Executed automatically by static_data_population asset
+-- Target Table: STAGE.SKILL_CATEGORY_PATTERNS
 --
 -- Pattern Types:
 --   - regex: Regular expression patterns for flexible matching
@@ -177,38 +177,3 @@ VALUES
 
 -- Commit the transaction
 COMMIT;
-
--- =============================================================================
--- VALIDATION QUERIES
--- =============================================================================
--- Run these to verify the patterns were inserted correctly
-
--- Check total pattern count by category
-SELECT
-    SKILL_CATEGORY,
-    COUNT(*) as PATTERN_COUNT,
-    COUNT(CASE WHEN IS_ACTIVE = TRUE THEN 1 END) as ACTIVE_PATTERNS,
-    COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.9 THEN 1 END) as HIGH_CONFIDENCE_PATTERNS
-FROM SKILL_CATEGORY_PATTERNS
-GROUP BY SKILL_CATEGORY
-ORDER BY PATTERN_COUNT DESC;
-
--- Check for duplicate patterns
-SELECT
-    PATTERN,
-    COUNT(*) as DUPLICATE_COUNT
-FROM SKILL_CATEGORY_PATTERNS
-GROUP BY PATTERN
-HAVING COUNT(*) > 1;
-
--- Sample patterns by category
-SELECT
-    SKILL_CATEGORY,
-    PATTERN,
-    DESCRIPTION,
-    CONFIDENCE_SCORE,
-    IS_ACTIVE
-FROM SKILL_CATEGORY_PATTERNS
-WHERE SKILL_CATEGORY IN ('languages', 'frameworks', 'tools', 'databases')
-ORDER BY SKILL_CATEGORY, CONFIDENCE_SCORE DESC
-LIMIT 25;

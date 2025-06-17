@@ -5,18 +5,15 @@
 -- common variations, and abbreviations) to enable proper parsing of
 -- international locations like "singapore, singapore" or "gurugram, india"
 --
--- Usage:
---   Run this file once during initial setup or when updates are needed
---   Used by location normalization to distinguish countries from US states
+-- Usage: Executed automatically by static_data_population asset
+-- Target Table: STAGE.COUNTRIES_MAPPING
 -- =========================================================================
 
 USE DATABASE BETTERJOBS_DB;
 USE SCHEMA STAGE;
 
-
-
 -- Clear existing data (optional - comment out to preserve existing data)
-DELETE FROM COUNTRIES_MAPPING;
+-- DELETE FROM COUNTRIES_MAPPING;
 
 -- Insert comprehensive countries mapping
 INSERT INTO COUNTRIES_MAPPING

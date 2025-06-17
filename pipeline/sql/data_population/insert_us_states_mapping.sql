@@ -5,15 +5,15 @@
 -- abbreviations) to automatically set country to "United States" during
 -- location normalization when state information is present.
 --
--- Usage:
---   Run this file once during initial setup or when updates are needed
---   Used by the location normalization process to infer country from state
+-- Usage: Executed automatically by static_data_population asset
+-- Target Table: STAGE.US_STATES_MAPPING
 -- =========================================================================
 
 USE DATABASE BETTERJOBS_DB;
 USE SCHEMA STAGE;
+
 -- Clear existing data (optional - comment out to preserve existing data)
-DELETE FROM US_STATES_MAPPING;
+-- DELETE FROM US_STATES_MAPPING;
 
 -- Insert comprehensive US states mapping
 INSERT INTO US_STATES_MAPPING
