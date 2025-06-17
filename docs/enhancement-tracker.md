@@ -4443,6 +4443,193 @@ def stage_jobs_bamboohr(context: AssetExecutionContext, snowflake: SnowflakeReso
 
 ---
 
+## ENHANCEMENT-021: Update README.md for Schema-as-Code Infrastructure
+
+**Status:** 📋 **Planned**
+**Priority:** Medium
+**Component:** Documentation & Developer Experience
+**Date Planned:** 2025-01-20 (Post-Enhancement 20 completion)
+**Estimated Effort:** 1 day
+**Business Impact:** Medium - Improves developer onboarding and reduces setup friction
+
+### Problem Statement
+The current README.md describes the project setup and infrastructure based on the legacy asset structure (raw_schema_setup, stage_schema_setup, analytics_schema_setup). With Enhancement 20's completion, the infrastructure has been refactored to use a schema-as-code approach with object files and new asset names (infrastructure_setup, tables_setup, views_setup), making the documentation outdated and potentially confusing for new developers.
+
+### Description
+Update the README.md documentation to accurately reflect the new schema-as-code infrastructure system, including the object file organization, updated asset structure, and revised setup procedures. Ensure new developers can easily understand and set up the project with the modernized infrastructure layer.
+
+### Business Justification
+- **Developer Onboarding**: Accurate documentation reduces setup time and confusion
+- **Project Maintenance**: Up-to-date README prevents outdated setup procedures
+- **Professional Standards**: Maintains high-quality documentation standards
+- **Adoption Support**: Clear documentation encourages project usage and contribution
+- **Knowledge Transfer**: Enables effective handoff and collaboration
+
+### Technical Approach
+
+**Documentation Updates Required:**
+
+1. **Infrastructure Architecture Section**:
+   - Update asset flow diagrams to show new infrastructure layer structure
+   - Document object file organization (`tables/`, `views/`, `infrastructure/`)
+   - Explain schema-as-code benefits and self-healing capabilities
+   - Update dependency flow: `database_schema_setup` → `infrastructure_setup` → `tables_setup` → `views_setup`
+
+2. **Getting Started Section**:
+   - Update Snowflake setup instructions to reference object files
+   - Document new infrastructure asset execution order
+   - Add object file validation and completeness checks
+   - Update environment variables and configuration requirements
+
+3. **Pipeline Components Section**:
+   - Update asset descriptions to reflect new infrastructure layer
+   - Document object file self-healing capabilities
+   - Explain file format management and reusable components
+   - Update asset dependency explanations
+
+4. **Usage Workflow Section**:
+   - Update asset materialization workflows for new infrastructure
+   - Document object file-based setup procedures
+   - Add troubleshooting guidance for object file issues
+   - Update job execution instructions
+
+### Specific Documentation Changes
+
+**New Infrastructure Section Addition:**
+```markdown
+### Infrastructure Layer (Schema-as-Code)
+
+The BetterJobs pipeline uses a modern schema-as-code approach where database objects are defined in individual SQL files and automatically created on-demand:
+
+#### Object File Organization:
+```
+pipeline/sql/objects/
+├── tables/           # Individual table definitions
+│   ├── raw_bamboohr_jobs.sql
+│   ├── stage_jobs_unified.sql
+│   └── analytics_job_metrics.sql
+├── views/            # Individual view definitions
+│   ├── stage_jobs_active_view.sql
+│   └── analytics_company_summary.sql
+└── infrastructure/   # Stages, integrations, file formats
+    ├── storage_integrations.sql
+    ├── file_formats.sql
+    └── raw_s3_stages.sql
+```
+
+#### Infrastructure Asset Flow:
+1. **database_schema_setup** - Creates foundational database, schemas, and roles
+2. **infrastructure_setup** - Creates stages, integrations, and file formats
+3. **tables_setup** - Creates all database tables from object files
+4. **views_setup** - Creates all database views from object files
+5. **static_data_population** - Populates reference data
+6. **setup_validation** - Validates complete infrastructure setup
+
+#### Self-Healing Capabilities:
+- Missing database objects are automatically created on-demand
+- Object definitions serve as single source of truth
+- Assets can run independently without full infrastructure setup
+- Clear error messages guide developers to resolution steps
+```
+
+**Updated Environment Configuration:**
+```markdown
+### Environment Configuration (Updated for Schema-as-Code)
+
+The schema-as-code infrastructure requires standard Snowflake configuration:
+
+```env
+# Snowflake (same as before)
+SNOWFLAKE_ACCOUNT=your_account_identifier
+SNOWFLAKE_USER=your_username
+SNOWFLAKE_PASSWORD=your_password
+SNOWFLAKE_DATABASE=BETTERJOBS_DB
+SNOWFLAKE_RAW_SCHEMA=RAW
+SNOWFLAKE_WAREHOUSE=your_warehouse
+SNOWFLAKE_ROLE=your_role
+
+# Optional: Custom database name for object files
+SNOWFLAKE_DATABASE=CUSTOM_DB_NAME  # Defaults to BETTERJOBS_DB
+```
+
+The infrastructure will automatically create all required objects using the definitions in `pipeline/sql/objects/`.
+```
+
+**Updated Installation Section:**
+```markdown
+### Infrastructure Setup (Schema-as-Code)
+
+After environment configuration, initialize the infrastructure:
+
+```bash
+cd pipeline/dagster_betterjobs
+dagster dev
+```
+
+In the Dagster UI, materialize the infrastructure assets in order:
+1. **database_schema_setup** - Creates foundational database structure
+2. **infrastructure_setup** - Creates S3 stages, file formats, and integrations
+3. **tables_setup** - Creates all table objects from individual SQL files
+4. **views_setup** - Creates all view objects from individual SQL files
+
+Or run all infrastructure setup at once:
+```bash
+dagster asset materialize -a database_schema_setup infrastructure_setup tables_setup views_setup
+```
+
+#### Self-Healing Infrastructure:
+Individual assets will automatically create missing database objects on-demand, so full infrastructure setup is optional for development and testing.
+```
+
+### Implementation Plan
+
+**Phase 1: Content Updates (Day 1)**
+1. **Audit Current Documentation**:
+   - Review all infrastructure-related sections in README.md
+   - Identify outdated asset names and procedures
+   - Document new schema-as-code concepts to explain
+
+2. **Update Core Sections**:
+   - Rewrite Pipeline Components section for new asset structure
+   - Update Getting Started with object file setup procedures
+   - Add schema-as-code explanation and benefits
+   - Update installation and configuration instructions
+
+3. **Add New Documentation**:
+   - Create Infrastructure Layer section explaining object files
+   - Document self-healing capabilities and benefits
+   - Add troubleshooting section for object file issues
+   - Update usage workflows for new asset structure
+
+**Phase 2: Validation & Polish (Same Day)**
+1. **Documentation Testing**:
+   - Follow updated setup procedures from scratch
+   - Verify all asset names and procedures are accurate
+   - Test environment configuration instructions
+   - Validate code examples and configurations
+
+2. **Quality Review**:
+   - Ensure consistent terminology throughout
+   - Verify all links and references are functional
+   - Check formatting and readability
+   - Align with existing documentation style
+
+### Success Criteria
+- **Accurate Setup Instructions**: New developers can set up project using updated documentation
+- **Clear Asset Structure**: Infrastructure layer and object files clearly explained
+- **Complete Coverage**: All schema-as-code concepts documented with examples
+- **Consistent Terminology**: Asset names and procedures match implementation
+- **Professional Quality**: Documentation maintains high standards for clarity and completeness
+
+### Benefits
+- ✅ **Developer Experience**: Clear, accurate setup instructions reduce onboarding friction
+- ✅ **Project Adoption**: Updated documentation encourages usage and contribution
+- ✅ **Maintenance Efficiency**: Documentation stays in sync with infrastructure changes
+- ✅ **Knowledge Sharing**: Effective documentation enables collaboration and handoff
+- ✅ **Professional Standards**: Maintains high-quality project documentation
+
+---
+
 ## ENHANCEMENT-099: SQL-as-Files for Database Platform Migration
 
 **Status:** 📋 **Planned**
