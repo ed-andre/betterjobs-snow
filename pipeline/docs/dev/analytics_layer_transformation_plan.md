@@ -950,3 +950,307 @@ ORDER BY DEMAND_WEEK DESC, JOBS_REQUIRING_SKILL DESC;
 - **Career Path Analytics**: Skills progression and career development insights
 
 This comprehensive ANALYTICS layer will transform the BetterJobs-Snow pipeline into a robust job market intelligence platform, enabling data-driven decision making and comprehensive market insights for weekly business reporting and strategic planning.
+
+## DEVELOPMENT IMPLEMENTATION PLAN
+
+*Updated: 2024-12-28*
+
+Now that all database objects are defined for the analytics layer, this section provides the detailed implementation roadmap with specific development tasks and deliverables.
+
+### Development Prerequisites
+
+**✅ STAGE Layer Dependencies (Already Completed)**:
+- `STAGE.JOBS_UNIFIED` - Core job data with standardized fields
+- `STAGE.JOBS_LLM_ENRICHED` - LLM-extracted job attributes and classifications
+- `STAGE.COMPANY_PROFILES` - Company metadata and classifications
+- `STAGE.SKILLS_NORMALIZED` - Standardized skills taxonomy
+- `STAGE.JOB_SKILLS_BRIDGE` - Job-to-skills relationships
+- `STAGE.LOCATIONS_NORMALIZED` - Standardized location hierarchy
+- `STAGE.JOB_LOCATIONS_BRIDGE` - Job-to-location relationships
+- `STAGE.KEYWORDS_NORMALIZED` - Standardized keyword taxonomy
+
+### Dagster Assets Architecture
+
+The analytics layer implementation will follow the existing Dagster asset patterns used in the STAGE layer. Each asset has clear dependencies and specific business purposes.
+
+#### Asset Dependency Flow
+
+```
+STAGE Layer Assets (prerequisite)
+    ↓
+analytics_dimension_tables (Phase 1)
+    ↓
+analytics_fact_job_postings (Phase 2)
+    ↓
+┌─ analytics_fact_skills_demand_weekly (Phase 3)
+├─ analytics_fact_company_hiring_weekly (Phase 3)
+└─ analytics_market_intelligence_tables (Phase 4)
+    ↓
+analytics_business_views (Phase 5)
+```
+
+### Phase 1: Dimension Tables Implementation
+
+#### 1.1 `analytics_dim_date`
+**Purpose**: Create date dimension for time-based analysis
+**Dependencies**: None (reference data)
+**Output**: Complete date dimension with business calendar
+
+```python
+@asset(
+    description="Create date dimension table for analytics time-based analysis",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Create comprehensive date dimension spanning 10 years.
+
+    Features:
+    - Business day indicators
+    - Week/month/quarter/year hierarchy
+    - Holiday flags for business intelligence
+    """
+```
+
+#### 1.2 `analytics_dim_company`
+**Purpose**: Create company dimension with SCD Type 2 logic
+**Dependencies**: `stage_company_profiles`, `stage_jobs_unified`
+**Output**: Company dimension with historical tracking
+
+```python
+@asset(
+    deps=["stage_company_profiles", "stage_jobs_unified"],
+    description="Create company dimension with Type 2 SCD for company changes",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build company dimension from STAGE sources.
+
+    Processing:
+    - Apply Type 2 SCD logic for company changes
+    - Standardize company names and classifications
+    - Add company size and industry attributes
+    """
+```
+
+#### 1.3 `analytics_dim_location`
+**Purpose**: Create location dimension with geographic hierarchy
+**Dependencies**: `stage_locations_normalized`
+**Output**: Location dimension with geographic intelligence
+
+#### 1.4 `analytics_dim_job_family`
+**Purpose**: Create job classification dimension
+**Dependencies**: `stage_jobs_llm_enriched`
+**Output**: Job family hierarchy for role analysis
+
+#### 1.5 `analytics_dim_platform`
+**Purpose**: Create platform dimension for ATS classification
+**Dependencies**: `stage_jobs_unified`
+**Output**: Platform characteristics dimension
+
+#### 1.6 `analytics_dim_skills`
+**Purpose**: Create skills dimension from normalized skills
+**Dependencies**: `stage_skills_normalized`
+**Output**: Skills taxonomy dimension
+
+### Phase 2: Primary Fact Table Implementation
+
+#### 2.1 `analytics_fact_job_postings`
+**Purpose**: Create primary fact table for job posting analytics
+**Dependencies**: All dimension tables, `stage_jobs_unified`, `stage_jobs_llm_enriched`
+**Output**: Core fact table with measures and dimension keys
+
+```python
+@asset(
+    deps=["analytics_dim_date", "analytics_dim_company", "analytics_dim_location",
+          "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills",
+          "stage_jobs_unified", "stage_jobs_llm_enriched"],
+    description="Create primary fact table for job posting analytics",
+    group_name="analytics_facts",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build the primary fact table for job posting analytics.
+
+    Processing:
+    - Join STAGE tables with dimension lookups
+    - Apply business rules and data quality filters
+    - Generate surrogate keys and measures
+    - Implement incremental loading logic
+    """
+```
+
+**Key Implementation Tasks**:
+1. **Dimension Key Lookups**: Map natural keys to surrogate keys
+2. **Measure Calculations**: Salary midpoints, experience calculations
+3. **Data Quality Rules**: Filter invalid or incomplete records
+4. **Incremental Processing**: Daily refresh with change detection
+
+### Phase 3: Aggregate Fact Tables Implementation
+
+#### 3.1 `analytics_fact_skills_demand_weekly`
+**Purpose**: Create weekly skills demand aggregates
+**Dependencies**: `analytics_fact_job_postings`, `stage_job_skills_bridge`
+**Output**: Skills demand trends with weekly granularity
+
+```python
+@asset(
+    deps=["analytics_fact_job_postings", "stage_job_skills_bridge"],
+    description="Create weekly skills demand aggregate fact table",
+    group_name="analytics_aggregates",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Aggregate job postings by skill and week for trend analysis.
+
+    Processing:
+    - Calculate skill penetration rates
+    - Compute salary premiums by skill
+    - Track week-over-week growth
+    - Generate skill ranking metrics
+    """
+```
+
+#### 3.2 `analytics_fact_company_hiring_weekly`
+**Purpose**: Create weekly company hiring intelligence
+**Dependencies**: `analytics_fact_job_postings`
+**Output**: Company hiring patterns and velocity metrics
+
+### Phase 4: Market Intelligence Tables Implementation
+
+#### 4.1 `analytics_market_weekly_summary`
+**Purpose**: Pre-aggregated executive metrics
+**Dependencies**: `analytics_fact_job_postings`
+**Output**: Weekly market overview for dashboards
+
+#### 4.2 `analytics_skills_trend_analysis`
+**Purpose**: Skills intelligence with trend analysis
+**Dependencies**: `analytics_fact_skills_demand_weekly`
+**Output**: Skills market intelligence for reporting
+
+#### 4.3 `analytics_company_hiring_intelligence`
+**Purpose**: Company-specific hiring analytics
+**Dependencies**: `analytics_fact_company_hiring_weekly`
+**Output**: Company intelligence for competitive analysis
+
+### Phase 5: Business Views Implementation
+
+#### 5.1 `analytics_view_weekly_market_overview`
+**Purpose**: Executive dashboard view
+**Dependencies**: Market intelligence tables
+**Output**: Business-ready view for reporting
+
+#### 5.2 `analytics_view_salary_intelligence`
+**Purpose**: Compensation analysis view
+**Dependencies**: `analytics_fact_job_postings`
+**Output**: Salary benchmarking analytics
+
+#### 5.3 `analytics_view_skills_market_intelligence`
+**Purpose**: Technology trends view
+**Dependencies**: Skills trend tables
+**Output**: Skills demand analytics
+
+### Implementation Phases Timeline
+
+#### Phase 1: Foundation
+**Deliverables**:
+- All 6 dimension tables created and populated
+- Surrogate key generation logic
+- Data quality validation framework
+- Performance optimization (clustering/partitioning)
+
+#### Phase 2: Core Facts
+**Deliverables**:
+- `FACT_JOB_POSTINGS` table operational
+- Incremental loading process
+- Data lineage and audit capabilities
+- Query performance benchmarks
+
+#### Phase 3: Aggregates
+**Deliverables**:
+- Weekly skills demand aggregates
+- Company hiring intelligence aggregates
+- Automated weekly refresh processes
+- Cross-table consistency validation
+
+#### Phase 4: Market Intelligence
+**Deliverables**:
+- Pre-calculated market metrics
+- Executive dashboard data
+- Automated metric generation
+- Business rule validation
+
+#### Phase 5: Business Views
+**Deliverables**:
+- Production-ready analytics views
+- Optimized query performance
+- Business user access layer
+- Documentation and training materials
+
+### Processing Functions and Utilities
+
+#### Core Transformation Classes
+
+```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/transformations/analytics_layer.py
+
+class AnalyticsDimensionBuilder:
+    """Handle dimension table creation and SCD processing"""
+
+    def build_company_dimension(self, snowflake: SnowflakeResource) -> Dict[str, Any]:
+        """Build company dimension with Type 2 SCD logic"""
+        # Implementation for company dimension processing
+
+    def build_location_dimension(self, snowflake: SnowflakeResource) -> Dict[str, Any]:
+        """Build location dimension with geographic hierarchy"""
+        # Implementation for location dimension processing
+
+class AnalyticsFactBuilder:
+    """Handle fact table creation and measures calculation"""
+
+    def build_job_postings_fact(self, snowflake: SnowflakeResource) -> Dict[str, Any]:
+        """Build primary job postings fact table"""
+        # Implementation for fact table processing
+
+    def calculate_weekly_aggregates(self, snowflake: SnowflakeResource) -> Dict[str, Any]:
+        """Calculate weekly aggregate measures"""
+        # Implementation for aggregate calculations
+
+class AnalyticsQualityValidator:
+    """Validate analytics layer data quality"""
+
+    def validate_dimension_integrity(self) -> Dict[str, Any]:
+        """Validate dimension table integrity"""
+        # Implementation for dimension validation
+
+    def validate_fact_completeness(self) -> Dict[str, Any]:
+        """Validate fact table completeness"""
+        # Implementation for fact validation
+```
+
+### Success Criteria
+
+#### Technical KPIs
+- **Query Performance**: <1 second for executive dashboards, <5 seconds for complex analytics
+- **Data Freshness**: Weekly metrics available within 2 hours of STAGE refresh
+- **Data Quality**: >99% completeness for critical business measures
+- **Processing Performance**: Complete daily refresh within 30 minutes
+
+#### Business KPIs
+- **Market Intelligence**: Enable accurate weekly job market trend identification
+- **Salary Intelligence**: Provide comprehensive compensation analysis
+- **Skills Intelligence**: Track technology demand trends
+- **Company Intelligence**: Deliver hiring pattern insights
+
+#### Coverage KPIs
+- **Job Coverage**: >95% of STAGE jobs represented in analytics
+- **Skills Coverage**: >90% of jobs with skills analysis
+- **Geographic Coverage**: >85% of jobs with location intelligence
+- **Temporal Coverage**: Complete historical analysis capability
+
+This implementation plan provides a focused roadmap for building the analytics layer assets using the established Dagster patterns, with clear phases, deliverables, and success metrics.
