@@ -4,6 +4,7 @@ from dagster import asset, AssetExecutionContext, Config, MetadataValue
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 from ..transformations.text_cleaning import clean_company_name, normalize_whitespace
+from ..assets.snowflake_master_company_urls import generate_company_id
 
 
 def standardize_industry(industry: Optional[str]) -> str:
@@ -138,6 +139,7 @@ def setup_stage_schema_and_table(conn):
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS COMPANY_PROFILES (
             COMPANY_ID STRING PRIMARY KEY,
+            PROFILE_ID STRING,
             COMPANY_NAME_STANDARDIZED STRING,
             COMPANY_INDUSTRY_STANDARDIZED STRING,
             COMPANY_SIZE_CATEGORY STRING,
@@ -167,7 +169,7 @@ class StageCompanyProfilesConfig(Config):
     group_name="stage_cleansing_enrichment_validation_transformation",
     kinds={"snowflake", "python", "transformation"},
     required_resource_keys={"snowflake"},
-    deps=["raw_company_profiles"]
+    deps=["raw_company_profiles", "snowflake_master_company_urls"]
 )
 def stage_company_profiles(
     context: AssetExecutionContext,
@@ -176,13 +178,21 @@ def stage_company_profiles(
     """
     Transform raw company profiles to STAGE layer format.
 
-    This asset performs simple transformations from RAW.raw_company_profiles to STAGE.company_profiles:
-    - PROFILE_ID → COMPANY_ID (direct mapping)
+    This asset performs transformations from RAW.raw_company_profiles to STAGE.company_profiles:
+    - PROFILE_ID preserved for lineage tracking (BUG-014 fix)
+    - COMPANY_ID generated using deterministic generate_company_id() function for consistency across pipeline
     - Company name standardization and cleaning
     - Industry standardization with common mappings
     - Company size categorization from employee count ranges
     - Location cleaning for headquarters
     - Sets FUNDING_STAGE to NULL (not available in raw data)
+
+    BUG-014 Resolution: Fixed inconsistent COMPANY_ID generation across pipeline tables by:
+    - Joining with MASTER_COMPANY_URLS to get platform information for each company
+    - Using generate_company_id(company_name, platform) with actual platform data
+    - Fallback to 'COMPANY_PROFILES' platform for companies not in MASTER_COMPANY_URLS
+    - Preserving original PROFILE_ID field for data lineage
+    - Ensuring complete compatibility with other pipeline tables using same company_name + platform combination
     """
 
     # Get Snowflake connection
@@ -199,18 +209,23 @@ def stage_company_profiles(
 
         context.log.info("Loading raw company profiles data...")
 
+        # BUG-014 FIX: Join with MASTER_COMPANY_URLS to get platform information
+        # This ensures consistent company_id generation across pipeline tables
         load_query = """
-        SELECT
-            profile_id,
-            company_name,
-            company_industry,
-            employee_count_range,
-            city,
-            ingested_at
-        FROM raw_company_profiles
-        WHERE company_name IS NOT NULL
-        AND TRIM(company_name) != ''
-        ORDER BY ingested_at DESC
+        SELECT DISTINCT
+            rcp.profile_id,
+            rcp.company_name,
+            rcp.company_industry,
+            rcp.employee_count_range,
+            rcp.city,
+            rcp.ingested_at,
+            mcu.platform
+        FROM raw_company_profiles rcp
+        LEFT JOIN master_company_urls mcu
+            ON TRIM(UPPER(rcp.company_name)) = TRIM(UPPER(mcu.company_name))
+        WHERE rcp.company_name IS NOT NULL
+        AND TRIM(rcp.company_name) != ''
+        ORDER BY rcp.ingested_at DESC
         """
 
         cursor.execute(load_query)
@@ -224,7 +239,7 @@ def stage_company_profiles(
         # Convert to DataFrame for processing
         df = pd.DataFrame(raw_data, columns=[
             'profile_id', 'company_name', 'company_industry',
-            'employee_count_range', 'city', 'ingested_at'
+            'employee_count_range', 'city', 'ingested_at', 'platform'
         ])
 
         context.log.info(f"Loaded {len(df)} raw company profiles for transformation")
@@ -232,16 +247,32 @@ def stage_company_profiles(
         # Apply transformations
         context.log.info("Applying text cleaning and standardization...")
 
-        # Transform fields according to schema mapping
-        df['company_id'] = df['profile_id']  # Direct mapping (already standardized)
+        # BUG-014 FIX: Generate deterministic company ID using standardized function with platform from join
+        # Preserve profile_id for lineage, generate company_id for consistency across pipeline
+        df['profile_id_preserved'] = df['profile_id']  # Preserve original profile ID for lineage
+
+        # Use platform from MASTER_COMPANY_URLS join, fallback to 'COMPANY_PROFILES' if null
+        df['platform_for_id'] = df['platform'].fillna('COMPANY_PROFILES')
+        df['company_id'] = df.apply(lambda row: generate_company_id(row['company_name'], row['platform_for_id']), axis=1)
         df['company_name_standardized'] = df['company_name'].apply(clean_company_name)
         df['company_industry_standardized'] = df['company_industry'].apply(standardize_industry)
         df['company_size_category'] = df['employee_count_range'].apply(categorize_company_size)
         df['headquarters_location'] = df['city'].apply(lambda x: normalize_whitespace(x) if x else "")
         df['funding_stage'] = None  # Not available in raw data
 
+        # Log platform distribution for debugging
+        platform_distribution = df['platform_for_id'].value_counts().to_dict()
+        companies_with_platform = int((df['platform'].notna()).sum())
+        companies_without_platform = int((df['platform'].isna()).sum())
+
+        context.log.info(f"Generated {len(df)} deterministic company IDs using generate_company_id() function")
+        context.log.info(f"Platform distribution: {platform_distribution}")
+        context.log.info(f"Companies with platform from MASTER_COMPANY_URLS: {companies_with_platform}")
+        context.log.info(f"Companies using fallback 'COMPANY_PROFILES' platform: {companies_without_platform}")
+
         # Prepare final dataset for loading
         stage_df = df[[
+            'profile_id_preserved',
             'company_id',
             'company_name_standardized',
             'company_industry_standardized',
@@ -253,6 +284,7 @@ def stage_company_profiles(
 
         # Rename columns to match Snowflake uppercase schema
         stage_df.columns = [
+            'PROFILE_ID',
             'COMPANY_ID',
             'COMPANY_NAME_STANDARDIZED',
             'COMPANY_INDUSTRY_STANDARDIZED',

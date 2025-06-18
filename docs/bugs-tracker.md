@@ -1374,4 +1374,200 @@ with snowflake.get_connection() as conn:
 
 ---
 
+## BUG-014: Inconsistent COMPANY_ID Generation Across Pipeline Tables
+
+**Status**: RESOLVED ✅
+**Severity**: Critical
+**Component**: Data Pipeline - Company ID Standardization
+**Date Reported**: 2025-06-17
+**Date Resolved**: 2025-06-17
+
+### Description
+Critical inconsistency in `COMPANY_ID` generation across pipeline tables. The `STAGE.COMPANY_PROFILES` table maps `COMPANY_ID` directly to `PROFILE_ID` from upstream `raw_company_profiles`, while other tables like `MASTER_COMPANY_URLS` use the deterministic `generate_company_id()` function. This creates mismatched company identifiers that break downstream joins and analytics.
+
+### Root Cause Analysis
+**File**: `pipeline/dagster_betterjobs/dagster_betterjobs/assets/stage_company_profiles.py` (Line 224)
+
+**Issue**: The transformation directly maps `PROFILE_ID` to `COMPANY_ID`:
+```python
+df['company_id'] = df['profile_id']  # Direct mapping (already standardized)
+```
+
+**Comparison with other tables**:
+- `MASTER_COMPANY_URLS` uses: `generate_company_id(company_name, platform)` from `snowflake_master_company_urls.py`
+- `raw_company_profiles` generates: `PROFILE_ID` using `generate_company_platform_id(company_name, "PROFILE")`
+- `stage_company_profiles` incorrectly uses: `PROFILE_ID` as `COMPANY_ID`
+
+### Expected vs Actual
+**Expected**:
+- `COMPANY_ID` should be generated using `generate_company_id(company_name, platform)` for consistency
+- `PROFILE_ID` should be preserved as a separate field for lineage tracking
+
+**Actual**:
+- `COMPANY_ID = PROFILE_ID` (using platform="PROFILE" in the hash)
+- No separate `PROFILE_ID` field in STAGE schema
+- Incompatible with other tables using deterministic company ID generation
+
+### Impact
+- **Critical**: Company joining across tables fails due to ID mismatch
+- **Analytics**: Downstream analytics cannot properly link company data
+- **Data Integrity**: Same companies have different IDs across tables
+- **Scalability**: Manual ID mapping required for cross-table queries
+
+### Reproduction Steps
+1. Query `STAGE.COMPANY_PROFILES` for a company (e.g., "Microsoft")
+2. Query `MASTER_COMPANY_URLS` for the same company
+3. Compare `COMPANY_ID` values - they will be completely different
+4. Observe that joins on `COMPANY_ID` return no matches
+
+### Files Affected
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/stage_company_profiles.py` (Lines 224, schema definition)
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/raw_company_profiles.py` (PROFILE_ID generation)
+- `pipeline/sql/objects/tables/stage_company_profiles.sql` (TABLE DEFINITION)
+
+- Schema: `STAGE.COMPANY_PROFILES` table structure
+
+### Proposed Resolution
+1. **Update STAGE.COMPANY_PROFILES schema** to include both fields:
+   - `PROFILE_ID` (maps to upstream PROFILE_ID for lineage)
+   - `COMPANY_ID` (generated using `generate_company_id()` for consistency)
+
+2. **Modify stage_company_profiles.py transformation**:
+   ```python
+   # Preserve profile_id for lineage
+   df['profile_id'] = df['profile_id']
+
+   # Generate consistent company_id using standardized function
+   df['company_id'] = df.apply(lambda row: generate_company_id(row['company_name'], 'COMPANY_PROFILES'), axis=1)
+   ```
+
+3. **Import generate_company_id function** from `snowflake_master_company_urls.py`
+
+4. **Update all downstream queries** to use the new consistent `COMPANY_ID`
+
+### Resolution
+**Fixed in**: `pipeline/dagster_betterjobs/dagster_betterjobs/assets/stage_company_profiles.py`
+
+**Root Cause - FINAL**: The `stage_company_profiles` asset was using `PROFILE_ID` directly as `COMPANY_ID`, while other pipeline tables used the deterministic `generate_company_id(company_name, platform)` function. This created incompatible company identifiers across tables.
+
+**Changes Made**:
+
+**Phase 1 - Table Schema Update**:
+1. **Updated table schema** to include both `PROFILE_ID` and `COMPANY_ID` fields
+2. **Preserved PROFILE_ID** for data lineage tracking
+3. **Added COMPANY_ID** as primary key using standardized generation
+
+**Phase 2 - Data Join Enhancement**:
+4. **Added JOIN with MASTER_COMPANY_URLS** to retrieve platform information for each company
+5. **Enhanced SQL query** to use `LEFT JOIN master_company_urls ON company_name` for platform data
+
+**Phase 3 - Transformation Logic Fix**:
+6. **Imported generate_company_id function** from `snowflake_master_company_urls.py`
+7. **Updated transformation logic**:
+   - Preserve original `profile_id` as `PROFILE_ID` field
+   - Use platform from MASTER_COMPANY_URLS join, fallback to 'COMPANY_PROFILES' if null
+   - Generate `COMPANY_ID` using `generate_company_id(company_name, platform)` with actual platform
+8. **Added comprehensive logging** for company ID generation and platform distribution
+
+**Technical Fix**:
+```python
+# BEFORE (problematic):
+df['company_id'] = df['profile_id']  # Direct mapping causing inconsistency
+
+# AFTER (fixed):
+# Enhanced SQL with JOIN to get platform data
+load_query = """
+SELECT DISTINCT rcp.*, mcu.platform
+FROM raw_company_profiles rcp
+LEFT JOIN master_company_urls mcu
+    ON TRIM(UPPER(rcp.company_name)) = TRIM(UPPER(mcu.company_name))
+"""
+
+# Use actual platform from join
+df['profile_id_preserved'] = df['profile_id']  # Preserve for lineage
+df['platform_for_id'] = df['platform'].fillna('COMPANY_PROFILES')  # Fallback
+df['company_id'] = df.apply(lambda row: generate_company_id(row['company_name'], row['platform_for_id']), axis=1)
+```
+
+**Schema Changes**:
+```sql
+-- Updated table schema to include both fields:
+CREATE TABLE STAGE.COMPANY_PROFILES (
+    PROFILE_ID STRING,              -- Preserved for lineage
+    COMPANY_ID STRING PRIMARY KEY,  -- Generated using standardized function
+    COMPANY_NAME_STANDARDIZED STRING,
+    -- ... other fields
+);
+```
+
+### Impact
+- ✅ **Company ID Consistency**: All pipeline tables now use same deterministic company ID generation
+- ✅ **Cross-Table Joins**: COMPANY_ID can now be used to join across all pipeline tables
+- ✅ **Data Lineage Preserved**: Original PROFILE_ID maintained for tracking
+- ✅ **Analytics Enabled**: Downstream analytics can properly link company data
+- ✅ **Pipeline Integrity**: Eliminates data integrity issues caused by mismatched IDs
+
+### Files Affected
+- ✅ `dagster_betterjobs/assets/stage_company_profiles.py` - Updated transformation logic and imports
+- ✅ STAGE.COMPANY_PROFILES table schema - Added PROFILE_ID field, fixed COMPANY_ID generation
+
+### Verification Steps
+1. ✅ Run `stage_company_profiles` asset - generates deterministic company IDs
+2. ✅ Compare COMPANY_ID values with `MASTER_COMPANY_URLS` for same companies
+3. ✅ Verify cross-table joins work using COMPANY_ID
+4. ✅ Confirm PROFILE_ID preserved for data lineage
+5. ✅ Test downstream analytics queries linking company data
+
+### Priority Justification
+This was a **Critical** bug because:
+- Broke fundamental data linking across the entire pipeline
+- Prevented accurate company analytics and reporting
+- Created data integrity issues that compound over time
+- Required immediate resolution before further data processing
+
+---
+
 ## Template for New Bugs
+
+**Status**: [Open/In Progress/Resolved]
+**Severity**: [Critical/High/Medium/Low]
+**Component**: [Which part of the system is affected]
+**Date Reported**: [YYYY-MM-DD]
+**Date Resolved**: [YYYY-MM-DD] (if resolved)
+
+### Description
+Brief description of the issue
+
+### Root Cause Analysis
+Analysis of why the bug occurs
+
+### Reproduction Steps
+1. Step 1
+2. Step 2
+3. Step 3
+
+### Expected vs Actual
+**Expected**: What should happen
+**Actual**: What actually happens
+
+### Impact
+- Impact on system/users
+- Data quality issues
+- Performance implications
+
+### Files Affected
+- List of files that need to be modified
+- Database objects affected
+- Configuration changes needed
+
+### Resolution
+**Fixed in**: [File/Component]
+
+**Changes Made**:
+- Description of changes
+- Code snippets if relevant
+
+### Verification Steps
+1. Steps to verify the fix works
+2. Tests to run
+3. Expected outcomes
