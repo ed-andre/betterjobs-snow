@@ -308,7 +308,7 @@ CREATE TABLE IF NOT EXISTS JOB_SKILLS_BRIDGE (
 
     -- Context
     SKILL_CONTEXT STRING,                          -- required, preferred, nice-to-have
-    EXPERIENCE_LEVEL_CONTEXT STRING,               -- entry, mid, senior (if mentioned)
+   
 
     -- Processing Metadata
     PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction

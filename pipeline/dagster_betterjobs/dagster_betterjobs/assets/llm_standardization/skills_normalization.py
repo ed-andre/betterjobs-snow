@@ -615,7 +615,7 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
 
             -- Context
             SKILL_CONTEXT STRING,                          -- required, preferred, nice-to-have
-            EXPERIENCE_LEVEL_CONTEXT STRING,               -- entry, mid, senior (if mentioned)
+            
 
             -- Processing Metadata
             PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction
