@@ -158,27 +158,31 @@ def execute_sql_file(snowflake: SnowflakeResource, file_path: str, context: Asse
         statements = [stmt.strip() for stmt in cleaned_sql.split(';') if stmt.strip()]
 
         with snowflake.get_connection() as conn:
+            cursor = conn.cursor()
             results = []
-            for i, statement in enumerate(statements):
-                if statement.strip():
-                    context.log.info(f"Executing statement {i+1}/{len(statements)}: {statement[:100]}...")
-                    try:
-                        result = conn.execute(statement)
-                        results.append({
-                            "statement_num": i+1,
-                            "statement": statement[:200] + "..." if len(statement) > 200 else statement,
-                            "status": "success"
-                        })
-                    except Exception as e:
-                        context.log.error(f"Failed to execute statement {i+1}: {str(e)}")
-                        results.append({
-                            "statement_num": i+1,
-                            "statement": statement[:200] + "..." if len(statement) > 200 else statement,
-                            "status": "error",
-                            "error": str(e)
-                        })
-                        # Continue with other statements for non-critical errors
-                        continue
+            try:
+                for i, statement in enumerate(statements):
+                    if statement.strip():
+                        context.log.info(f"Executing statement {i+1}/{len(statements)}: {statement[:100]}...")
+                        try:
+                            cursor.execute(statement)
+                            results.append({
+                                "statement_num": i+1,
+                                "statement": statement[:200] + "..." if len(statement) > 200 else statement,
+                                "status": "success"
+                            })
+                        except Exception as e:
+                            context.log.error(f"Failed to execute statement {i+1}: {str(e)}")
+                            results.append({
+                                "statement_num": i+1,
+                                "statement": statement[:200] + "..." if len(statement) > 200 else statement,
+                                "status": "error",
+                                "error": str(e)
+                            })
+                            # Continue with other statements for non-critical errors
+                            continue
+            finally:
+                cursor.close()
 
         return {
             "status": "success",
@@ -490,23 +494,27 @@ def setup_validation(context: AssetExecutionContext, snowflake: SnowflakeResourc
     validation_results = []
 
     with snowflake.get_connection() as conn:
-        for query in validation_queries:
-            try:
-                context.log.info(f"Executing validation query: {query}")
-                result = conn.execute(query)
-                rows = result.fetchall()
-                validation_results.append({
-                    "query": query,
-                    "status": "success",
-                    "result": rows
-                })
-            except Exception as e:
-                context.log.error(f"Validation query failed: {query} - {str(e)}")
-                validation_results.append({
-                    "query": query,
-                    "status": "error",
-                    "error": str(e)
-                })
+        cursor = conn.cursor()
+        try:
+            for query in validation_queries:
+                try:
+                    context.log.info(f"Executing validation query: {query}")
+                    cursor.execute(query)
+                    rows = cursor.fetchall()
+                    validation_results.append({
+                        "query": query,
+                        "status": "success",
+                        "result": rows
+                    })
+                except Exception as e:
+                    context.log.error(f"Validation query failed: {query} - {str(e)}")
+                    validation_results.append({
+                        "query": query,
+                        "status": "error",
+                        "error": str(e)
+                    })
+        finally:
+            cursor.close()
 
     successful_validations = len([r for r in validation_results if r["status"] == "success"])
     failed_validations = len([r for r in validation_results if r["status"] == "error"])

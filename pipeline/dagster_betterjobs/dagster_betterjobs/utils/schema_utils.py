@@ -102,9 +102,13 @@ def object_exists(object_name: str, snowflake: SnowflakeResource) -> bool:
     """
     try:
         with snowflake.get_connection() as conn:
-            # Simple existence check using SELECT with LIMIT 1 for efficiency
-            conn.execute(f"SELECT 1 FROM {object_name} LIMIT 1")
-            return True
+            cursor = conn.cursor()
+            try:
+                # Simple existence check using SELECT with LIMIT 1 for efficiency
+                cursor.execute(f"SELECT 1 FROM {object_name} LIMIT 1")
+                return True
+            finally:
+                cursor.close()
     except Exception:
         # Any exception (table doesn't exist, permission denied, etc.) means we can't use it
         return False
@@ -198,26 +202,30 @@ def execute_sql_file(snowflake: SnowflakeResource, file_path: str, context: Asse
         # Execute each statement
         results = []
         with snowflake.get_connection() as conn:
-            for i, statement in enumerate(statements):
-                statement_num = i + 1
-                context.log.debug(f"Executing statement {statement_num}/{len(statements)}: {statement[:100]}...")
+            cursor = conn.cursor()
+            try:
+                for i, statement in enumerate(statements):
+                    statement_num = i + 1
+                    context.log.debug(f"Executing statement {statement_num}/{len(statements)}: {statement[:100]}...")
 
-                try:
-                    conn.execute(statement)
-                    results.append({
-                        "statement_num": statement_num,
-                        "statement": statement[:200] + "..." if len(statement) > 200 else statement,
-                        "status": "success"
-                    })
-                except Exception as e:
-                    context.log.warning(f"Statement {statement_num} failed: {str(e)}")
-                    results.append({
-                        "statement_num": statement_num,
-                        "statement": statement[:200] + "..." if len(statement) > 200 else statement,
-                        "status": "error",
-                        "error": str(e)
-                    })
-                    # Continue with remaining statements for non-critical errors
+                    try:
+                        cursor.execute(statement)
+                        results.append({
+                            "statement_num": statement_num,
+                            "statement": statement[:200] + "..." if len(statement) > 200 else statement,
+                            "status": "success"
+                        })
+                    except Exception as e:
+                        context.log.warning(f"Statement {statement_num} failed: {str(e)}")
+                        results.append({
+                            "statement_num": statement_num,
+                            "statement": statement[:200] + "..." if len(statement) > 200 else statement,
+                            "status": "error",
+                            "error": str(e)
+                        })
+                        # Continue with remaining statements for non-critical errors
+            finally:
+                cursor.close()
 
         # Calculate summary statistics
         successful_statements = len([r for r in results if r["status"] == "success"])

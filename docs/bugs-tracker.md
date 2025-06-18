@@ -1225,4 +1225,153 @@ context.log.info(f"🛡️ [{platform.upper()}] Recursion protection enabled: ma
 
 ---
 
+## BUG-013: Schema-as-Code Process Failing - SnowflakeConnection Object No Attribute Execute Error
+
+**Status:** RESOLVED ✅
+**Severity:** Critical
+**Component:** Database Infrastructure Setup - Schema-as-Code (`snowflake_setup.py`, `schema_utils.py`, `analytics_dimensions.py`)
+**Date Reported:** 2025-06-17
+**Date Resolved:** 2025-06-17
+
+### Description
+The schema-as-code process introduced in Enhancement 20 was failing when running the `database_schema_setup` asset and all related infrastructure setup assets. All SQL queries in the schema setup scripts were throwing `'SnowflakeConnection' object has no attribute 'execute'` errors, completely blocking the database initialization process.
+
+### Root Cause Analysis - FINAL
+The issue was a fundamental misunderstanding of how the Dagster `SnowflakeResource` connection object works. The codebase was attempting to call `conn.execute()` directly on the connection object returned by `snowflake.get_connection()`, but this returns a native `snowflake.connector.Connection` object which doesn't have an `execute()` method.
+
+**Technical Root Cause**:
+- **Primary Issue**: `SnowflakeResource.get_connection()` returns a native `snowflake.connector.Connection` object
+- **Required Pattern**: Snowflake connections require creating a cursor first: `cursor = conn.cursor()` then `cursor.execute()`
+- **Incorrect Assumption**: Code assumed the connection had the same interface as other database connectors (like DuckDB)
+
+**Error Pattern**:
+```python
+# INCORRECT (causing the error):
+with snowflake.get_connection() as conn:
+    conn.execute(sql_statement)  # ❌ AttributeError: no attribute 'execute'
+
+# CORRECT (required pattern):
+with snowflake.get_connection() as conn:
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql_statement)  # ✅ Works correctly
+        result = cursor.fetchone()
+    finally:
+        cursor.close()
+```
+
+### Evidence of Issue
+**Error Log from Production**:
+```
+ERROR: Failed to execute statement 1: 'SnowflakeConnection' object has no attribute 'execute'
+ERROR: Failed to execute statement 2: 'SnowflakeConnection' object has no attribute 'execute'
+ERROR: Failed to execute statement 3: 'SnowflakeConnection' object has no attribute 'execute'
+```
+
+**Affected Operations**:
+- `database_schema_setup` asset - Database and schema creation
+- `infrastructure_setup` asset - Stages and integrations
+- `tables_setup` asset - Table creation
+- `views_setup` asset - View creation
+- `static_data_population` asset - Reference data loading
+- `setup_validation` asset - Setup verification
+- `analytics_dim_date` asset - Date dimension creation
+
+**Total Impact**: Complete failure of all Snowflake infrastructure setup and schema-as-code operations.
+
+### Technical Details
+**Files Affected and Root Cause**:
+
+1. **`snowflake_setup.py`**:
+   - `execute_sql_file()` function (lines 160-170)
+   - `setup_validation()` asset (lines 495-499)
+
+2. **`schema_utils.py`**:
+   - `execute_sql_file()` function (lines 205)
+   - `object_exists()` function (lines 105)
+
+
+**Confusion Source**: Other database connectors in the codebase (DuckDB via `duckdb_resource`) do have `execute()` methods directly on the connection object, leading to incorrect assumptions about Snowflake's interface.
+
+### Reproduction Steps
+1. Run `database_schema_setup` asset in Dagster
+2. Observe immediate failure with "no attribute execute" error
+3. All subsequent schema setup operations fail with same error
+4. Infrastructure setup pipeline completely blocked
+
+### Expected vs Actual
+**Expected**: SQL statements execute successfully using Snowflake connection
+**Actual**: All SQL executions fail with AttributeError, blocking entire schema setup
+
+### Resolution
+**Fixed in**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py`
+- `pipeline/dagster_betterjobs/dagster_betterjobs/utils/schema_utils.py`
+
+**Changes Made**:
+
+**Phase 1 - `snowflake_setup.py` Fixes**:
+1. **Fixed `execute_sql_file()` function**: Added cursor creation and proper error handling
+2. **Fixed `setup_validation()` asset**: Added cursor pattern for validation queries
+
+**Phase 2 - `schema_utils.py` Fixes**:
+3. **Fixed `execute_sql_file()` function**: Added cursor creation with try/finally cleanup
+4. **Fixed `object_exists()` function**: Added cursor pattern for existence checks
+
+**Universal Fix Pattern Applied**:
+```python
+# BEFORE (problematic):
+with snowflake.get_connection() as conn:
+    result = conn.execute(statement)  # ❌ AttributeError
+
+# AFTER (correct):
+with snowflake.get_connection() as conn:
+    cursor = conn.cursor()
+    try:
+        cursor.execute(statement)  # ✅ Works correctly
+        result = cursor.fetchone()  # or fetchall()
+    finally:
+        cursor.close()
+```
+
+**Key Technical Changes**:
+- Added `cursor = conn.cursor()` before all SQL executions
+- Wrapped cursor operations in try/finally blocks for proper cleanup
+- Updated result access patterns (`cursor.fetchone()`, `cursor.fetchall()`, `cursor.rowcount`)
+- Preserved all existing error handling and logging
+
+### Impact
+- ✅ **Database Setup Restored**: All schema-as-code operations now work correctly
+- ✅ **Infrastructure Pipeline Fixed**: Complete database initialization from scratch
+- ✅ **Enhancement 20 Functional**: Schema-as-code system fully operational
+- ✅ **All Assets Working**: Database, schema, table, view, and validation assets execute successfully
+- ✅ **Proper Error Handling**: Maintained robust error handling with correct connection patterns
+- ✅ **Resource Management**: Proper cursor cleanup prevents connection leaks
+
+### Files Affected
+- ✅ `dagster_betterjobs/assets/snowflake_setup.py` - Fixed execute_sql_file() and setup_validation()
+- ✅ `dagster_betterjobs/utils/schema_utils.py` - Fixed execute_sql_file() and object_exists()
+- ✅ `dagster_betterjobs/assets/analytics_dimensions.py` - Fixed analytics_dim_date() asset
+
+### Verification Steps
+1. ✅ Run `database_schema_setup` asset - executes all SQL statements successfully
+2. ✅ Verify infrastructure_setup, tables_setup, views_setup assets work
+3. ✅ Check setup_validation asset completes without errors
+4. ✅ Confirm analytics_dim_date asset populates date dimension
+5. ✅ Validate all schema-as-code operations end-to-end
+
+### Prevention Measures
+- **Documentation Update**: Clear examples of Snowflake connection patterns
+- **Code Standards**: Establish cursor pattern as standard for all Snowflake operations
+- **Testing Framework**: Add integration tests for Snowflake connection handling
+- **Developer Training**: Ensure team understands Snowflake connector requirements
+
+### Additional Notes
+- **Connector Difference**: DuckDB connections have `execute()` method, Snowflake connections require cursors
+- **Best Practice**: Always use try/finally pattern for cursor cleanup
+- **Performance**: Minimal performance impact from proper cursor usage
+- **Future Protection**: Pattern established for all new Snowflake operations
+
+---
+
 ## Template for New Bugs
