@@ -68,6 +68,13 @@ from dagster_betterjobs.assets.llm_standardization.data_quality import (
 
 from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_master_company_urls
 
+# Analytics Layer Assets - Phase 1: Dimensions
+from dagster_betterjobs.assets.analytics_dimensions import (
+    analytics_dim_date,
+    analytics_dim_company,
+    analytics_dim_location
+)
+
 # Infrastructure Setup Assets
 from dagster_betterjobs.assets.snowflake_setup import (
     database_schema_setup,
@@ -130,6 +137,10 @@ __all__ = [
     "stage_llm_confidence_monitoring",
     "stage_llm_manual_review_queue",
     "snowflake_master_company_urls",
+    # Analytics layer assets - Phase 1: Dimensions
+    "analytics_dim_date",
+    "analytics_dim_company",
+    "analytics_dim_location",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",

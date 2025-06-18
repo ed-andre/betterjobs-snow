@@ -991,7 +991,7 @@ analytics_business_views (Phase 5)
 
 ### Phase 1: Dimension Tables Implementation
 
-#### 1.1 `analytics_dim_date`
+#### 1.1 `analytics_dim_date` ✅ COMPLETE
 **Purpose**: Create date dimension for time-based analysis
 **Dependencies**: None (reference data)
 **Output**: Complete date dimension with business calendar
@@ -1013,10 +1013,61 @@ def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResou
     """
 ```
 
-#### 1.2 `analytics_dim_company`
+#### 1.2 `analytics_dim_company` ✅ COMPLETE
 **Purpose**: Create company dimension with SCD Type 2 logic
 **Dependencies**: `stage_company_profiles`, `stage_jobs_unified`
 **Output**: Company dimension with historical tracking
+
+**Implementation Approach**:
+1. **Source Data Integration**: Combine company data from JOBS_UNIFIED (operational) and COMPANY_PROFILES (enriched)
+2. **SCD Type 2 Logic**: Track historical changes to company attributes over time
+3. **Surrogate Key Generation**: Create unique company_key for each version
+4. **Data Quality Rules**: Handle missing/null company profiles gracefully
+
+**Key Processing Steps**:
+```sql
+-- Step 1: Create unified company view from both sources
+WITH company_current_state AS (
+    SELECT
+        ju.COMPANY_ID,
+        ju.COMPANY_NAME_CLEAN,
+        cp.COMPANY_NAME_STANDARDIZED,
+        cp.COMPANY_INDUSTRY_STANDARDIZED as industry,
+        cp.EMPLOYEE_COUNT_RANGE,
+        cp.COMPANY_SIZE_CATEGORY,
+        cp.HEADQUARTERS_LOCATION,
+        cp.FUNDING_STAGE,
+        CURRENT_DATE as snapshot_date
+    FROM STAGE.JOBS_UNIFIED ju
+    LEFT JOIN STAGE.COMPANY_PROFILES cp ON ju.COMPANY_ID = cp.COMPANY_ID
+    WHERE ju.COMPANY_ID IS NOT NULL
+    GROUP BY ALL -- Deduplicate companies
+),
+
+-- Step 2: Detect changes by comparing with existing dimension
+changes_detected AS (
+    SELECT c.*,
+           d.company_key as existing_key,
+           d.version_number as current_version,
+           CASE WHEN d.company_key IS NULL THEN 'NEW'
+                WHEN (d.company_name != c.COMPANY_NAME_CLEAN OR
+                      d.industry != c.industry OR
+                      d.company_size_category != c.COMPANY_SIZE_CATEGORY) THEN 'CHANGED'
+                ELSE 'UNCHANGED'
+           END as change_type
+    FROM company_current_state c
+    LEFT JOIN ANALYTICS.DIM_COMPANY d ON c.COMPANY_ID = d.company_id AND d.is_current = TRUE
+)
+
+-- Step 3: Apply SCD Type 2 logic
+-- Expire changed records, insert new/changed records
+```
+
+**SCD Type 2 Change Detection**:
+- **Company Name Changes**: COMPANY_NAME_CLEAN vs existing company_name
+- **Industry Changes**: COMPANY_INDUSTRY_STANDARDIZED vs existing industry
+- **Size Changes**: COMPANY_SIZE_CATEGORY vs existing company_size_category
+- **Location Changes**: HEADQUARTERS_LOCATION vs existing headquarters_location
 
 ```python
 @asset(
@@ -1027,23 +1078,130 @@ def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResou
 )
 def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Build company dimension from STAGE sources.
+    Build company dimension from STAGE sources with SCD Type 2 processing.
 
     Processing:
-    - Apply Type 2 SCD logic for company changes
-    - Standardize company names and classifications
-    - Add company size and industry attributes
+    - Integrate data from JOBS_UNIFIED and COMPANY_PROFILES
+    - Apply Type 2 SCD logic for company attribute changes
+    - Generate surrogate keys and manage version history
+    - Handle missing company profiles gracefully
+
+    SCD Logic:
+    - NEW companies get new records with is_current=TRUE
+    - CHANGED companies: expire old record, create new record
+    - UNCHANGED companies: no action needed
     """
 ```
 
-#### 1.3 `analytics_dim_location`
+#### 1.3 `analytics_dim_location` ✅ COMPLETE
 **Purpose**: Create location dimension with geographic hierarchy
 **Dependencies**: `stage_locations_normalized`
 **Output**: Location dimension with geographic intelligence
 
+```python
+@asset(
+    deps=["stage_locations_normalized"],
+    description="Create location dimension with geographic hierarchy and intelligence",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build location dimension from STAGE.LOCATIONS_NORMALIZED with geographic hierarchy.
+
+    Processing:
+    - Generate surrogate keys for each location
+    - Map STAGE fields to ANALYTICS dimension structure
+    - Apply data quality filters for location completeness
+    - Preserve geographic hierarchy and intelligence fields
+    - Handle international locations and remote work designations
+    """
+```
+
+**Implementation Steps**:
+
+**Step 1: Surrogate Key Generation**
+- Generate `location_key` as surrogate key using `LOCATION_ID` as natural key
+- Format: `LOC_` + `LOCATION_ID` for clear identification
+- Ensure uniqueness and consistency across refreshes
+
+**Step 2: Field Mapping & Transformation**
+```sql
+-- Core field mappings from STAGE.LOCATIONS_NORMALIZED:
+location_id → location_id (natural key preservation)
+LOCATION_NAME_CLEAN → location_name (use cleaned version)
+CITY → city
+STATE_PROVINCE → state_province
+COUNTRY → country
+REGION → region
+METRO_AREA → metro_area
+LOCATION_TYPE → location_type
+IS_REMOTE_FRIENDLY → is_remote_friendly
+IS_MAJOR_TECH_HUB → is_major_tech_hub
+COST_OF_LIVING_INDEX → cost_of_living_index
+AVERAGE_SALARY_ADJUSTMENT → average_salary_adjustment
+CONFIDENCE_SCORE → stage_confidence_score
+FREQUENCY_COUNT → frequency_count
+```
+
+**Step 3: Data Quality Rules**
+- Filter locations with `CONFIDENCE_SCORE >= 0.5` for quality assurance
+- Exclude locations marked for `MANUAL_REVIEW_FLAG = TRUE` if not admin approved
+- Ensure required fields (city, country) are not null
+- Handle special location types: 'Remote', 'Hybrid', 'Global'
+
+**Step 4: Geographic Hierarchy Validation**
+- Validate city-state-country relationships
+- Handle international locations without state/province
+- Ensure metro area assignments are logical
+- Preserve original location variants for reference
+
+**Step 5: Performance Optimization**
+- Cluster by (country, state_province, city) for geographic queries
+- Index on location_key for dimension lookups
+- Optimize for common filtering patterns
+
+**Key Processing Logic**:
+```sql
+-- Primary transformation query structure:
+WITH location_prep AS (
+    SELECT
+        'LOC_' || LOCATION_ID as location_key,
+        LOCATION_ID as location_id,
+        LOCATION_NAME_CLEAN as location_name,
+        CITY,
+        STATE_PROVINCE as state_province,
+        COUNTRY,
+        REGION,
+        METRO_AREA as metro_area,
+        LOCATION_TYPE as location_type,
+        IS_REMOTE_FRIENDLY as is_remote_friendly,
+        IS_MAJOR_TECH_HUB as is_major_tech_hub,
+        COST_OF_LIVING_INDEX as cost_of_living_index,
+        AVERAGE_SALARY_ADJUSTMENT as average_salary_adjustment,
+        CONFIDENCE_SCORE as stage_confidence_score,
+        FREQUENCY_COUNT as frequency_count,
+        CURRENT_TIMESTAMP as created_timestamp
+    FROM STAGE.LOCATIONS_NORMALIZED
+    WHERE CONFIDENCE_SCORE >= 0.5
+      AND (MANUAL_REVIEW_FLAG = FALSE OR APPROVED_BY_ADMIN = TRUE)
+      AND CITY IS NOT NULL
+      AND COUNTRY IS NOT NULL
+)
+SELECT * FROM location_prep
+ORDER BY country, state_province, city;
+```
+
+**Data Quality Validation**:
+- Count source vs target records
+- Verify geographic hierarchy integrity
+- Validate special location types (Remote, Hybrid)
+- Check clustering effectiveness for query performance
+- Confirm stage confidence score distribution
+
 #### 1.4 `analytics_dim_job_family`
 **Purpose**: Create job classification dimension
-**Dependencies**: `stage_jobs_llm_enriched`
+**Dependencies**: `stage_jobs_llm_enriched_unified`
 **Output**: Job family hierarchy for role analysis
 
 #### 1.5 `analytics_dim_platform`
@@ -1060,14 +1218,14 @@ def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeRe
 
 #### 2.1 `analytics_fact_job_postings`
 **Purpose**: Create primary fact table for job posting analytics
-**Dependencies**: All dimension tables, `stage_jobs_unified`, `stage_jobs_llm_enriched`
+**Dependencies**: All dimension tables, `stage_jobs_unified`, `stage_jobs_llm_enriched_unified`
 **Output**: Core fact table with measures and dimension keys
 
 ```python
 @asset(
     deps=["analytics_dim_date", "analytics_dim_company", "analytics_dim_location",
           "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills",
-          "stage_jobs_unified", "stage_jobs_llm_enriched"],
+          "stage_jobs_unified", "stage_jobs_llm_enriched_unified"],
     description="Create primary fact table for job posting analytics",
     group_name="analytics_facts",
     kinds={"snowflake", "SQL"}
