@@ -1,13 +1,13 @@
-CREATE TABLE ANALYTICS.dim_platform (
-    platform_key STRING PRIMARY KEY,
-    platform_name STRING,              -- From STAGE.JOBS_UNIFIED.PLATFORM
-    platform_code STRING,              -- workday, greenhouse, bamboohr, etc.
+CREATE TABLE ANALYTICS.DIM_PLATFORM (
+    PLATFORM_KEY STRING PRIMARY KEY,
+    PLATFORM_NAME STRING,              -- From STAGE.JOBS_UNIFIED.PLATFORM
+    PLATFORM_CODE STRING,              -- workday, greenhouse, bamboohr, etc.
 
     -- Derived Platform Characteristics (from actual job data)
-    supports_salary_disclosure BOOLEAN, -- Calculated from salary disclosure rates
-    data_richness_score FLOAT,         -- Calculated from job description quality metrics
-    job_volume_category STRING,        -- High, Medium, Low (derived from actual job counts)
+    SUPPORTS_SALARY_DISCLOSURE BOOLEAN, -- Calculated from salary disclosure rates
+    DATA_RICHNESS_SCORE FLOAT,         -- Calculated from job description quality metrics
+    JOB_VOLUME_CATEGORY STRING,        -- High, Medium, Low (derived from actual job counts)
 
-    is_active BOOLEAN,                  -- Currently processing jobs from this platform
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (platform_name);
+    IS_ACTIVE BOOLEAN,                  -- Currently processing jobs from this platform
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (PLATFORM_NAME);

@@ -1,20 +1,20 @@
-CREATE TABLE ANALYTICS.dim_date (
-    date_key STRING PRIMARY KEY,
-    full_date DATE,
+CREATE TABLE ANALYTICS.DIM_DATE (
+    DATE_KEY STRING PRIMARY KEY,
+    FULL_DATE DATE,
 
     -- Essential Date Attributes
-    day_name STRING,
-    day_of_week INTEGER,
-    week_beginning_date DATE,
-    week_ending_date DATE,
-    month_number INTEGER,
-    month_name STRING,
-    quarter_number INTEGER,
-    year_number INTEGER,
+    DAY_NAME STRING,
+    DAY_OF_WEEK INTEGER,
+    WEEK_BEGINNING_DATE DATE,
+    WEEK_ENDING_DATE DATE,
+    MONTH_NUMBER INTEGER,
+    MONTH_NAME STRING,
+    QUARTER_NUMBER INTEGER,
+    YEAR_NUMBER INTEGER,
 
     -- Business Context
-    is_business_day BOOLEAN,
-    is_weekend BOOLEAN,
+    IS_BUSINESS_DAY BOOLEAN,
+    IS_WEEKEND BOOLEAN,
 
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (full_date);
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (FULL_DATE);

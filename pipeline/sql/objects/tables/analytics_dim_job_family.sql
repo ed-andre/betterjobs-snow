@@ -1,41 +1,41 @@
-CREATE TABLE ANALYTICS.dim_job_family (
-    job_family_key STRING PRIMARY KEY,
+CREATE TABLE ANALYTICS.DIM_JOB_FAMILY (
+    JOB_FAMILY_KEY STRING PRIMARY KEY,
 
     -- Job Hierarchy
     job_family STRING,               -- Engineering, Data, Product, Sales, etc.
-    job_sub_family STRING,          -- Backend Engineering, Data Science, etc.
-    job_specialty STRING,           -- Python Developer, ML Engineer, etc.
+    JOB_SUB_FAMILY STRING,          -- Backend Engineering, Data Science, etc.
+    JOB_SPECIALTY STRING,           -- Python Developer, ML Engineer, etc.
 
     -- Seniority Classification
-    seniority_level STRING,         -- Entry, Mid, Senior, Staff, Principal, Executive
-    seniority_order INTEGER,        -- 1-7 for ordering
-    experience_min_years INTEGER,
-    experience_max_years INTEGER,
+    SENIORITY_LEVEL STRING,         -- Entry, Mid, Senior, Staff, Principal, Executive
+    SENIORITY_ORDER INTEGER,        -- 1-7 for ordering
+    EXPERIENCE_MIN_YEARS INTEGER,
+    EXPERIENCE_MAX_YEARS INTEGER,
 
     -- Role Type
-    role_type STRING,               -- Individual Contributor, Manager, Director, VP
-    management_level INTEGER,       -- 0=IC, 1=Manager, 2=Director, 3=VP, 4=C-Level
-    is_management_role BOOLEAN,
+    ROLE_TYPE STRING,               -- Individual Contributor, Manager, Director, VP
+    MANAGEMENT_LEVEL INTEGER,       -- 0=IC, 1=Manager, 2=Director, 3=VP, 4=C-Level
+    IS_MANAGEMENT_ROLE BOOLEAN,
 
     -- Department & Function
-    department STRING,              -- Engineering, Sales, Marketing, etc.
-    business_function STRING,       -- Core Product, Growth, Support, etc.
+    DEPARTMENT STRING,              -- Engineering, Sales, Marketing, etc.
+    BUSINESS_FUNCTION STRING,       -- Core Product, Growth, Support, etc.
 
     -- Job Characteristics
-    typical_team_size_min INTEGER,
-    typical_team_size_max INTEGER,
-    requires_security_clearance BOOLEAN,
-    travel_requirement_level STRING, -- None, Low, Medium, High
+    TYPICAL_TEAM_SIZE_MIN INTEGER,
+    TYPICAL_TEAM_SIZE_MAX INTEGER,
+    REQUIRES_SECURITY_CLEARANCE BOOLEAN,
+    TRAVEL_REQUIREMENT_LEVEL STRING, -- None, Low, Medium, High
 
     -- Market Data
-    market_demand_level STRING,     -- Very High, High, Medium, Low
-    salary_growth_trend STRING,     -- Growing, Stable, Declining
-    automation_risk_level STRING,   -- Low, Medium, High
+    MARKET_DEMAND_LEVEL STRING,     -- Very High, High, Medium, Low
+    SALARY_GROWTH_TREND STRING,     -- Growing, Stable, Declining
+    AUTOMATION_RISK_LEVEL STRING,   -- Low, Medium, High
 
     -- Skills Context
-    primary_skill_category STRING,  -- Technical, Creative, Sales, etc.
-    requires_coding BOOLEAN,
-    requires_certification BOOLEAN,
+    PRIMARY_SKILL_CATEGORY STRING,  -- Technical, Creative, Sales, etc.
+    REQUIRES_CODING BOOLEAN,
+    REQUIRES_CERTIFICATION BOOLEAN,
 
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (job_family, seniority_level);
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (JOB_FAMILY, SENIORITY_LEVEL);

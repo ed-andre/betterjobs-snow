@@ -1,34 +1,34 @@
-CREATE TABLE ANALYTICS.fact_company_hiring_weekly (
-    company_hiring_key STRING PRIMARY KEY,
-    week_key STRING,                        -- YYYY-WW format
-    company_key STRING,
+CREATE TABLE ANALYTICS.FACT_COMPANY_HIRING_WEEKLY (
+    COMPANY_HIRING_KEY STRING PRIMARY KEY,
+    WEEK_KEY STRING,                        -- YYYY-WW format
+    COMPANY_KEY STRING,
 
     -- Core Hiring Metrics
-    jobs_posted_count INTEGER,              -- Total jobs posted this week
-    active_jobs_count INTEGER,              -- Jobs still active at week end
-    new_jobs_this_week INTEGER,             -- Net new postings
+    JOBS_POSTED_COUNT INTEGER,              -- Total jobs posted this week
+    ACTIVE_JOBS_COUNT INTEGER,              -- Jobs still active at week end
+    NEW_JOBS_THIS_WEEK INTEGER,             -- Net new postings
 
     -- Hiring Velocity & Trends
-    week_over_week_change FLOAT,            -- Change in hiring volume
-    hiring_trend_direction STRING,          -- 'Accelerating', 'Stable', 'Declining'
+    WEEK_OVER_WEEK_CHANGE FLOAT,            -- Change in hiring volume
+    HIRING_TREND_DIRECTION STRING,          -- 'Accelerating', 'Stable', 'Declining'
 
     -- Job Portfolio Analysis (from STAGE.JOBS_LLM_ENRICHED)
-    avg_salary_offered NUMBER,              -- Average across all roles
-    median_salary_offered NUMBER,           -- Median salary
-    salary_range_width FLOAT,               -- Max - Min salary span
+    AVG_SALARY_OFFERED NUMBER,              -- Average across all roles
+    MEDIAN_SALARY_OFFERED NUMBER,           -- Median salary
+    SALARY_RANGE_WIDTH FLOAT,               -- Max - Min salary span
 
     -- Work Arrangement Patterns (from STAGE.JOBS_LLM_ENRICHED)
-    remote_jobs_percentage FLOAT,           -- % of remote-eligible jobs
-    hybrid_jobs_percentage FLOAT,           -- % of hybrid jobs
-    onsite_jobs_percentage FLOAT,           -- % of on-site only jobs
+    REMOTE_JOBS_PERCENTAGE FLOAT,           -- % of remote-eligible jobs
+    HYBRID_JOBS_PERCENTAGE FLOAT,           -- % of hybrid jobs
+    ON_SITE_JOBS_PERCENTAGE FLOAT,           -- % of on-site only jobs
 
     -- Role Distribution (from STAGE.JOBS_LLM_ENRICHED)
-    entry_level_percentage FLOAT,           -- % of entry-level roles
-    senior_level_percentage FLOAT,          -- % of senior+ roles
-    management_roles_percentage FLOAT,      -- % of management positions
+    ENTRY_LEVEL_PERCENTAGE FLOAT,           -- % of entry-level roles
+    SENIOR_LEVEL_PERCENTAGE FLOAT,          -- % of senior+ roles
+    MANAGEMENT_ROLES_PERCENTAGE FLOAT,      -- % of management positions
 
     -- Audit Fields
-    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    week_start_date DATE                    -- First day of week for partitioning
-) PARTITION BY (week_start_date)
-CLUSTER BY (week_key, company_key);
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    WEEK_START_DATE DATE                    -- First day of week for partitioning
+) PARTITION BY (WEEK_START_DATE)
+CLUSTER BY (WEEK_KEY, COMPANY_KEY);
