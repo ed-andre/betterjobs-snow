@@ -8,6 +8,8 @@ CREATE TABLE ANALYTICS.fact_job_postings (
     location_key STRING,
     job_family_key STRING,
     platform_key STRING,
+    experience_key STRING,               -- FK to DIM_EXPERIENCE
+    keyword_key STRING,                  -- FK to DIM_KEYWORDS (primary keyword for job)
 
     -- Degenerate Dimensions
     job_uid STRING,                      -- Natural key from STAGE.JOBS_UNIFIED.JOB_UID

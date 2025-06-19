@@ -109,6 +109,20 @@ The ANALYTICS layer must enable comprehensive weekly reports answering:
 **Prerequisites:**
 ✅ **LLM Data Normalization**: The STAGE layer LLM data standardization must be completed before ANALYTICS layer implementation. This includes normalized skills, keywords, and bridge tables as defined in `stage_layer_llm_data_standardization_plan.md`.
 
+**✅ STAGE Layer Dependencies (Already Completed)**:
+- `STAGE.JOBS_UNIFIED` - Core job data with standardized fields
+- `STAGE.JOBS_LLM_ENRICHED` - LLM-extracted job attributes and classifications
+- `STAGE.COMPANY_PROFILES` - Company metadata and classifications
+- `STAGE.SKILLS_NORMALIZED` - Standardized skills taxonomy
+- `STAGE.JOB_SKILLS_BRIDGE` - Job-to-skills relationships
+- `STAGE.LOCATIONS_NORMALIZED` - Standardized location hierarchy
+- `STAGE.JOB_LOCATIONS_BRIDGE` - Job-to-location relationships
+- `STAGE.KEYWORDS_NORMALIZED` - Standardized keyword taxonomy
+- `STAGE.JOB_KEYWORDS_BRIDGE` - Job-to-keywords relationships
+- `STAGE.EXPERIENCE_NORMALIZED` - Standardized experience levels and requirements
+- `STAGE.JOB_EXPERIENCE_BRIDGE` - Job-to-experience relationships
+
+
 **Implementation Focus:**
 1. **Phase 1**: Core dimensional model + HIGH priority job posting analytics
 2. **Phase 2**: HIGH priority skills and salary analytics (leveraging normalized STAGE data)
@@ -140,6 +154,8 @@ CREATE TABLE ANALYTICS.FACT_JOB_POSTINGS (
     location_key STRING,
     job_family_key STRING,
     platform_key STRING,
+    experience_key STRING,               -- FK to DIM_EXPERIENCE
+    keyword_key STRING,                  -- FK to DIM_KEYWORDS (primary keyword for job)
 
     -- Degenerate Dimensions
     job_uid STRING,                      -- Natural key from STAGE.JOBS_UNIFIED.JOB_UID
@@ -450,8 +466,58 @@ CREATE TABLE ANALYTICS.DIM_SKILLS (
     FREQUENCY_COUNT INTEGER,        -- From STAGE.SKILLS_NORMALIZED.FREQUENCY_COUNT
     TREND_DIRECTION STRING,         -- From STAGE.SKILLS_NORMALIZED.TREND_DIRECTION
 
-    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) CLUSTER BY (skill_category, skill_name);
+    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (skill_category, skill_subcategory);
+```
+
+##### 7. `DIM_EXPERIENCE` (Experience Requirements Dimension)
+**Experience Levels and Requirements Classification (Built from STAGE.EXPERIENCE_NORMALIZED)**
+
+```sql
+CREATE TABLE ANALYTICS.DIM_EXPERIENCE (
+    EXPERIENCE_KEY STRING PRIMARY KEY,
+    EXPERIENCE_ID STRING,              -- FK to STAGE.EXPERIENCE_NORMALIZED.EXPERIENCE_ID
+    EXPERIENCE_NAME STRING,
+
+    -- Experience Classification (from STAGE.EXPERIENCE_NORMALIZED)
+    EXPERIENCE_CATEGORY STRING,        -- From STAGE.EXPERIENCE_NORMALIZED.EXPERIENCE_CATEGORY
+    MIN_YEARS_REQUIRED INTEGER,        -- From STAGE.EXPERIENCE_NORMALIZED.MIN_YEARS_REQUIRED
+    MAX_YEARS_REQUIRED INTEGER,        -- From STAGE.EXPERIENCE_NORMALIZED.MAX_YEARS_REQUIRED
+    SENIORITY_ORDER INTEGER,           -- From STAGE.EXPERIENCE_NORMALIZED.SENIORITY_ORDER
+    EXPERIENCE_DESCRIPTION STRING,     -- From STAGE.EXPERIENCE_NORMALIZED.EXPERIENCE_DESCRIPTION
+
+    -- Market Intelligence (from STAGE.EXPERIENCE_NORMALIZED)
+    MARKET_FREQUENCY INTEGER,          -- From STAGE.EXPERIENCE_NORMALIZED.MARKET_FREQUENCY
+    CONFIDENCE_SCORE FLOAT,            -- From STAGE.EXPERIENCE_NORMALIZED.CONFIDENCE_SCORE
+
+    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (experience_category, seniority_order);
+```
+
+##### 8. `DIM_KEYWORDS` (Keywords Taxonomy Dimension)
+**Keywords Classification (Built from STAGE.KEYWORDS_NORMALIZED)**
+
+```sql
+CREATE TABLE ANALYTICS.DIM_KEYWORDS (
+    KEYWORD_KEY STRING PRIMARY KEY,
+    KEYWORD_ID STRING,                 -- FK to STAGE.KEYWORDS_NORMALIZED.KEYWORD_ID
+    KEYWORD_TEXT STRING,
+    KEYWORD_TEXT_CLEAN STRING,
+
+    -- Keyword Classification (from STAGE.KEYWORDS_NORMALIZED)
+    KEYWORD_TYPE STRING,               -- From STAGE.KEYWORDS_NORMALIZED.KEYWORD_TYPE
+    KEYWORD_CATEGORY STRING,           -- From STAGE.KEYWORDS_NORMALIZED.KEYWORD_CATEGORY
+    CANONICAL_FORM STRING,             -- From STAGE.KEYWORDS_NORMALIZED.CANONICAL_FORM
+    ORIGINAL_VARIANTS VARIANT,         -- From STAGE.KEYWORDS_NORMALIZED.ORIGINAL_VARIANTS
+
+    -- Market Intelligence (from STAGE.KEYWORDS_NORMALIZED)
+    FREQUENCY_COUNT INTEGER,           -- From STAGE.KEYWORDS_NORMALIZED.FREQUENCY_COUNT
+    TREND_SCORE FLOAT,                 -- From STAGE.KEYWORDS_NORMALIZED.TREND_SCORE
+    CONFIDENCE_SCORE FLOAT,            -- From STAGE.KEYWORDS_NORMALIZED.CONFIDENCE_SCORE
+    APPROVED_BY_ADMIN BOOLEAN,         -- From STAGE.KEYWORDS_NORMALIZED.APPROVED_BY_ADMIN
+
+    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (keyword_type, keyword_category);
 ```
 
 ## Pre-Aggregated Metrics Tables
@@ -817,12 +883,14 @@ ORDER BY DEMAND_WEEK DESC, JOBS_REQUIRING_SKILL DESC;
 - Develop `DIM_JOB_FAMILY` with role taxonomy
 - Build `DIM_PLATFORM` for ATS classification
 - Create `DIM_SKILLS` with skills taxonomy
+- Create `DIM_EXPERIENCE` with experience requirements
+- Create `DIM_KEYWORDS` with keywords taxonomy
 
 **Key Deliverables**:
-- Fully populated dimension tables with proper hierarchies
-- Surrogate key generation and management
-- Data quality validation for all dimensions
-- Foreign key relationships and referential integrity
+- All 8 dimension tables created and populated (including DIM_EXPERIENCE and DIM_KEYWORDS)
+- Surrogate key generation logic
+- Data quality validation framework
+- Performance optimization (clustering/partitioning)
 
 ### Phase 2: Primary Fact Table Implementation
 **Objective**: Create the main `FACT_JOB_POSTINGS` table with complete measure library
@@ -853,7 +921,7 @@ ORDER BY DEMAND_WEEK DESC, JOBS_REQUIRING_SKILL DESC;
 - Cross-table consistency and performance optimization
 - Advanced analytics capabilities that match real business needs
 
-### Phase 4: Pre-Aggregated Metrics & KPIs
+### Phase 4: Market Intelligence Tables
 **Objective**: Create business-ready metric tables for fast reporting
 
 **Components**:
@@ -968,6 +1036,10 @@ Now that all database objects are defined for the analytics layer, this section 
 - `STAGE.LOCATIONS_NORMALIZED` - Standardized location hierarchy
 - `STAGE.JOB_LOCATIONS_BRIDGE` - Job-to-location relationships
 - `STAGE.KEYWORDS_NORMALIZED` - Standardized keyword taxonomy
+- `STAGE.JOB_KEYWORDS_BRIDGE` - Job-to-keywords relationships
+- `STAGE.EXPERIENCE_NORMALIZED` - Standardized experience levels and requirements
+- `STAGE.JOB_EXPERIENCE_BRIDGE` - Job-to-experience relationships
+
 
 ### Dagster Assets Architecture
 
@@ -1214,6 +1286,54 @@ ORDER BY country, state_province, city;
 **Dependencies**: `stage_skills_normalized`
 **Output**: Skills taxonomy dimension
 
+#### 1.7 `analytics_dim_experience`
+**Purpose**: Create experience dimension from normalized experience requirements
+**Dependencies**: `stage_experience_normalized`
+**Output**: Experience levels and requirements dimension
+
+```python
+@asset(
+    deps=["stage_experience_normalized"],
+    description="Create experience requirements dimension table",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_experience(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build experience dimension from normalized experience requirements.
+
+    Processing:
+    - Map experience levels to dimension structure
+    - Include seniority ordering for analytics
+    - Add market frequency and confidence metrics
+    - Handle both general and technology-specific experience
+    """
+```
+
+#### 1.8 `analytics_dim_keywords`
+**Purpose**: Create keywords dimension from normalized keywords taxonomy
+**Dependencies**: `stage_keywords_normalized`
+**Output**: Keywords classification dimension
+
+```python
+@asset(
+    deps=["stage_keywords_normalized"],
+    description="Create keywords taxonomy dimension table",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_keywords(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build keywords dimension from normalized keywords taxonomy.
+
+    Processing:
+    - Map keywords to dimension structure
+    - Include keyword type and category hierarchy
+    - Add market frequency and trend metrics
+    - Handle canonical forms and variants
+    """
+```
+
 ### Phase 2: Primary Fact Table Implementation
 
 #### 2.1 `analytics_fact_job_postings`
@@ -1225,6 +1345,7 @@ ORDER BY country, state_province, city;
 @asset(
     deps=["analytics_dim_date", "analytics_dim_company", "analytics_dim_location",
           "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills",
+          "analytics_dim_experience", "analytics_dim_keywords",
           "stage_jobs_unified", "stage_jobs_llm_enriched_unified"],
     description="Create primary fact table for job posting analytics",
     group_name="analytics_facts",
@@ -1317,7 +1438,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 
 #### Phase 1: Foundation
 **Deliverables**:
-- All 6 dimension tables created and populated
+- All 8 dimension tables created and populated (including DIM_EXPERIENCE and DIM_KEYWORDS)
 - Surrogate key generation logic
 - Data quality validation framework
 - Performance optimization (clustering/partitioning)
