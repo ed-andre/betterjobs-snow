@@ -57,6 +57,14 @@ from dagster_betterjobs.assets.llm_standardization.locations_normalization impor
     stage_job_locations_bridge
 )
 
+# BUG-015: Experience Normalization Assets
+from dagster_betterjobs.assets.llm_standardization.experience_normalization import (
+    stage_llm_experience_raw_extraction,
+    stage_experience_normalized,
+    stage_job_experience_bridge,
+    stage_experience_standardization_rules
+)
+
 # PHASE-4: Data Quality and Validation Assets
 from dagster_betterjobs.assets.llm_standardization.data_quality import (
     stage_llm_data_quality_validation,
@@ -130,6 +138,11 @@ __all__ = [
     "stage_us_states_mapping",
     "stage_locations_normalized",
     "stage_job_locations_bridge",
+    # BUG-015: Experience Normalization Assets
+    "stage_llm_experience_raw_extraction",
+    "stage_experience_normalized",
+    "stage_job_experience_bridge",
+    "stage_experience_standardization_rules",
     # LLM data standardization assets - Phase 4: Data Quality and Validation
     "stage_llm_data_quality_validation",
     "stage_llm_quality_metrics",

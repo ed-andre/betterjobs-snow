@@ -1527,6 +1527,527 @@ This was a **Critical** bug because:
 
 ---
 
+## BUG-015: Dead EXPERIENCE_LEVEL_CONTEXT Column and Missing Experience Extraction Pipeline
+
+**Status:** RESOLVED ✅
+**Severity:** High
+**Component:** Skills Normalization Pipeline - Job Skills Bridge
+**Date Reported:** 2025-06-18
+**Date Resolved:** 2025-06-18
+
+### Description
+**COMPLETED**: The dead `EXPERIENCE_LEVEL_CONTEXT` column has been REMOVED from the `BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE` table schema.
+
+**COMPLETED**: Implemented comprehensive experience extraction assets to properly utilize rich experience data from LLM extraction (`JOBS_LLM_ENRICHED`) in structured format for job market analytics.
+
+### Root Cause Analysis
+**Primary Issue**: Dead column with no insertion logic in `stage_job_skills_bridge` asset (Removed already)
+**Conceptual Issue**: Experience level belongs at the job level, not skill level
+
+**Technical Root Cause**:
+- **File**: `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py`
+- **Method**: `stage_job_skills_bridge()` asset (lines 617, 700+)
+- **Issue**: Column defined in schema but never populated in INSERT statement
+
+**Data Model Problem**:
+- Current approach tries to assign experience level to skill-job relationships
+- Reality: Experience requirements are characteristics of job postings
+- Example: "Python" skill could require 2 years experience in one job, 5 years in another
+
+**Evidence from Code**:
+```python
+# Line 617: Column defined in table creation
+EXPERIENCE_LEVEL_CONTEXT STRING,               -- entry, mid, senior (if mentioned)
+
+# Lines 700+: INSERT statement never populates this field
+# Column exists but is always NULL
+```
+
+### Evidence of Issue
+**Database Evidence**:
+```sql
+-- All records have NULL experience context
+SELECT EXPERIENCE_LEVEL_CONTEXT, COUNT(*)
+FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+GROUP BY EXPERIENCE_LEVEL_CONTEXT;
+-- Result: NULL | 50000+ (all records are NULL)
+```
+
+**Available Experience Data in JOBS_LLM_ENRICHED**:
+- `MIN_YEARS_EXPERIENCE` / `MAX_YEARS_EXPERIENCE` - Specific years required
+- `EXPERIENCE_LEVEL` - Entry/Mid/Senior/Executive classifications
+- `SENIORITY_LEVEL` - Staff/Principal/Director/VP levels
+- `SPECIFIC_TECHNOLOGIES_YEARS` - Technology-specific experience (JSON)
+- `EXPERIENCE_CONFIDENCE` - Confidence in experience extraction
+
+### Impact
+- **Data Quality**: Dead column wastes storage and confuses developers
+- **Missed Analytics**: Rich experience data from LLM extraction not utilized
+- **Incorrect Model**: Experience attribution at wrong granularity level
+- **Limited Insights**: Cannot analyze experience requirements across jobs/markets
+- **Development Confusion**: Schema suggests functionality that doesn't exist
+
+### Reproduction Steps
+1. Query `JOB_SKILLS_BRIDGE` table: `SELECT DISTINCT EXPERIENCE_LEVEL_CONTEXT FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE`
+2. Observe all values are NULL despite schema defining the column
+3. Check `stage_job_skills_bridge` asset code - no insertion logic for this column
+4. Query `JOBS_LLM_ENRICHED` - observe rich experience data available but unused
+
+### Expected vs Actual
+**Expected**: Experience-related data should be extracted from LLM data and properly modeled at job level
+**Actual**:
+- ✅ Dead column removed from skills bridge table
+- ❌ Rich LLM experience data still unused in structured format
+- ❌ No job-level experience analytics capability
+
+### Resolution
+**Fixed in**: Experience Normalization Pipeline - Complete Implementation
+
+**Changes Made**:
+
+**Phase 1 - Dead Column Removal (Previously Completed)**:
+1. ✅ Removed `EXPERIENCE_LEVEL_CONTEXT` column from `JOB_SKILLS_BRIDGE` table schema
+2. ✅ Removed column reference from `stage_job_skills_bridge` asset Python code
+
+**Phase 2 - Experience Extraction Assets (New Implementation)**:
+3. ✅ **Created SQL Table Definitions** using schema-as-code pattern:
+   - `stage_experience_raw_extraction.sql` - Extraction table with source tracking
+   - `stage_experience_normalized.sql` - Master experience levels with market intelligence
+   - `stage_job_experience_bridge.sql` - Job-experience relationships with context
+
+4. ✅ **Implemented Python Assets** following existing LLM standardization patterns:
+   - `stage_llm_experience_raw_extraction()` - Extracts from 5 LLM data sources
+   - `stage_experience_normalized()` - Creates 10+ standardized experience levels
+   - `stage_job_experience_bridge()` - Maps jobs to experience requirements
+
+**Phase 3 - Integration and Asset Dependencies**:
+5. ✅ **Updated imports** in `llm_standardization/__init__.py` for asset discovery
+6. ✅ **Schema-as-code compliance** using `ensure_object_exists()` pattern
+7. ✅ **Proper dependency chains** between assets for reliable execution
+
+**Technical Implementation Details**:
+
+**Raw Extraction Processing**:
+- **MIN_YEARS_EXPERIENCE/MAX_YEARS_EXPERIENCE**: Numeric year requirements
+- **EXPERIENCE_LEVEL**: Entry/Mid/Senior/Executive classifications
+- **SENIORITY_LEVEL**: Staff/Principal/Director/VP levels
+- **SPECIFIC_TECHNOLOGIES_YEARS**: Technology-specific requirements (JSON flattening)
+
+**Experience Normalization Logic**:
+- **General Experience**: Entry (0-2), Junior (1-3), Mid (3-5), Senior (5-8), Lead (7-12)
+- **Role Seniority**: Staff (8-15), Principal (10-20), Director (12-25), VP (15-30), Executive (20-40)
+- **Technology-Specific**: Dynamic levels based on actual job requirements
+- **Market Frequency**: Calculated based on job mention frequency
+
+**Bridge Relationship Features**:
+- **Source Tracking**: Distinguishes min_years vs max_years vs level requirements
+- **Technology Context**: Maps tech-specific experience (e.g., "Python: 3 years")
+- **Requirement Type**: Minimum vs preferred requirements
+- **Confidence Scoring**: LLM extraction confidence preserved
+
+### Files Affected
+**Existing Files Modified (COMPLETED)**:
+- ✅ `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py` - Dead column removed
+- ✅ `pipeline/sql/objects/tables/stage_job_skills_bridge.sql` - Dead column removed from schema
+- ✅ `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/__init__.py` - Added experience assets imports
+
+**New Files Created (COMPLETED)**:
+- ✅ `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/experience_normalization.py` - Complete experience pipeline
+- ✅ `pipeline/sql/objects/tables/stage_experience_raw_extraction.sql` - Raw experience extraction table
+- ✅ `pipeline/sql/objects/tables/stage_experience_normalized.sql` - Normalized experience levels table
+- ✅ `pipeline/sql/objects/tables/stage_job_experience_bridge.sql` - Job-experience relationships table
+
+### Impact
+- ✅ **Dead Column Eliminated**: Removed confusing and unused `EXPERIENCE_LEVEL_CONTEXT` from skills bridge
+- ✅ **Rich LLM Data Utilized**: All experience data from LLM extraction now properly structured
+- ✅ **Job-Level Experience Analytics**: Proper data model with experience as job characteristics
+- ✅ **Market Intelligence**: Experience levels include market frequency and confidence scoring
+- ✅ **Technology-Specific Tracking**: Separate handling for technology-specific experience requirements
+- ✅ **Analytics-Ready Structure**: Clean relational structure enables advanced analytics queries
+- ✅ **Comprehensive Coverage**: Extracts from 5 different LLM data sources for complete picture
+- ✅ **Pipeline Integration**: Follows existing patterns and integrates seamlessly with other LLM assets
+
+### Proposed Resolution - Detailed Development Plan
+
+**Phase 1: Remove Dead Column ✅ COMPLETED**
+1. ✅ Remove `EXPERIENCE_LEVEL_CONTEXT` column from `JOB_SKILLS_BRIDGE` table schema
+2. ✅ Remove column reference from `stage_job_skills_bridge` asset Python code
+
+**Phase 2: Create Experience Extraction Assets (Schema-as-Code) ✅ COMPLETED**
+
+**2.1 Create Table Definitions (Following analytics_dimensions.py pattern)**
+```sql
+-- File: pipeline/sql/objects/tables/stage_experience_raw_extraction.sql
+CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.EXPERIENCE_RAW_EXTRACTION (
+    EXTRACTION_ID STRING PRIMARY KEY,
+    JOB_UID STRING NOT NULL,
+    EXPERIENCE_SOURCE STRING NOT NULL,        -- 'min_years', 'max_years', 'experience_level', 'seniority_level', 'specific_tech'
+    EXPERIENCE_TYPE STRING NOT NULL,          -- 'general', 'technology_specific', 'role_level'
+    EXPERIENCE_VALUE VARIANT,                 -- Years (number) or level (string) or JSON for tech-specific
+    ORIGINAL_TEXT STRING,                     -- Original extraction from LLM
+    EXTRACTION_CONFIDENCE FLOAT,             -- From EXPERIENCE_CONFIDENCE field
+    TECHNOLOGY_NAME STRING,                   -- For technology-specific experience (e.g., 'Python', 'AWS')
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (JOB_UID) REFERENCES BETTERJOBS_DB.STAGE.JOBS_UNIFIED(JOB_UID)
+) CLUSTER BY (JOB_UID, EXPERIENCE_TYPE);
+
+-- File: pipeline/sql/objects/tables/stage_experience_normalized.sql
+CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.EXPERIENCE_NORMALIZED (
+    EXPERIENCE_ID STRING PRIMARY KEY,
+    EXPERIENCE_NAME STRING NOT NULL,          -- 'Entry Level', 'Mid Level', 'Senior Level', 'Executive Level'
+    EXPERIENCE_CATEGORY STRING NOT NULL,      -- 'general', 'technology_specific', 'role_seniority'
+    MIN_YEARS_REQUIRED INTEGER,              -- Minimum years for this level
+    MAX_YEARS_REQUIRED INTEGER,              -- Maximum years for this level
+    SENIORITY_ORDER INTEGER,                 -- 1=Entry, 2=Mid, 3=Senior, 4=Staff, 5=Principal, 6=Director, 7=VP, 8=Executive
+    EXPERIENCE_DESCRIPTION STRING,           -- Human-readable description
+    MARKET_FREQUENCY INTEGER DEFAULT 0,      -- How often this requirement appears
+    CONFIDENCE_SCORE FLOAT DEFAULT 1.0,     -- Confidence in standardization
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (EXPERIENCE_CATEGORY, SENIORITY_ORDER);
+
+-- File: pipeline/sql/objects/tables/stage_job_experience_bridge.sql
+CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.JOB_EXPERIENCE_BRIDGE (
+    BRIDGE_ID STRING PRIMARY KEY,
+    JOB_UID STRING NOT NULL,
+    EXPERIENCE_ID STRING NOT NULL,
+    EXPERIENCE_SOURCE STRING NOT NULL,       -- 'llm_min_years', 'llm_max_years', 'llm_level', 'llm_seniority'
+    EXPERIENCE_VALUE_NUMERIC INTEGER,        -- Years required (for numeric requirements)
+    EXPERIENCE_VALUE_TEXT STRING,            -- Level name (for categorical requirements)
+    TECHNOLOGY_CONTEXT STRING,               -- Technology name if tech-specific (e.g., 'Python: 3 years')
+    IS_MINIMUM_REQUIREMENT BOOLEAN DEFAULT TRUE,  -- true=minimum, false=preferred
+    EXTRACTION_CONFIDENCE FLOAT,             -- Confidence from LLM extraction
+    PROCESSING_METHOD STRING DEFAULT 'llm_auto',
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (JOB_UID) REFERENCES BETTERJOBS_DB.STAGE.JOBS_UNIFIED(JOB_UID),
+    FOREIGN KEY (EXPERIENCE_ID) REFERENCES BETTERJOBS_DB.STAGE.EXPERIENCE_NORMALIZED(EXPERIENCE_ID)
+) CLUSTER BY (JOB_UID, EXPERIENCE_SOURCE);
+```
+
+**2.2 Create Experience Normalization Assets**
+```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/experience_normalization.py
+
+@asset(
+    deps=["stage_jobs_llm_enriched_unified"],
+    description="Extract and flatten experience requirements from LLM VARIANT columns",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"}
+)
+def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Extract all experience requirements from JOBS_LLM_ENRICHED and flatten into workable format.
+
+    Processes:
+    - MIN_YEARS_EXPERIENCE/MAX_YEARS_EXPERIENCE: Numeric year requirements
+    - EXPERIENCE_LEVEL: Entry/Mid/Senior/Executive classifications
+    - SENIORITY_LEVEL: Staff/Principal/Director/VP levels
+    - SPECIFIC_TECHNOLOGIES_YEARS: Technology-specific requirements (JSON)
+
+    Output: Raw experience requirements with source tracking and confidence scores
+    """
+
+    # Use schema-as-code pattern like analytics_dimensions.py
+    table_name = ensure_object_exists("tables/stage_experience_raw_extraction.sql", snowflake, context)
+
+    # Implementation details...
+
+@asset(
+    deps=["stage_llm_experience_raw_extraction"],
+    description="Create normalized experience master table with standardized levels",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"}
+)
+def stage_experience_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Apply standardization rules and create experience master table.
+
+    Processing:
+    - Standardize experience levels (Entry: 0-2 years, Mid: 3-5 years, etc.)
+    - Create seniority ordering for analytics
+    - Calculate market frequency for each experience level
+    - Handle technology-specific experience requirements
+
+    Output: Clean experience master table for analytics
+    """
+
+    # Use schema-as-code pattern
+    table_name = ensure_object_exists("tables/stage_experience_normalized.sql", snowflake, context)
+
+    # Implementation details...
+
+@asset(
+    deps=["stage_experience_normalized", "stage_jobs_unified"],
+    description="Create job-experience relationships with requirement context",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"}
+)
+def stage_job_experience_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Map jobs to normalized experience requirements with context.
+
+    Features:
+    - Source tracking (min_years vs max_years vs level vs seniority)
+    - Technology-specific experience requirements
+    - Minimum vs preferred requirement classification
+    - Confidence scoring for job-experience associations
+    """
+
+    # Use schema-as-code pattern
+    table_name = ensure_object_exists("tables/stage_job_experience_bridge.sql", snowflake, context)
+
+    # Implementation details...
+```
+
+**Phase 3: Integration and Testing ✅ COMPLETED**
+
+**3.1 Update Dependencies**
+- Add new assets to appropriate job definitions
+- Update downstream analytics assets to use experience data
+- Add foreign key constraints and validation
+
+**3.2 Data Population Logic**
+```sql
+-- Raw extraction logic example:
+INSERT INTO STAGE.EXPERIENCE_RAW_EXTRACTION
+SELECT
+    -- General years experience
+    CONCAT('exp_', JOB_UID, '_min_years') as EXTRACTION_ID,
+    JOB_UID,
+    'min_years' as EXPERIENCE_SOURCE,
+    'general' as EXPERIENCE_TYPE,
+    MIN_YEARS_EXPERIENCE as EXPERIENCE_VALUE,
+    CAST(MIN_YEARS_EXPERIENCE AS STRING) as ORIGINAL_TEXT,
+    EXPERIENCE_CONFIDENCE as EXTRACTION_CONFIDENCE,
+    NULL as TECHNOLOGY_NAME
+FROM JOBS_LLM_ENRICHED
+WHERE MIN_YEARS_EXPERIENCE IS NOT NULL
+
+UNION ALL
+
+-- Technology-specific experience (flatten JSON)
+SELECT
+    CONCAT('exp_', JOB_UID, '_tech_', TECH.KEY) as EXTRACTION_ID,
+    JOB_UID,
+    'specific_tech' as EXPERIENCE_SOURCE,
+    'technology_specific' as EXPERIENCE_TYPE,
+    TECH.VALUE as EXPERIENCE_VALUE,
+    CONCAT(TECH.KEY, ': ', TECH.VALUE, ' years') as ORIGINAL_TEXT,
+    EXPERIENCE_CONFIDENCE as EXTRACTION_CONFIDENCE,
+    TECH.KEY as TECHNOLOGY_NAME
+FROM JOBS_LLM_ENRICHED,
+LATERAL FLATTEN(input => SPECIFIC_TECHNOLOGIES_YEARS) TECH
+WHERE SPECIFIC_TECHNOLOGIES_YEARS IS NOT NULL;
+```
+
+**3.3 Analytics Integration**
+- Update analytics layer to use experience dimensions
+- Create views for experience-based job market analysis
+- Add experience metrics to existing dashboards
+
+### Verification Steps
+1. **Raw Extraction Validation**:
+   ```sql
+   SELECT EXPERIENCE_SOURCE, EXPERIENCE_TYPE, COUNT(*)
+   FROM STAGE.EXPERIENCE_RAW_EXTRACTION
+   GROUP BY EXPERIENCE_SOURCE, EXPERIENCE_TYPE;
+   ```
+
+2. **Normalization Validation**:
+   ```sql
+   SELECT EXPERIENCE_CATEGORY, COUNT(*), MIN(MIN_YEARS_REQUIRED), MAX(MAX_YEARS_REQUIRED)
+   FROM STAGE.EXPERIENCE_NORMALIZED
+   GROUP BY EXPERIENCE_CATEGORY;
+   ```
+
+3. **Bridge Validation**:
+   ```sql
+   SELECT
+     COUNT(*) as total_relationships,
+     COUNT(DISTINCT JOB_UID) as jobs_with_experience,
+     AVG(EXPERIENCE_VALUE_NUMERIC) as avg_years_required
+   FROM STAGE.JOB_EXPERIENCE_BRIDGE
+   WHERE EXPERIENCE_VALUE_NUMERIC IS NOT NULL;
+   ```
+
+4. **Analytics Integration Test**:
+   ```sql
+   -- Test job-experience analytics query
+   SELECT
+     en.EXPERIENCE_NAME,
+     COUNT(DISTINCT jeb.JOB_UID) as job_count,
+     AVG(jeb.EXPERIENCE_VALUE_NUMERIC) as avg_years
+   FROM STAGE.JOB_EXPERIENCE_BRIDGE jeb
+   JOIN STAGE.EXPERIENCE_NORMALIZED en ON jeb.EXPERIENCE_ID = en.EXPERIENCE_ID
+   GROUP BY en.EXPERIENCE_NAME
+   ORDER BY job_count DESC;
+   ```
+
+### Priority Justification
+This is a **High** priority bug because:
+- Dead column indicates incomplete feature implementation
+- Rich LLM experience data is being wasted
+- Experience analytics is crucial for job market intelligence
+- Proper data modeling enables advanced analytics and insights
+- Affects data warehouse completeness and user trust
+
+### Schema-as-Code Requirements
+- **Critical**: All new tables must use the `ensure_object_exists()` pattern from `analytics_dimensions.py`
+- **Pattern**: Store SQL table definitions in `pipeline/sql/objects/tables/` directory
+- **Asset Structure**: Use same initialization pattern as `analytics_dim_date()` and `analytics_dim_company()`
+- **Dependencies**: Properly declare asset dependencies using `deps=[]` parameter
+- **Error Handling**: Include try/finally cursor cleanup like existing analytics assets
+
+### Success Criteria
+- ✅ Dead column removed from skills bridge
+- ✅ Three new experience assets created and functional
+- ✅ All experience data from LLM extraction properly structured
+- ✅ Job-experience relationships enable market analysis queries
+- ✅ Schema-as-code pattern consistently applied
+- ✅ Analytics layer can consume experience dimensions
+- ✅ Data quality validation confirms accurate extraction and normalization
+
+
+---
+
+## BUG-016: Asset Success Masking SQL Execution Failures - Critical Data Quality Issue
+
+**Status:** RESOLVED ✅
+**Severity:** Critical
+**Component:** Data Pipeline Integrity - SQL Execution Error Handling
+**Date Reported:** 2025-06-18
+**Date Resolved:** 2025-06-18
+
+### Description
+Dagster assets were reporting success even when critical SQL operations failed, leading to corrupted or incomplete data downstream. This occurred because the `execute_sql_file()` utility function continues execution after individual statement failures and doesn't propagate critical failures to the asset level.
+
+### Root Cause Analysis
+The `execute_sql_file()` function in `schema_utils.py` is designed to be **resilient** by continuing execution even when individual SQL statements fail. However, this creates a critical data quality issue when:
+
+1. **Asset Reports Success**: Asset completes successfully despite SQL failures
+2. **Data Corruption**: Downstream processes receive incomplete data
+3. **Silent Failures**: Critical operations fail without surfacing as pipeline failures
+4. **False Confidence**: Pipeline appears healthy when data quality is compromised
+
+**Technical Root Cause**:
+- **File**: `pipeline/dagster_betterjobs/dagster_betterjobs/utils/schema_utils.py`
+- **Method**: `execute_sql_file()` (lines 170-250)
+- **Issue**: Function returns `"success"` status even when statements fail, and assets don't validate critical operation success
+
+**Evidence**:
+```python
+# Problematic pattern in assets:
+if execution_result["status"] == "success":
+    # Asset continues successfully
+    if execution_result['statements_failed'] > 0:
+        context.log.warning(f"⚠️ {statements_failed} statements failed")  # Only warning ❌
+    # Asset reports success despite failures ❌
+```
+
+### Impact
+- **Critical Data Quality**: Corrupted/incomplete data in downstream tables
+- **Pipeline Reliability**: False confidence in data pipeline health
+- **Debugging Difficulty**: Failures masked as warnings instead of errors
+- **Downstream Effects**: Analytics and reporting based on incomplete data
+- **Production Risk**: Silent failures in production environments
+
+### Reproduction Steps
+1. Run asset with failing SQL operations (e.g., `stage_experience_standardization_rules`)
+2. Observe SQL statement failures in logs (e.g., "Statement 2 failed: SQL compilation error")
+3. Note that asset still reports success in Dagster UI
+4. Verify downstream data is incomplete/corrupted
+5. Pipeline continues with bad data
+
+### Expected vs Actual
+**Expected**: Asset should fail when critical SQL operations fail, preventing downstream corruption
+**Actual**: Asset reports success, logs warnings, and allows corrupted data downstream
+
+### Resolution
+**Fixed in**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/experience_normalization.py`
+- Pattern established for other critical data population assets
+
+**Changes Made**:
+
+**Phase 1 - Critical Failure Detection**:
+1. **Added SQL Failure Validation**: Check if any SQL statements failed during critical operations
+2. **Detailed Error Reporting**: Extract and log specific failure details with statement numbers
+3. **Exception Propagation**: Raise exceptions when critical SQL operations fail
+
+**Phase 2 - Data Verification**:
+4. **Post-Execution Validation**: Verify expected data was actually populated after SQL execution
+5. **Zero-Data Detection**: Fail if no data found after population operations
+6. **Comprehensive Error Context**: Provide detailed error messages for debugging
+
+**Technical Fix**:
+```python
+# BEFORE (problematic):
+if execution_result["status"] == "success":
+    if execution_result['statements_failed'] > 0:
+        context.log.warning(f"⚠️ {statements_failed} statements failed")  # Only warning ❌
+    # Asset continues successfully ❌
+
+# AFTER (fixed):
+if execution_result["status"] == "success":
+    # CRITICAL: Fail asset if any SQL statements failed
+    if execution_result['statements_failed'] > 0:
+        failed_statements = [r for r in execution_result.get('results', []) if r.get('status') == 'error']
+        error_details = []
+        for failed in failed_statements[:3]:  # Show first 3 failures
+            error_details.append(f"Statement {failed['statement_num']}: {failed.get('error', 'Unknown error')}")
+
+        error_summary = "; ".join(error_details)
+        if len(failed_statements) > 3:
+            error_summary += f" (and {len(failed_statements) - 3} more failures)"
+
+        context.log.error(f"❌ {execution_result['statements_failed']} SQL statements failed: {error_summary}")
+        raise Exception(f"Critical SQL operation failed: {error_summary}")  # ✅ Fail asset
+
+# CRITICAL: Verify data was actually populated
+if rule_count == 0:
+    raise Exception("Data population verification failed: No rules found in table after execution")  # ✅ Fail asset
+```
+
+### Impact
+- ✅ **Data Quality Protected**: Assets fail when critical SQL operations fail
+- ✅ **Pipeline Integrity**: False confidence eliminated, true failures surface
+- ✅ **Detailed Error Reporting**: Specific failure information for rapid debugging
+- ✅ **Downstream Protection**: Prevents corrupted data from flowing to dependent assets
+- ✅ **Production Safety**: Critical failures in production properly surface as pipeline failures
+
+### Files Affected
+- ✅ `dagster_betterjobs/assets/llm_standardization/experience_normalization.py` - Fixed `stage_experience_standardization_rules` asset
+- 🔄 **Pattern for Other Assets**: Same fix should be applied to other critical data population assets
+
+### Verification Steps
+1. ✅ Run asset with intentionally failing SQL - asset should fail (not just warn)
+2. ✅ Verify detailed SQL failure information appears in error logs
+3. ✅ Confirm downstream assets don't execute when critical upstream operations fail
+4. ✅ Test data verification catches cases where SQL "succeeds" but no data populated
+
+### Prevention Measures
+- **Code Review Standards**: All critical SQL operations must validate success and fail fast
+- **Asset Patterns**: Establish standard pattern for critical data population operations
+- **Testing**: Include failure scenarios in asset tests
+- **Monitoring**: Alert on any assets that fail due to SQL execution issues
+
+### Broader Application
+This pattern should be applied to **all critical data population assets**:
+- `stage_skills_standardization_rules`
+- `stage_keywords_standardization_rules`
+- `stage_location_standardization_rules`
+- `static_data_population` asset
+- Any asset performing critical INSERT/UPDATE operations
+
+### Success Criteria
+- ✅ Asset fails when critical SQL operations fail
+- ✅ Detailed error information available for debugging
+- ✅ Data verification prevents silent failures
+- ✅ Downstream data quality protected
+- ✅ Pipeline reliability and confidence restored
+
+---
+
 ## Template for New Bugs
 
 **Status**: [Open/In Progress/Resolved]

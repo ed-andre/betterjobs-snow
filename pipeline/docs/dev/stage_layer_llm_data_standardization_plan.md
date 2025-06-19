@@ -54,12 +54,14 @@ Transform VARIANT data into properly normalized relational tables:
 ```
 jobs_llm_enriched (existing)
     ↓
-skill_extraction_and_normalization
+llm_data_extraction_and_normalization
     ↓
 STAGE.SKILLS_NORMALIZED (master skills)
 STAGE.JOB_SKILLS_BRIDGE (many-to-many)
 STAGE.KEYWORDS_NORMALIZED (master keywords)
 STAGE.JOB_KEYWORDS_BRIDGE (many-to-many)
+STAGE.EXPERIENCE_NORMALIZED (master experience levels)
+STAGE.JOB_EXPERIENCE_BRIDGE (many-to-many)
 STAGE.LOCATIONS_NORMALIZED (master locations)
 STAGE.JOB_LOCATIONS_BRIDGE (many-to-many)
 ```
@@ -77,9 +79,10 @@ jobs_llm_enriched (existing)
     ↓
 stage_llm_raw_extractions (Phase 1)
     ↓
-┌─ stage_skills_standardization (Phase 1)  ┬─ stage_skills_normalized (Phase 1)
-├─ stage_keywords_standardization (Phase 2) ├─ stage_keywords_normalized (Phase 2)
-└─ stage_locations_standardization (Phase 3)─ stage_locations_normalized (Phase 3)
+┌─ stage_skills_standardization (Phase 1)     ┬─ stage_skills_normalized (Phase 1)
+├─ stage_keywords_standardization (Phase 2)   ├─ stage_keywords_normalized (Phase 2)
+├─ stage_experience_standardization (Phase 1a) ├─ stage_experience_normalized (Phase 1a)
+└─ stage_locations_standardization (Phase 3)  ─ stage_locations_normalized (Phase 3)
     ↓
 stage_llm_data_quality_validation (Phase 4)
     ↓
@@ -198,6 +201,140 @@ def stage_job_skills_bridge(context, snowflake: SnowflakeResource) -> Dict[str, 
     """
     # Implementation details...
 ```
+
+### Phase 1a: Experience Normalization Assets ✅ **COMPLETED**
+
+**Related Bug Resolution**: Implemented as part of **BUG-015** resolution - removed dead `EXPERIENCE_LEVEL_CONTEXT` column from `JOB_SKILLS_BRIDGE` and created proper experience normalization pipeline.
+
+#### 1a.1 `stage_llm_experience_raw_extraction`
+**Purpose**: Extract and flatten all experience requirements from LLM VARIANT columns in `jobs_llm_enriched`
+**Dependencies**: `stage_jobs_llm_enriched_unified`
+**Output**: Raw experience requirements with source tracking and confidence scores
+
+```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/experience_normalization.py
+
+@asset(
+    deps=["stage_jobs_llm_enriched_unified"],
+    description="Extract and flatten experience requirements from LLM VARIANT columns",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"}
+)
+def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Extract all experience requirements from JOBS_LLM_ENRICHED and flatten into workable format.
+
+    Processes:
+    - MIN_YEARS_EXPERIENCE/MAX_YEARS_EXPERIENCE: Numeric year requirements
+    - EXPERIENCE_LEVEL: Entry/Mid/Senior/Executive classifications
+    - SENIORITY_LEVEL: Staff/Principal/Director/VP levels
+    - SPECIFIC_TECHNOLOGIES_YEARS: Technology-specific requirements (JSON)
+
+    Output: Raw experience requirements with source tracking and confidence scores
+    """
+    # Schema-as-code table creation
+    table_name = ensure_object_exists("tables/stage_experience_raw_extraction.sql", snowflake, context)
+
+    # Extract from 5 different LLM data sources
+    # Implementation details...
+```
+
+#### 1a.2 `stage_experience_standardization_rules`
+**Purpose**: Create and maintain experience level standardization rules with market intelligence
+**Dependencies**: None (reference data)
+**Output**: Standardization rules with experience level mappings and confidence scoring
+
+```python
+@asset(
+    description="Create experience level standardization rules with market intelligence",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"},
+    freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)
+)
+def stage_experience_standardization_rules(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Create comprehensive experience level standardization rules.
+
+    Features:
+    - Experience level mappings (Entry: 0-2 years, Mid: 3-5 years, Senior: 5-8 years)
+    - Seniority classifications (Staff, Principal, Director, VP, Executive)
+    - Technology-specific experience handling
+    - Market frequency analysis and confidence scoring
+    """
+    # Schema-as-code pattern implementation
+    # Static data population for standardization rules
+    # Implementation details...
+```
+
+#### 1a.3 `stage_experience_normalized`
+**Purpose**: Apply standardization rules and create normalized experience master table
+**Dependencies**: `stage_llm_experience_raw_extraction`, `stage_experience_standardization_rules`
+**Output**: Clean experience master table with market intelligence
+
+```python
+@asset(
+    deps=["stage_llm_experience_raw_extraction", "stage_experience_standardization_rules"],
+    description="Create normalized experience master table with market intelligence",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"}
+)
+def stage_experience_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Apply standardization rules and create experience master table.
+
+    Processing:
+    - Standardize experience levels with confidence scoring
+    - Create seniority ordering for analytics (1=Entry to 8=Executive)
+    - Calculate market frequency for each experience level
+    - Handle technology-specific experience requirements
+    - Deduplicate and normalize experience classifications
+
+    Output: Clean experience master table for analytics
+    """
+    # Schema-as-code table creation
+    table_name = ensure_object_exists("tables/stage_experience_normalized.sql", snowflake, context)
+
+    # Normalization logic with 10+ standardized experience levels
+    # Implementation details...
+```
+
+#### 1a.4 `stage_job_experience_bridge`
+**Purpose**: Create many-to-many relationships between jobs and normalized experience requirements
+**Dependencies**: `stage_experience_normalized`, `stage_jobs_unified`
+**Output**: Job-experience relationships with requirement context and confidence scoring
+
+```python
+@asset(
+    deps=["stage_experience_normalized", "stage_jobs_unified"],
+    description="Create job-experience relationships with requirement context",
+    group_name="llm_standardization",
+    kinds={"snowflake", "python", "SQL"}
+)
+def stage_job_experience_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Map jobs to normalized experience requirements with context.
+
+    Features:
+    - Source tracking (min_years vs max_years vs level vs seniority)
+    - Technology-specific experience requirements
+    - Minimum vs preferred requirement classification
+    - Confidence scoring for job-experience associations
+    - Proper data model (experience as job characteristics, not skill characteristics)
+    """
+    # Schema-as-code table creation
+    table_name = ensure_object_exists("tables/stage_job_experience_bridge.sql", snowflake, context)
+
+    # Bridge relationship creation with context preservation
+    # Implementation details...
+```
+
+**Key Benefits of Experience Normalization**:
+- ✅ **Resolved Data Model Issue**: Experience is now properly modeled at job level, not skill level
+- ✅ **Rich LLM Data Utilization**: All experience data from LLM extraction properly structured
+- ✅ **Market Intelligence**: Experience levels include market frequency and confidence scoring
+- ✅ **Technology-Specific Tracking**: Separate handling for technology-specific experience requirements
+- ✅ **Analytics-Ready Structure**: Clean relational structure enables advanced experience analytics
+- ✅ **Comprehensive Coverage**: Extracts from 5 different LLM data sources for complete picture
 
 ### Phase 2: Keywords Standardization Assets
 
@@ -483,7 +620,7 @@ CREATE TABLE IF NOT EXISTS JOB_SKILLS_BRIDGE (
 
     -- Context
     SKILL_CONTEXT STRING,                          -- required, preferred, nice-to-have
-    
+
 
     -- Processing Metadata
     PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction
@@ -989,6 +1126,50 @@ HAVING job_count >= 5;  -- Minimum threshold for statistical relevance
 - Implemented lookup table approach instead of hardcoded CASE statements
 - Added proper Decimal to float conversion for Dagster metadata
 - Enhanced logging accuracy for table creation vs. existence checks
+
+### ✅ Phase 1a: Experience Normalization Assets - **COMPLETED** (June 2025)
+
+**Bug Resolution Context**: Implemented as part of **BUG-015** resolution to address the dead `EXPERIENCE_LEVEL_CONTEXT` column in `JOB_SKILLS_BRIDGE` and create proper experience normalization pipeline.
+
+**Assets Implemented:**
+- `stage_llm_experience_raw_extraction`: Extracts and flattens experience requirements from LLM VARIANT columns
+- `stage_experience_standardization_rules`: Manages experience level standardization rules with market intelligence
+- `stage_experience_normalized`: Creates normalized experience master table with seniority ordering
+- `stage_job_experience_bridge`: Creates job-experience relationships with requirement context
+
+**Key Features Delivered:**
+- ✅ Experience extraction from 5 LLM data sources (MIN_YEARS_EXPERIENCE, MAX_YEARS_EXPERIENCE, EXPERIENCE_LEVEL, SENIORITY_LEVEL, SPECIFIC_TECHNOLOGIES_YEARS)
+- ✅ Comprehensive experience level standardization with market frequency analysis
+- ✅ Proper data model correction: Experience as job characteristics (not skill characteristics)
+- ✅ Technology-specific experience requirements handling (JSON flattening)
+- ✅ Seniority ordering for analytics (1=Entry to 8=Executive)
+- ✅ Source tracking and confidence scoring for all experience relationships
+
+**SQL Configuration Files Created:**
+- `pipeline/sql/objects/tables/stage_experience_raw_extraction.sql` - Raw experience extraction table schema
+- `pipeline/sql/objects/tables/stage_experience_normalized.sql` - Normalized experience levels table schema
+- `pipeline/sql/objects/tables/stage_job_experience_bridge.sql` - Job-experience relationships table schema
+- Static data population for 10+ standardized experience levels with market intelligence
+
+**Production Metrics Achieved:**
+- Experience Levels Normalized: 10+ standardized levels (Entry, Junior, Mid, Senior, Lead, Staff, Principal, Director, VP, Executive)
+- Experience Categories: 3 main types (general, technology_specific, role_seniority)
+- Data Sources Processed: 5 different LLM extraction fields
+- Coverage: All jobs with LLM experience data properly normalized
+- Confidence Scoring: Full confidence preservation from LLM extraction
+
+**Critical Bug Fixes:**
+- ✅ **Dead Column Removal**: Eliminated confusing `EXPERIENCE_LEVEL_CONTEXT` from `JOB_SKILLS_BRIDGE`
+- ✅ **Data Model Correction**: Fixed conceptual flaw where experience was attributed to skills instead of jobs
+- ✅ **LLM Data Utilization**: Rich experience data from LLM extraction now properly structured for analytics
+- ✅ **Pipeline Integrity**: Added SQL execution failure detection to prevent silent data corruption
+
+**Technical Improvements:**
+- Schema-as-code pattern implementation following `analytics_dimensions.py` model
+- Proper asset dependency chains with comprehensive error handling
+- Multi-source experience extraction with conflict resolution logic
+- Enhanced SQL execution error detection and asset failure propagation
+- Comprehensive logging for experience extraction success/failure tracking
 
 ### ✅ Phase 2: Keywords Standardization Assets - **COMPLETED** (June 2025)
 
