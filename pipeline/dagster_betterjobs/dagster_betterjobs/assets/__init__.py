@@ -80,7 +80,8 @@ from dagster_betterjobs.assets.snowflake_master_company_urls import snowflake_ma
 from dagster_betterjobs.assets.analytics_dimensions import (
     analytics_dim_date,
     analytics_dim_company,
-    analytics_dim_location
+    analytics_dim_location,
+    analytics_dim_job_family
 )
 
 # Infrastructure Setup Assets
@@ -154,6 +155,7 @@ __all__ = [
     "analytics_dim_date",
     "analytics_dim_company",
     "analytics_dim_location",
+    "analytics_dim_job_family",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",

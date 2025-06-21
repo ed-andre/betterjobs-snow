@@ -1272,9 +1272,194 @@ ORDER BY country, state_province, city;
 - Confirm stage confidence score distribution
 
 #### 1.4 `analytics_dim_job_family`
-**Purpose**: Create job classification dimension
+**Purpose**: Create job classification dimension with hierarchical role taxonomy
 **Dependencies**: `stage_jobs_llm_enriched_unified`
-**Output**: Job family hierarchy for role analysis
+**Output**: Job family hierarchy for role analysis and market intelligence
+
+```python
+@asset(
+    deps=["stage_jobs_llm_enriched_unified"],
+    description="Create job classification dimension with hierarchical role taxonomy",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_job_family(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build job family dimension from STAGE.JOBS_LLM_ENRICHED_UNIFIED with role hierarchy.
+
+    Processing:
+    - Generate surrogate keys for unique job family combinations
+    - Extract and normalize job family hierarchies from LLM data
+    - Calculate market metrics and role characteristics
+    - Apply business rules for role classification
+    - Handle seniority levels and management indicators
+    """
+```
+
+**Implementation Steps**:
+
+**Step 1: Surrogate Key Generation**
+- Generate `job_family_key` as composite surrogate key from job family hierarchy
+- Format: `JF_` + hash of (`JOB_FAMILY`, `JOB_SUB_FAMILY`, `SENIORITY_LEVEL`) for uniqueness
+- Ensure consistent key generation across refreshes for referential integrity
+
+**Step 2: Field Mapping & Transformation**
+```sql
+-- Simplified transformation query using only available STAGE data:
+WITH job_family_prep AS (
+    SELECT DISTINCT
+        MD5(CONCAT(
+            COALESCE(JOB_FAMILY, 'Unknown'),
+            '|',
+            COALESCE(JOB_SUB_FAMILY, 'General'),
+            '|',
+            COALESCE(SENIORITY_LEVEL, 'Not Specified'),
+            '|',
+            COALESCE(ROLE_TYPE, 'Not Specified')
+        )) as job_family_key,
+
+        -- Direct LLM Fields (no transformation)
+        JOB_FAMILY as job_family,
+        JOB_SUB_FAMILY as job_sub_family,
+        SENIORITY_LEVEL as seniority_level,
+        ROLE_TYPE as role_type,
+
+        -- Simple Derived Fields Only
+        CASE
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(SENIORITY_LEVEL) LIKE '%junior%' THEN 1
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%mid%' OR LOWER(SENIORITY_LEVEL) LIKE '%intermediate%' THEN 2
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%senior%' THEN 3
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%staff%' THEN 4
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%principal%' THEN 5
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%director%' THEN 6
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%vp%' OR LOWER(SENIORITY_LEVEL) LIKE '%vice%' THEN 7
+            ELSE 0
+        END as seniority_order,
+
+        -- Simple management role identification
+        (LOWER(ROLE_TYPE) LIKE '%manager%'
+         OR LOWER(ROLE_TYPE) LIKE '%director%'
+         OR LOWER(ROLE_TYPE) LIKE '%lead%'
+         OR LOWER(SENIORITY_LEVEL) LIKE '%manager%'
+         OR LOWER(SENIORITY_LEVEL) LIKE '%director%'
+         OR LOWER(SENIORITY_LEVEL) LIKE '%vp%') as is_management_role,
+
+        CURRENT_TIMESTAMP as created_timestamp
+
+    FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+    WHERE JOB_FAMILY IS NOT NULL
+      AND JOB_FAMILY != 'Unknown'
+      AND LLM_OVERALL_CONFIDENCE >= 0.6
+      AND (LLM_NEEDS_MANUAL_REVIEW = FALSE OR LLM_OVERALL_CONFIDENCE >= 0.8)
+)
+
+SELECT
+    'JF_' || job_family_key as job_family_key,
+    job_family,
+    job_sub_family,
+    seniority_level,
+    role_type,
+    seniority_order,
+    is_management_role,
+    created_timestamp
+FROM job_family_prep
+ORDER BY job_family, seniority_order, job_sub_family;
+```
+
+**Step 3: Data Quality Rules**
+- Filter jobs with valid `JOB_FAMILY` (not null, not 'Unknown')
+- Exclude jobs with `LLM_NEEDS_MANUAL_REVIEW = TRUE` unless high confidence
+- Require minimum `LLM_OVERALL_CONFIDENCE >= 0.6` for job classification
+- Handle standardization of common job family variations
+- Apply consistent seniority level normalization
+
+**Step 4: Business Logic Implementation**
+- **Seniority Mapping**: Map text seniority levels to numeric ordering (1-7)
+- **Management Classification**: Identify management roles from titles and levels
+- **Department Mapping**: Standardize job families to business departments
+- **Skills Context**: Infer primary skill category from job family patterns
+- **Market Metrics**: Calculate demand levels and trends from job volume
+
+**Step 5: Performance Optimization**
+- Cluster by (job_family, seniority_level) for analytical queries
+- Index on job_family_key for dimension lookups
+- Optimize for role-based filtering and hierarchy navigation
+
+**Key Processing Logic**:
+```sql
+-- Simplified transformation query using only available STAGE data:
+WITH job_family_prep AS (
+    SELECT DISTINCT
+        MD5(CONCAT(
+            COALESCE(JOB_FAMILY, 'Unknown'),
+            '|',
+            COALESCE(JOB_SUB_FAMILY, 'General'),
+            '|',
+            COALESCE(SENIORITY_LEVEL, 'Not Specified'),
+            '|',
+            COALESCE(ROLE_TYPE, 'Not Specified')
+        )) as job_family_key,
+
+        -- Direct LLM Fields (no transformation)
+        JOB_FAMILY as job_family,
+        JOB_SUB_FAMILY as job_sub_family,
+        SENIORITY_LEVEL as seniority_level,
+        ROLE_TYPE as role_type,
+
+        -- Simple Derived Fields Only
+        CASE
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(SENIORITY_LEVEL) LIKE '%junior%' THEN 1
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%mid%' OR LOWER(SENIORITY_LEVEL) LIKE '%intermediate%' THEN 2
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%senior%' THEN 3
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%staff%' THEN 4
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%principal%' THEN 5
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%director%' THEN 6
+            WHEN LOWER(SENIORITY_LEVEL) LIKE '%vp%' OR LOWER(SENIORITY_LEVEL) LIKE '%vice%' THEN 7
+            ELSE 0
+        END as seniority_order,
+
+        -- Simple management role identification
+        (LOWER(ROLE_TYPE) LIKE '%manager%'
+         OR LOWER(ROLE_TYPE) LIKE '%director%'
+         OR LOWER(ROLE_TYPE) LIKE '%lead%'
+         OR LOWER(SENIORITY_LEVEL) LIKE '%manager%'
+         OR LOWER(SENIORITY_LEVEL) LIKE '%director%'
+         OR LOWER(SENIORITY_LEVEL) LIKE '%vp%') as is_management_role,
+
+        CURRENT_TIMESTAMP as created_timestamp
+
+    FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+    WHERE JOB_FAMILY IS NOT NULL
+      AND JOB_FAMILY != 'Unknown'
+      AND LLM_OVERALL_CONFIDENCE >= 0.6
+      AND (LLM_NEEDS_MANUAL_REVIEW = FALSE OR LLM_OVERALL_CONFIDENCE >= 0.8)
+)
+
+SELECT
+    'JF_' || job_family_key as job_family_key,
+    job_family,
+    job_sub_family,
+    seniority_level,
+    role_type,
+    seniority_order,
+    is_management_role,
+    created_timestamp
+FROM job_family_prep
+ORDER BY job_family, seniority_order, job_sub_family;
+```
+
+**Data Quality Validation**:
+- Count unique job family combinations vs source records
+- Verify seniority level ordering consistency
+- Validate department mapping completeness
+- Check management level hierarchy logic
+- Confirm clustering effectiveness for analytical queries
+
+**Business Intelligence Features**:
+- **Role Hierarchy Navigation**: Enable drill-down from department → family → specialty
+- **Seniority Analysis**: Support career progression and compensation analysis
+- **Market Intelligence**: Track demand levels and hiring trends by role type
+- **Management Analytics**: Analyze leadership hiring patterns and team structures
 
 #### 1.5 `analytics_dim_platform`
 **Purpose**: Create platform dimension for ATS classification

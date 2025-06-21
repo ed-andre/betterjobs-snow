@@ -65,28 +65,12 @@ erDiagram
 
     DIM_JOB_FAMILY {
         string job_family_key PK
-        string job_family
-        string job_sub_family
-        string job_specialty
-        string seniority_level
-        integer seniority_order
-        integer experience_min_years
-        integer experience_max_years
-        string role_type
-        integer management_level
-        boolean is_management_role
-        string department
-        string business_function
-        integer typical_team_size_min
-        integer typical_team_size_max
-        boolean requires_security_clearance
-        string travel_requirement_level
-        string market_demand_level
-        string salary_growth_trend
-        string automation_risk_level
-        string primary_skill_category
-        boolean requires_coding
-        boolean requires_certification
+        string job_family "Direct from LLM"
+        string job_sub_family "Direct from LLM"
+        string seniority_level "Direct from LLM"
+        string role_type "Direct from LLM"
+        integer seniority_order "Simple derivation"
+        boolean is_management_role "Simple derivation"
         timestamp created_timestamp
     }
 

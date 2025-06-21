@@ -6,7 +6,7 @@ in the ANALYTICS layer following the Schema-as-Code approach.
 """
 
 from typing import Dict, Any
-from dagster import AssetExecutionContext, asset
+from dagster import AssetExecutionContext, asset, MetadataValue
 from dagster_snowflake import SnowflakeResource
 
 from dagster_betterjobs.utils.schema_utils import ensure_object_exists
@@ -514,6 +514,276 @@ def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeR
                     "total_frequency": validation_result[10]
                 },
                 "location_type_distribution": location_type_stats
+            }
+
+        finally:
+            cursor.close()
+
+
+@asset(
+    deps=["stage_jobs_llm_enriched_unified"],
+    description="Create job classification dimension with hierarchical role taxonomy from LLM-enriched job data",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_job_family(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build job family dimension from STAGE.JOBS_LLM_ENRICHED with role hierarchy.
+
+    This asset creates a job family dimension from LLM-enriched job data,
+    applying data quality filters and generating surrogate keys for analytics queries.
+
+    Processing:
+    - Generate surrogate keys for unique job family combinations
+    - Map LLM fields directly to dimension structure
+    - Apply simple derivations for seniority ordering and management classification
+    - Apply data quality filters for job classification completeness
+    - Handle various job family and seniority level combinations
+
+    Data Quality Rules:
+    - Filter jobs with valid JOB_FAMILY (not null, not 'Unknown')
+    - Require minimum LLM_OVERALL_CONFIDENCE >= 0.6
+    - Exclude manual review jobs unless high confidence
+    - Ensure core job classification fields are present
+
+    Returns:
+        Dict containing execution results and quality metrics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_dim_job_family.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting job family dimension build from STAGE.JOBS_LLM_ENRICHED")
+
+            # Step 1: Clear existing data for fresh population
+            context.log.info("Clearing existing job family dimension data")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+
+            # Step 2: Build job family dimension with data quality filters
+            context.log.info("Building job family dimension with quality filters")
+
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                job_family_key,
+                job_family,
+                job_sub_family,
+                seniority_level,
+                role_type,
+                seniority_order,
+                is_management_role,
+                created_timestamp
+            )
+            WITH job_family_prep AS (
+                SELECT DISTINCT
+                    MD5(CONCAT(
+                        COALESCE(JOB_FAMILY, 'Unknown'),
+                        '|',
+                        COALESCE(JOB_SUB_FAMILY, 'General'),
+                        '|',
+                        COALESCE(SENIORITY_LEVEL, 'Not Specified'),
+                        '|',
+                        COALESCE(ROLE_TYPE, 'Not Specified')
+                    )) as job_family_key,
+
+                    -- Direct LLM Fields (no transformation)
+                    COALESCE(JOB_FAMILY, 'Unknown') as job_family,
+                    COALESCE(JOB_SUB_FAMILY, 'General') as job_sub_family,
+                    COALESCE(SENIORITY_LEVEL, 'Not Specified') as seniority_level,
+                    COALESCE(ROLE_TYPE, 'Not Specified') as role_type,
+
+                    -- Simple Derived Fields Only
+                    CASE
+                        WHEN LOWER(SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(SENIORITY_LEVEL) LIKE '%junior%' THEN 1
+                        WHEN LOWER(SENIORITY_LEVEL) LIKE '%mid%' OR LOWER(SENIORITY_LEVEL) LIKE '%intermediate%' THEN 2
+                        WHEN LOWER(SENIORITY_LEVEL) LIKE '%senior%' THEN 3
+                        WHEN LOWER(SENIORITY_LEVEL) LIKE '%staff%' THEN 4
+                        WHEN LOWER(SENIORITY_LEVEL) LIKE '%principal%' THEN 5
+                        WHEN LOWER(SENIORITY_LEVEL) LIKE '%director%' THEN 6
+                        WHEN LOWER(SENIORITY_LEVEL) LIKE '%vp%' OR LOWER(SENIORITY_LEVEL) LIKE '%vice%' THEN 7
+                        ELSE 0
+                    END as seniority_order,
+
+                    -- Simple management role identification
+                    (LOWER(ROLE_TYPE) LIKE '%manager%'
+                     OR LOWER(ROLE_TYPE) LIKE '%director%'
+                     OR LOWER(ROLE_TYPE) LIKE '%lead%'
+                     OR LOWER(SENIORITY_LEVEL) LIKE '%manager%'
+                     OR LOWER(SENIORITY_LEVEL) LIKE '%director%'
+                     OR LOWER(SENIORITY_LEVEL) LIKE '%vp%') as is_management_role,
+
+                    CURRENT_TIMESTAMP as created_timestamp
+
+                FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+                WHERE JOB_FAMILY IS NOT NULL
+                  AND JOB_FAMILY != 'Unknown'
+                  AND LLM_OVERALL_CONFIDENCE >= 0.6
+                  AND (LLM_NEEDS_MANUAL_REVIEW = FALSE OR LLM_OVERALL_CONFIDENCE >= 0.8)
+            )
+
+            SELECT
+                'JF_' || job_family_key as job_family_key,
+                job_family,
+                job_sub_family,
+                seniority_level,
+                role_type,
+                seniority_order,
+                is_management_role,
+                created_timestamp
+            FROM job_family_prep
+            ORDER BY job_family, seniority_order, job_sub_family
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} job family records")
+
+            # Step 3: Validate data quality and gather statistics
+            context.log.info("Validating job family dimension data quality")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_job_families,
+                COUNT(DISTINCT job_family) as unique_families,
+                COUNT(DISTINCT job_sub_family) as unique_sub_families,
+                COUNT(DISTINCT seniority_level) as unique_seniority_levels,
+                COUNT(DISTINCT role_type) as unique_role_types,
+                COUNT(CASE WHEN is_management_role = TRUE THEN 1 END) as management_roles,
+                COUNT(CASE WHEN seniority_order > 0 THEN 1 END) as roles_with_seniority,
+                AVG(seniority_order) as avg_seniority_order,
+                MIN(seniority_order) as min_seniority_order,
+                MAX(seniority_order) as max_seniority_order
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 4: Job family distribution analysis
+            cursor.execute(f"""
+            SELECT
+                job_family,
+                COUNT(*) as combination_count,
+                COUNT(DISTINCT job_sub_family) as sub_families_count,
+                COUNT(CASE WHEN is_management_role = TRUE THEN 1 END) as management_roles_count,
+                AVG(seniority_order) as avg_seniority
+            FROM {table_name}
+            GROUP BY job_family
+            ORDER BY combination_count DESC
+            LIMIT 10
+            """)
+
+            top_families = cursor.fetchall()
+            family_stats = {
+                row[0]: {
+                    "combinations": row[1],
+                    "sub_families": row[2],
+                    "management_roles": row[3],
+                    "avg_seniority": float(row[4]) if row[4] is not None else 0.0
+                }
+                for row in top_families
+            }
+
+            # Step 5: Seniority level distribution
+            cursor.execute(f"""
+            SELECT
+                seniority_level,
+                seniority_order,
+                COUNT(*) as count,
+                COUNT(CASE WHEN is_management_role = TRUE THEN 1 END) as management_count,
+                COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () as percentage
+            FROM {table_name}
+            GROUP BY seniority_level, seniority_order
+            ORDER BY seniority_order, count DESC
+            """)
+
+            seniority_stats = {
+                row[0]: {
+                    "order": row[1],
+                    "count": row[2],
+                    "management_count": row[3],
+                    "percentage": float(row[4]) if row[4] is not None else 0.0
+                }
+                for row in cursor.fetchall()
+            }
+
+            # Step 6: Role type distribution
+            cursor.execute(f"""
+            SELECT
+                role_type,
+                COUNT(*) as count,
+                COUNT(CASE WHEN is_management_role = TRUE THEN 1 END) as flagged_as_management,
+                COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () as percentage
+            FROM {table_name}
+            GROUP BY role_type
+            ORDER BY count DESC
+            """)
+
+            role_type_stats = {
+                row[0]: {
+                    "count": row[1],
+                    "flagged_management": row[2],
+                    "percentage": float(row[3]) if row[3] is not None else 0.0
+                }
+                for row in cursor.fetchall()
+            }
+
+            context.log.info(f"Job family dimension validation: {validation_result[0]} total combinations, "
+                           f"{validation_result[1]} unique families, {validation_result[2]} sub-families, "
+                           f"{validation_result[3]} seniority levels, {validation_result[5]} management roles")
+
+            context.log.info(f"Seniority distribution: avg order {validation_result[7]:.2f}, "
+                           f"roles with seniority: {validation_result[6]}")
+
+            # Step 7: Quality threshold validation
+            unordered_seniority_count = 0
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE seniority_order = 0")
+            unordered_seniority_count = cursor.fetchone()[0]
+
+            if unordered_seniority_count > 0:
+                context.log.warning(f"Found {unordered_seniority_count} job families with unrecognized seniority levels")
+
+            # Add metadata for Dagster UI
+            context.add_output_metadata({
+                "total_combinations": MetadataValue.int(validation_result[0]),
+                "unique_families": MetadataValue.int(validation_result[1]),
+                "unique_sub_families": MetadataValue.int(validation_result[2]),
+                "unique_seniority_levels": MetadataValue.int(validation_result[3]),
+                "unique_role_types": MetadataValue.int(validation_result[4]),
+                "management_roles": MetadataValue.int(validation_result[5]),
+                "avg_seniority_order": MetadataValue.float(float(validation_result[7]) if validation_result[7] is not None else 0.0),
+                "unordered_seniority_count": MetadataValue.int(unordered_seniority_count),
+                "top_families": MetadataValue.json(family_stats),
+                "seniority_distribution": MetadataValue.json(seniority_stats)
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_combinations": validation_result[0],
+                "hierarchy_distribution": {
+                    "unique_families": validation_result[1],
+                    "unique_sub_families": validation_result[2],
+                    "unique_seniority_levels": validation_result[3],
+                    "unique_role_types": validation_result[4],
+                    "top_families": family_stats
+                },
+                "role_classification": {
+                    "management_roles": validation_result[5],
+                    "roles_with_seniority": validation_result[6],
+                    "role_type_distribution": role_type_stats
+                },
+                "seniority_analysis": {
+                    "avg_seniority_order": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "min_seniority_order": validation_result[8],
+                    "max_seniority_order": validation_result[9],
+                    "unordered_count": unordered_seniority_count,
+                    "seniority_distribution": seniority_stats
+                }
             }
 
         finally:
