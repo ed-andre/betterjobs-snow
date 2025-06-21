@@ -1678,3 +1678,341 @@ def analytics_dim_experience(context: AssetExecutionContext, snowflake: Snowflak
 
         finally:
             cursor.close()
+
+
+@asset(
+    deps=["stage_keywords_normalized"],
+    description="Create keywords taxonomy dimension table",
+    group_name="3_analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_keywords(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build keywords dimension from normalized keywords taxonomy.
+
+    This asset creates a keywords dimension table with hierarchical classification
+    and market intelligence metrics for keyword analysis.
+
+    Processing Logic:
+    1. Generate surrogate keys for each keyword
+    2. Map STAGE fields to dimension structure
+    3. Apply data quality filters (confidence >= 0.5)
+    4. Preserve keyword hierarchy and market intelligence
+    5. Validate keyword categorization and completeness
+
+    Data Quality Rules:
+    - Filter keywords with CONFIDENCE_SCORE >= 0.5
+    - Ensure required fields (keyword_text, keyword_type) are not null
+    - Handle keyword categorization and variant mappings
+    - Include admin approval tracking for quality assurance
+
+    Returns:
+        Dict containing execution results and keywords statistics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_dim_keywords.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting keywords dimension build from STAGE.KEYWORDS_NORMALIZED")
+
+            # Step 1: Clear existing data for fresh population
+            context.log.info("Clearing existing keywords dimension data")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+
+            # Step 2: Build keywords dimension with data quality filters
+            context.log.info("Building keywords dimension with quality filters")
+
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                keyword_key,
+                keyword_id,
+                keyword_text,
+                keyword_text_clean,
+                keyword_type,
+                keyword_category,
+                canonical_form,
+                original_variants,
+                frequency_count,
+                trend_score,
+                confidence_score,
+                approved_by_admin,
+                created_timestamp
+            )
+            WITH keywords_prep AS (
+                SELECT
+                    'KWD_' || KEYWORD_ID as keyword_key,
+                    KEYWORD_ID as keyword_id,
+                    KEYWORD_TEXT as keyword_text,
+                    KEYWORD_TEXT_CLEAN as keyword_text_clean,
+
+                    -- Keyword hierarchy
+                    KEYWORD_TYPE as keyword_type,
+                    COALESCE(KEYWORD_CATEGORY, 'General') as keyword_category,
+
+                    -- Standardization fields
+                    CANONICAL_FORM as canonical_form,
+                    ORIGINAL_VARIANTS as original_variants,
+
+                    -- Market intelligence
+                    FREQUENCY_COUNT as frequency_count,
+                    TREND_SCORE as trend_score,
+                    CONFIDENCE_SCORE as confidence_score,
+                    COALESCE(APPROVED_BY_ADMIN, FALSE) as approved_by_admin,
+
+                    CURRENT_TIMESTAMP as created_timestamp
+
+                FROM BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED
+                WHERE CONFIDENCE_SCORE >= 0.5
+                  AND KEYWORD_TEXT IS NOT NULL
+                  AND TRIM(KEYWORD_TEXT) != ''
+                  AND KEYWORD_TYPE IS NOT NULL
+                  AND TRIM(KEYWORD_TYPE) != ''
+            )
+            SELECT * FROM keywords_prep
+            ORDER BY keyword_type, keyword_category, frequency_count DESC, keyword_text
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} keywords records")
+
+            # Step 3: Validate data quality and gather statistics
+            context.log.info("Validating keywords dimension data quality")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_keywords,
+                COUNT(DISTINCT keyword_type) as unique_types,
+                COUNT(DISTINCT keyword_category) as unique_categories,
+                COUNT(CASE WHEN canonical_form IS NOT NULL THEN 1 END) as keywords_with_canonical_form,
+                COUNT(CASE WHEN original_variants IS NOT NULL THEN 1 END) as keywords_with_variants,
+                COUNT(CASE WHEN approved_by_admin = TRUE THEN 1 END) as admin_approved_keywords,
+                AVG(confidence_score) as avg_confidence_score,
+                MIN(confidence_score) as min_confidence_score,
+                MAX(confidence_score) as max_confidence_score,
+                SUM(COALESCE(frequency_count, 0)) as total_keyword_frequency,
+                AVG(COALESCE(frequency_count, 0)) as avg_frequency_count,
+                COUNT(CASE WHEN trend_score > 0 THEN 1 END) as positive_trend_keywords,
+                COUNT(CASE WHEN trend_score < 0 THEN 1 END) as negative_trend_keywords,
+                COUNT(CASE WHEN frequency_count > 0 THEN 1 END) as keywords_with_frequency
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 4: Keywords hierarchy analysis
+            context.log.info("Analyzing keywords hierarchy distribution")
+
+            cursor.execute(f"""
+            SELECT
+                keyword_type,
+                COUNT(*) as keyword_count,
+                COUNT(DISTINCT keyword_category) as category_count,
+                AVG(confidence_score) as avg_confidence,
+                SUM(COALESCE(frequency_count, 0)) as type_frequency,
+                COUNT(CASE WHEN trend_score > 0 THEN 1 END) as positive_trend_count,
+                COUNT(CASE WHEN canonical_form IS NOT NULL THEN 1 END) as canonical_count,
+                COUNT(CASE WHEN approved_by_admin = TRUE THEN 1 END) as admin_approved_count
+            FROM {table_name}
+            GROUP BY keyword_type
+            ORDER BY keyword_count DESC
+            """)
+
+            type_stats = [
+                {
+                    "keyword_type": row[0],
+                    "keyword_count": row[1],
+                    "category_count": row[2],
+                    "avg_confidence": float(row[3]) if row[3] is not None else 0.0,
+                    "type_frequency": row[4] if row[4] is not None else 0,
+                    "positive_trend_count": row[5],
+                    "canonical_count": row[6],
+                    "admin_approved_count": row[7]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 5: Top keywords by frequency analysis
+            cursor.execute(f"""
+            SELECT
+                keyword_text,
+                keyword_type,
+                keyword_category,
+                frequency_count,
+                trend_score,
+                confidence_score,
+                approved_by_admin,
+                CASE WHEN canonical_form IS NOT NULL THEN TRUE ELSE FALSE END as has_canonical_form
+            FROM {table_name}
+            ORDER BY COALESCE(frequency_count, 0) DESC
+            LIMIT 20
+            """)
+
+            top_keywords = [
+                {
+                    "keyword_text": row[0],
+                    "keyword_type": row[1],
+                    "keyword_category": row[2],
+                    "frequency_count": row[3] if row[3] is not None else 0,
+                    "trend_score": float(row[4]) if row[4] is not None else 0.0,
+                    "confidence_score": float(row[5]) if row[5] is not None else 0.0,
+                    "approved_by_admin": row[6],
+                    "has_canonical_form": row[7]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 6: Trend analysis
+            cursor.execute(f"""
+            SELECT
+                CASE
+                    WHEN trend_score > 0.1 THEN 'POSITIVE'
+                    WHEN trend_score < -0.1 THEN 'NEGATIVE'
+                    ELSE 'STABLE'
+                END as trend_category,
+                COUNT(*) as keyword_count,
+                AVG(COALESCE(frequency_count, 0)) as avg_frequency,
+                AVG(confidence_score) as avg_confidence
+            FROM {table_name}
+            WHERE trend_score IS NOT NULL
+            GROUP BY CASE
+                WHEN trend_score > 0.1 THEN 'POSITIVE'
+                WHEN trend_score < -0.1 THEN 'NEGATIVE'
+                ELSE 'STABLE'
+            END
+            ORDER BY keyword_count DESC
+            """)
+
+            trend_stats = {
+                row[0]: {
+                    "keyword_count": row[1],
+                    "avg_frequency": float(row[2]) if row[2] is not None else 0.0,
+                    "avg_confidence": float(row[3]) if row[3] is not None else 0.0
+                }
+                for row in cursor.fetchall()
+            }
+
+            # Step 7: Data quality validation
+            quality_issues = []
+
+            # Check for keywords with very low confidence
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE confidence_score < 0.7")
+            low_confidence_count = cursor.fetchone()[0]
+            if low_confidence_count > 0:
+                quality_issues.append(f"{low_confidence_count} keywords with low confidence (<0.7)")
+
+            # Check for keywords without categories
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE keyword_category = 'General'")
+            general_category_count = cursor.fetchone()[0]
+            if general_category_count > 0:
+                quality_issues.append(f"{general_category_count} keywords without specific categories")
+
+            # Check for keywords without canonical forms
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE canonical_form IS NULL")
+            no_canonical_count = cursor.fetchone()[0]
+            if no_canonical_count > 0:
+                quality_issues.append(f"{no_canonical_count} keywords without canonical forms")
+
+            # Check for keywords pending manual review
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE approved_by_admin = FALSE")
+            pending_review_count = cursor.fetchone()[0]
+            if pending_review_count > 0:
+                quality_issues.append(f"{pending_review_count} keywords pending admin approval")
+
+            if quality_issues:
+                context.log.warning(f"Data quality issues detected: {', '.join(quality_issues)}")
+
+            # Step 8: Keywords completeness check
+            cursor.execute(f"""
+            SELECT
+                COUNT(*) as total_keywords,
+                COUNT(CASE WHEN keyword_type IS NOT NULL THEN 1 END) as keywords_with_type,
+                COUNT(CASE WHEN keyword_category IS NOT NULL AND keyword_category != 'General' THEN 1 END) as keywords_with_category,
+                COUNT(CASE WHEN frequency_count > 0 THEN 1 END) as keywords_with_frequency
+            FROM {table_name}
+            """)
+
+            completeness_result = cursor.fetchone()
+            type_completeness = (completeness_result[1] / completeness_result[0] * 100) if completeness_result[0] > 0 else 0
+            category_completeness = (completeness_result[2] / completeness_result[0] * 100) if completeness_result[0] > 0 else 0
+            frequency_completeness = (completeness_result[3] / completeness_result[0] * 100) if completeness_result[0] > 0 else 0
+
+            context.log.info(f"Keywords dimension validation: {validation_result[0]} total keywords, "
+                           f"{validation_result[1]} types, {validation_result[2]} categories")
+
+            context.log.info(f"Data quality: avg confidence {validation_result[6]:.3f}, "
+                           f"range {validation_result[7]:.3f} - {validation_result[8]:.3f}")
+
+            context.log.info(f"Market intelligence: {validation_result[9]} total frequency, "
+                           f"{validation_result[11]} positive trends, {validation_result[12]} negative trends")
+
+            context.log.info(f"Admin approval: {validation_result[5]} approved keywords")
+
+            context.log.info(f"Completeness: {type_completeness:.1f}% with types, "
+                           f"{category_completeness:.1f}% with specific categories, "
+                           f"{frequency_completeness:.1f}% with frequency data")
+
+            # Add metadata for Dagster UI
+            context.add_output_metadata({
+                "total_keywords": MetadataValue.int(validation_result[0]),
+                "unique_types": MetadataValue.int(validation_result[1]),
+                "unique_categories": MetadataValue.int(validation_result[2]),
+                "keywords_with_canonical_form": MetadataValue.int(validation_result[3]),
+                "keywords_with_variants": MetadataValue.int(validation_result[4]),
+                "admin_approved_keywords": MetadataValue.int(validation_result[5]),
+                "avg_confidence_score": MetadataValue.float(float(validation_result[6]) if validation_result[6] is not None else 0.0),
+                "total_keyword_frequency": MetadataValue.int(validation_result[9] if validation_result[9] is not None else 0),
+                "positive_trend_keywords": MetadataValue.int(validation_result[11]),
+                "negative_trend_keywords": MetadataValue.int(validation_result[12]),
+                "type_distribution": MetadataValue.json(type_stats[:10]),  # Top 10 types
+                "top_keywords_by_frequency": MetadataValue.json(top_keywords[:10]),    # Top 10 keywords
+                "trend_analysis": MetadataValue.json(trend_stats),
+                "quality_issues_count": MetadataValue.int(len(quality_issues)),
+                "type_completeness": MetadataValue.float(type_completeness),
+                "category_completeness": MetadataValue.float(category_completeness),
+                "frequency_completeness": MetadataValue.float(frequency_completeness)
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_keywords": validation_result[0],
+                "keywords_taxonomy": {
+                    "unique_types": validation_result[1],
+                    "unique_categories": validation_result[2],
+                    "type_distribution": type_stats
+                },
+                "data_quality_metrics": {
+                    "keywords_with_canonical_form": validation_result[3],
+                    "keywords_with_variants": validation_result[4],
+                    "admin_approved_keywords": validation_result[5],
+                    "avg_confidence_score": float(validation_result[6]) if validation_result[6] is not None else 0.0,
+                    "min_confidence_score": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "max_confidence_score": float(validation_result[8]) if validation_result[8] is not None else 0.0,
+                    "quality_issues": quality_issues
+                },
+                "market_intelligence": {
+                    "total_keyword_frequency": validation_result[9] if validation_result[9] is not None else 0,
+                    "avg_frequency_count": float(validation_result[10]) if validation_result[10] is not None else 0.0,
+                    "positive_trend_keywords": validation_result[11],
+                    "negative_trend_keywords": validation_result[12],
+                    "keywords_with_frequency": validation_result[13],
+                    "trend_analysis": trend_stats
+                },
+                "completeness_metrics": {
+                    "type_completeness": type_completeness,
+                    "category_completeness": category_completeness,
+                    "frequency_completeness": frequency_completeness
+                },
+                "top_keywords": top_keywords,
+                "keywords_hierarchy": type_stats
+            }
+
+        finally:
+            cursor.close()

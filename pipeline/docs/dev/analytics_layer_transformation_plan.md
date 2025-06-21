@@ -1770,7 +1770,7 @@ ORDER BY experience_category, seniority_order, experience_name;
 #### 1.8 `analytics_dim_keywords`
 **Purpose**: Create keywords dimension from normalized keywords taxonomy
 **Dependencies**: `stage_keywords_normalized`
-**Output**: Keywords classification dimension
+**Output**: Keywords classification dimension with hierarchy and market intelligence
 
 ```python
 @asset(
@@ -1790,6 +1790,101 @@ def analytics_dim_keywords(context: AssetExecutionContext, snowflake: SnowflakeR
     - Handle canonical forms and variants
     """
 ```
+
+**Implementation Steps**:
+
+**Step 1: Surrogate Key Generation**
+- Generate `keyword_key` as surrogate key using `KEYWORD_ID` as natural key
+- Format: `KWD_` + `KEYWORD_ID` for clear identification
+- Ensure uniqueness and consistency across refreshes
+
+**Step 2: Field Mapping & Transformation**
+```sql
+-- Direct field mappings from STAGE.KEYWORDS_NORMALIZED:
+KEYWORD_ID → keyword_id (natural key preservation)
+KEYWORD_TEXT → keyword_text (primary keyword identifier)
+KEYWORD_TEXT_CLEAN → keyword_text_clean (cleaned version)
+KEYWORD_TYPE → keyword_type (high-level classification)
+KEYWORD_CATEGORY → keyword_category (detailed classification)
+CANONICAL_FORM → canonical_form (standardized keyword form)
+ORIGINAL_VARIANTS → original_variants (raw extraction variants)
+FREQUENCY_COUNT → frequency_count (market demand indicator)
+TREND_SCORE → trend_score (growth/decline indicator)
+CONFIDENCE_SCORE → confidence_score (normalization quality)
+APPROVED_BY_ADMIN → approved_by_admin (manual approval flag)
+```
+
+**Step 3: Data Quality Rules**
+- Filter keywords with `CONFIDENCE_SCORE >= 0.5` for quality assurance
+- Exclude keywords marked for manual review unless approved by admin
+- Ensure required fields (keyword_text, keyword_type) are not null
+- Handle keyword categorization and variant mappings
+
+**Step 4: Keyword Hierarchy Validation**
+- Validate type-category relationships
+- Ensure keyword categorization consistency
+- Handle uncategorized keywords (assign to 'Other' category)
+- Preserve canonical forms for standardization
+
+**Step 5: Market Intelligence Integration**
+- Include frequency count for demand analysis
+- Preserve trend scores for growth tracking
+- Calculate keyword popularity rankings within categories
+- Maintain variant mappings for search optimization
+
+**Step 6: Performance Optimization**
+- Cluster by (keyword_type, keyword_category) for analytical queries
+- Index on keyword_key for dimension lookups
+- Optimize for keyword-based filtering and hierarchy navigation
+
+**Key Processing Logic**:
+```sql
+WITH keywords_prep AS (
+    SELECT
+        'KWD_' || KEYWORD_ID as keyword_key,
+        KEYWORD_ID as keyword_id,
+        KEYWORD_TEXT as keyword_text,
+        KEYWORD_TEXT_CLEAN as keyword_text_clean,
+
+        -- Keyword hierarchy
+        KEYWORD_TYPE as keyword_type,
+        KEYWORD_CATEGORY as keyword_category,
+
+        -- Standardization fields
+        CANONICAL_FORM as canonical_form,
+        ORIGINAL_VARIANTS as original_variants,
+
+        -- Market intelligence
+        FREQUENCY_COUNT as frequency_count,
+        TREND_SCORE as trend_score,
+        CONFIDENCE_SCORE as confidence_score,
+        APPROVED_BY_ADMIN as approved_by_admin,
+
+        CURRENT_TIMESTAMP as created_timestamp
+
+    FROM BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED
+    WHERE CONFIDENCE_SCORE >= 0.5
+      AND (MANUAL_REVIEW_FLAG = FALSE OR APPROVED_BY_ADMIN = TRUE)
+      AND KEYWORD_TEXT IS NOT NULL
+      AND KEYWORD_TYPE IS NOT NULL
+)
+SELECT * FROM keywords_prep
+ORDER BY keyword_type, keyword_category, frequency_count DESC;
+```
+
+**Data Quality Validation**:
+- Count source vs target keywords for completeness
+- Verify keyword hierarchy integrity (type-category relationships)
+- Validate confidence score distribution
+- Check clustering effectiveness for analytical queries
+- Confirm variant and canonical form preservation
+
+**Business Intelligence Features**:
+- **Keywords Taxonomy Navigation**: Enable drill-down from type → category → individual keywords
+- **Market Demand Analysis**: Track keyword frequency and popularity trends
+- **Keywords Standardization**: Support canonical forms and variant mapping
+- **Trend Intelligence**: Monitor emerging vs declining keyword usage
+- **Search Optimization**: Enable variant-based keyword matching and discovery
 
 ### Phase 2: Primary Fact Table Implementation
 
