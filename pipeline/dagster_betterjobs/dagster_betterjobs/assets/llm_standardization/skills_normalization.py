@@ -355,7 +355,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
 
             -- Standardization & Deduplication
             ORIGINAL_VARIANTS VARIANT,                     -- JSON array of all variations found
-            COMMON_ALIASES VARIANT,                        -- JSON array of known aliases
+            COMMON_ALIASES VARIANT,                        -- JSON array of known aliases (Dead column for now)
             CANONICAL_FORM STRING,                         -- Preferred canonical name
 
             -- Market Data
@@ -615,7 +615,7 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
 
             -- Context
             SKILL_CONTEXT STRING,                          -- required, preferred, nice-to-have
-            
+
 
             -- Processing Metadata
             PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction

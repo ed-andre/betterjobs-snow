@@ -1043,3 +1043,307 @@ def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeR
 
         finally:
             cursor.close()
+
+
+@asset(
+    deps=["stage_skills_normalized"],
+    description="Create skills dimension with taxonomy hierarchy and market intelligence",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build skills dimension from STAGE.SKILLS_NORMALIZED taxonomy.
+
+    This asset creates a skills dimension table with hierarchical classification
+    and market intelligence metrics for skills demand analysis.
+
+    Processing Logic:
+    1. Generate surrogate keys for each skill
+    2. Map STAGE fields to dimension structure
+    3. Apply data quality filters (confidence >= 0.5)
+    4. Preserve skill hierarchy and market intelligence
+    5. Validate skill categorization and completeness
+
+    Data Quality Rules:
+    - Filter skills with CONFIDENCE_SCORE >= 0.5
+    - Exclude skills marked for manual review unless approved
+    - Ensure required fields (skill_name, skill_category) are not null
+    - Handle skill categorization and variant mappings
+
+    Returns:
+        Dict containing execution results and skills statistics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_dim_skills.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting skills dimension build from STAGE.SKILLS_NORMALIZED")
+
+            # Step 1: Build skills dimension from STAGE source
+            context.log.info("Building skills dimension with quality filters")
+
+            build_sql = f"""
+            INSERT OVERWRITE INTO {table_name} (
+                skill_key,
+                skill_id,
+                skill_name,
+                skill_category,
+                skill_subcategory,
+                canonical_form,
+                common_aliases,
+                original_variants,
+                stage_confidence_score,
+                frequency_count,
+                trend_direction,
+                created_timestamp
+            )
+            WITH skills_prep AS (
+                SELECT
+                    'SKL_' || SKILL_ID as skill_key,
+                    SKILL_ID as skill_id,
+                    SKILL_NAME as skill_name,
+
+                    -- Skill hierarchy
+                    SKILL_CATEGORY as skill_category,
+                    COALESCE(SKILL_SUBCATEGORY, 'General') as skill_subcategory,
+
+                    -- Standardization fields
+                    CANONICAL_FORM as canonical_form,
+                    COMMON_ALIASES as common_aliases,
+                    ORIGINAL_VARIANTS as original_variants,
+
+                    -- Market intelligence
+                    CONFIDENCE_SCORE as stage_confidence_score,
+                    FREQUENCY_COUNT as frequency_count,
+                    TREND_DIRECTION as trend_direction,
+
+                    CURRENT_TIMESTAMP as created_timestamp
+
+                FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED
+                WHERE CONFIDENCE_SCORE >= 0.5
+                  AND (MANUAL_REVIEW_FLAG = FALSE OR APPROVED_BY_ADMIN = TRUE)
+                  AND SKILL_NAME IS NOT NULL
+                  AND TRIM(SKILL_NAME) != ''
+                  AND SKILL_CATEGORY IS NOT NULL
+                  AND TRIM(SKILL_CATEGORY) != ''
+            )
+            SELECT * FROM skills_prep
+            ORDER BY skill_category, skill_subcategory, frequency_count DESC, skill_name
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} skills records")
+
+            # Step 2: Validate data quality and gather statistics
+            context.log.info("Validating skills dimension data quality")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_skills,
+                COUNT(DISTINCT skill_category) as unique_categories,
+                COUNT(DISTINCT skill_subcategory) as unique_subcategories,
+                COUNT(CASE WHEN canonical_form IS NOT NULL THEN 1 END) as skills_with_canonical_form,
+                COUNT(CASE WHEN common_aliases IS NOT NULL THEN 1 END) as skills_with_aliases,
+                COUNT(CASE WHEN original_variants IS NOT NULL THEN 1 END) as skills_with_variants,
+                AVG(stage_confidence_score) as avg_confidence_score,
+                MIN(stage_confidence_score) as min_confidence_score,
+                MAX(stage_confidence_score) as max_confidence_score,
+                SUM(frequency_count) as total_skill_frequency,
+                AVG(frequency_count) as avg_frequency_count,
+                COUNT(CASE WHEN trend_direction = 'GROWING' THEN 1 END) as growing_skills,
+                COUNT(CASE WHEN trend_direction = 'STABLE' THEN 1 END) as stable_skills,
+                COUNT(CASE WHEN trend_direction = 'DECLINING' THEN 1 END) as declining_skills
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 3: Skills hierarchy analysis
+            context.log.info("Analyzing skills hierarchy distribution")
+
+            cursor.execute(f"""
+            SELECT
+                skill_category,
+                COUNT(*) as skill_count,
+                COUNT(DISTINCT skill_subcategory) as subcategory_count,
+                AVG(stage_confidence_score) as avg_confidence,
+                SUM(frequency_count) as category_frequency,
+                COUNT(CASE WHEN trend_direction = 'GROWING' THEN 1 END) as growing_count,
+                COUNT(CASE WHEN canonical_form IS NOT NULL THEN 1 END) as canonical_count
+            FROM {table_name}
+            GROUP BY skill_category
+            ORDER BY skill_count DESC
+            """)
+
+            category_stats = [
+                {
+                    "skill_category": row[0],
+                    "skill_count": row[1],
+                    "subcategory_count": row[2],
+                    "avg_confidence": float(row[3]) if row[3] is not None else 0.0,
+                    "category_frequency": row[4] if row[4] is not None else 0,
+                    "growing_count": row[5],
+                    "canonical_count": row[6]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 4: Top skills by frequency analysis
+            cursor.execute(f"""
+            SELECT
+                skill_name,
+                skill_category,
+                skill_subcategory,
+                frequency_count,
+                stage_confidence_score,
+                trend_direction,
+                CASE WHEN canonical_form IS NOT NULL THEN TRUE ELSE FALSE END as has_canonical_form
+            FROM {table_name}
+            ORDER BY frequency_count DESC
+            LIMIT 20
+            """)
+
+            top_skills = [
+                {
+                    "skill_name": row[0],
+                    "skill_category": row[1],
+                    "skill_subcategory": row[2],
+                    "frequency_count": row[3] if row[3] is not None else 0,
+                    "stage_confidence_score": float(row[4]) if row[4] is not None else 0.0,
+                    "trend_direction": row[5],
+                    "has_canonical_form": row[6]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 5: Trend analysis
+            cursor.execute(f"""
+            SELECT
+                trend_direction,
+                COUNT(*) as skill_count,
+                AVG(frequency_count) as avg_frequency,
+                AVG(stage_confidence_score) as avg_confidence
+            FROM {table_name}
+            WHERE trend_direction IS NOT NULL
+            GROUP BY trend_direction
+            ORDER BY skill_count DESC
+            """)
+
+            trend_stats = {
+                row[0]: {
+                    "skill_count": row[1],
+                    "avg_frequency": float(row[2]) if row[2] is not None else 0.0,
+                    "avg_confidence": float(row[3]) if row[3] is not None else 0.0
+                }
+                for row in cursor.fetchall()
+            }
+
+            # Step 6: Data quality validation
+            quality_issues = []
+
+            # Check for skills with very low confidence
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE stage_confidence_score < 0.7")
+            low_confidence_count = cursor.fetchone()[0]
+            if low_confidence_count > 0:
+                quality_issues.append(f"{low_confidence_count} skills with low confidence (<0.7)")
+
+            # Check for skills without subcategories
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE skill_subcategory = 'General'")
+            general_subcategory_count = cursor.fetchone()[0]
+            if general_subcategory_count > 0:
+                quality_issues.append(f"{general_subcategory_count} skills without specific subcategories")
+
+            # Check for skills without canonical forms
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE canonical_form IS NULL")
+            no_canonical_count = cursor.fetchone()[0]
+            if no_canonical_count > 0:
+                quality_issues.append(f"{no_canonical_count} skills without canonical forms")
+
+            if quality_issues:
+                context.log.warning(f"Data quality issues detected: {', '.join(quality_issues)}")
+
+            # Step 7: Skills completeness check
+            cursor.execute(f"""
+            SELECT
+                COUNT(*) as total_skills,
+                COUNT(CASE WHEN skill_category IS NOT NULL THEN 1 END) as skills_with_category,
+                COUNT(CASE WHEN skill_subcategory IS NOT NULL AND skill_subcategory != 'General' THEN 1 END) as skills_with_subcategory,
+                COUNT(CASE WHEN frequency_count > 0 THEN 1 END) as skills_with_frequency
+            FROM {table_name}
+            """)
+
+            completeness_result = cursor.fetchone()
+            completeness_percentage = (completeness_result[1] / completeness_result[0] * 100) if completeness_result[0] > 0 else 0
+
+            context.log.info(f"Skills dimension validation: {validation_result[0]} total skills, "
+                           f"{validation_result[1]} categories, {validation_result[2]} subcategories")
+
+            context.log.info(f"Data quality: avg confidence {validation_result[6]:.3f}, "
+                           f"range {validation_result[7]:.3f} - {validation_result[8]:.3f}")
+
+            context.log.info(f"Market intelligence: {validation_result[9]} total frequency, "
+                           f"{validation_result[11]} growing, {validation_result[12]} stable, {validation_result[13]} declining")
+
+            context.log.info(f"Skills completeness: {completeness_percentage:.1f}% with proper categorization")
+
+            # Add metadata for Dagster UI
+            context.add_output_metadata({
+                "total_skills": MetadataValue.int(validation_result[0]),
+                "unique_categories": MetadataValue.int(validation_result[1]),
+                "unique_subcategories": MetadataValue.int(validation_result[2]),
+                "skills_with_canonical_form": MetadataValue.int(validation_result[3]),
+                "skills_with_aliases": MetadataValue.int(validation_result[4]),
+                "skills_with_variants": MetadataValue.int(validation_result[5]),
+                "avg_confidence_score": MetadataValue.float(float(validation_result[6]) if validation_result[6] is not None else 0.0),
+                "total_skill_frequency": MetadataValue.int(validation_result[9] if validation_result[9] is not None else 0),
+                "growing_skills": MetadataValue.int(validation_result[11]),
+                "stable_skills": MetadataValue.int(validation_result[12]),
+                "declining_skills": MetadataValue.int(validation_result[13]),
+                "category_distribution": MetadataValue.json(category_stats[:10]),  # Top 10 categories
+                "top_skills_by_frequency": MetadataValue.json(top_skills[:10]),    # Top 10 skills
+                "trend_analysis": MetadataValue.json(trend_stats),
+                "quality_issues_count": MetadataValue.int(len(quality_issues)),
+                "completeness_percentage": MetadataValue.float(completeness_percentage)
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_skills": validation_result[0],
+                "skills_taxonomy": {
+                    "unique_categories": validation_result[1],
+                    "unique_subcategories": validation_result[2],
+                    "category_distribution": category_stats
+                },
+                "data_quality_metrics": {
+                    "skills_with_canonical_form": validation_result[3],
+                    "skills_with_aliases": validation_result[4],
+                    "skills_with_variants": validation_result[5],
+                    "avg_confidence_score": float(validation_result[6]) if validation_result[6] is not None else 0.0,
+                    "min_confidence_score": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "max_confidence_score": float(validation_result[8]) if validation_result[8] is not None else 0.0,
+                    "completeness_percentage": completeness_percentage,
+                    "quality_issues": quality_issues
+                },
+                "market_intelligence": {
+                    "total_skill_frequency": validation_result[9] if validation_result[9] is not None else 0,
+                    "avg_frequency_count": float(validation_result[10]) if validation_result[10] is not None else 0.0,
+                    "growing_skills": validation_result[11],
+                    "stable_skills": validation_result[12],
+                    "declining_skills": validation_result[13],
+                    "trend_analysis": trend_stats
+                },
+                "top_skills": top_skills,
+                "skills_hierarchy": category_stats
+            }
+
+        finally:
+            cursor.close()

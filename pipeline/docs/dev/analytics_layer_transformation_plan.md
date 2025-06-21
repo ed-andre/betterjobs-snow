@@ -1546,10 +1546,123 @@ ORDER BY platform_name;
 - Cluster by (platform_name) as specified in table definition
 - Optimize for platform-based analytics and filtering
 
-#### 1.6 `analytics_dim_skills`
-**Purpose**: Create skills dimension from normalized skills
+#### 1.6 `analytics_dim_skills` ✅ COMPLETE
+**Purpose**: Create skills dimension from normalized skills taxonomy
 **Dependencies**: `stage_skills_normalized`
-**Output**: Skills taxonomy dimension
+**Output**: Skills classification dimension with hierarchy and market intelligence
+
+```python
+@asset(
+    deps=["stage_skills_normalized"],
+    description="Create skills dimension with taxonomy hierarchy and market intelligence",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build skills dimension from STAGE.SKILLS_NORMALIZED taxonomy.
+
+    Processing:
+    - Generate surrogate keys for each skill
+    - Map STAGE fields to dimension structure
+    - Preserve skill hierarchy and classification
+    - Include market intelligence and trend data
+    - Validate data quality and completeness
+    """
+```
+
+**Implementation Steps**:
+
+**Step 1: Surrogate Key Generation**
+- Generate `skill_key` as surrogate key using `SKILL_ID` as natural key
+- Format: `SKL_` + `SKILL_ID` for clear identification
+- Ensure uniqueness and consistency across refreshes
+
+**Step 2: Field Mapping & Transformation**
+```sql
+-- Direct field mappings from STAGE.SKILLS_NORMALIZED:
+SKILL_ID → skill_id (natural key preservation)
+SKILL_NAME → skill_name (primary skill identifier)
+SKILL_CATEGORY → skill_category (high-level classification)
+SKILL_SUBCATEGORY → skill_subcategory (detailed classification)
+CANONICAL_FORM → canonical_form (standardized skill name)
+COMMON_ALIASES → common_aliases (variant names)
+ORIGINAL_VARIANTS → original_variants (raw extraction variants)
+CONFIDENCE_SCORE → stage_confidence_score (normalization quality)
+FREQUENCY_COUNT → frequency_count (market demand indicator)
+TREND_DIRECTION → trend_direction (growth/decline indicator)
+```
+
+**Step 3: Data Quality Rules**
+- Filter skills with `CONFIDENCE_SCORE >= 0.5` for quality assurance
+- Exclude skills marked for manual review unless approved by admin
+- Ensure required fields (skill_name, skill_category) are not null
+- Handle special skill types: programming languages, frameworks, tools
+
+**Step 4: Skill Hierarchy Validation**
+- Validate category-subcategory relationships
+- Ensure skill categorization consistency
+- Handle uncategorized skills (assign to 'Other' subcategory)
+- Preserve canonical forms for standardization
+
+**Step 5: Market Intelligence Integration**
+- Include frequency count for demand analysis
+- Preserve trend direction for growth tracking
+- Calculate skill popularity rankings within categories
+- Maintain variant mappings for search optimization
+
+**Step 6: Performance Optimization**
+- Cluster by (skill_category, skill_subcategory) for analytical queries
+- Index on skill_key for dimension lookups
+- Optimize for skill-based filtering and hierarchy navigation
+
+**Key Processing Logic**:
+```sql
+WITH skills_prep AS (
+    SELECT
+        'SKL_' || SKILL_ID as skill_key,
+        SKILL_ID as skill_id,
+        SKILL_NAME as skill_name,
+
+        -- Skill hierarchy
+        SKILL_CATEGORY as skill_category,
+        SKILL_SUBCATEGORY as skill_subcategory,
+
+        -- Standardization fields
+        CANONICAL_FORM as canonical_form,
+        COMMON_ALIASES as common_aliases,
+        ORIGINAL_VARIANTS as original_variants,
+
+        -- Market intelligence
+        CONFIDENCE_SCORE as stage_confidence_score,
+        FREQUENCY_COUNT as frequency_count,
+        TREND_DIRECTION as trend_direction,
+
+        CURRENT_TIMESTAMP as created_timestamp
+
+    FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED
+    WHERE CONFIDENCE_SCORE >= 0.5
+      AND (MANUAL_REVIEW_FLAG = FALSE OR APPROVED_BY_ADMIN = TRUE)
+      AND SKILL_NAME IS NOT NULL
+      AND SKILL_CATEGORY IS NOT NULL
+)
+SELECT * FROM skills_prep
+ORDER BY skill_category, skill_subcategory, frequency_count DESC;
+```
+
+**Data Quality Validation**:
+- Count source vs target skills for completeness
+- Verify skill hierarchy integrity (category-subcategory relationships)
+- Validate confidence score distribution
+- Check clustering effectiveness for analytical queries
+- Confirm variant and alias preservation
+
+**Business Intelligence Features**:
+- **Skills Taxonomy Navigation**: Enable drill-down from category → subcategory → individual skills
+- **Market Demand Analysis**: Track skill frequency and popularity trends
+- **Skills Standardization**: Support canonical forms and variant mapping
+- **Growth Intelligence**: Monitor emerging vs declining technology skills
+- **Search Optimization**: Enable variant-based skill matching and discovery
 
 #### 1.7 `analytics_dim_experience`
 **Purpose**: Create experience dimension from normalized experience requirements
