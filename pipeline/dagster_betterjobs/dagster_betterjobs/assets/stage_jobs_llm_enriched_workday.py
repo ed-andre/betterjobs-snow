@@ -35,7 +35,7 @@ class LLMEnrichmentConfig(Config):
 
 
 @asset(
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "gemini"},
     required_resource_keys={"snowflake", "gemini"},
     deps=["stage_jobs_unified"],

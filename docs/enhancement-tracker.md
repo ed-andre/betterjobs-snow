@@ -2074,7 +2074,7 @@ Break down the monolithic `stage_jobs_llm_enriched` asset into individual platfo
 ```python
 @asset(
     deps=["stage_jobs_bamboohr"],
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "gemini"},
     required_resource_keys={"snowflake", "gemini"}
 )
@@ -2084,7 +2084,7 @@ def stage_jobs_llm_enriched_bamboohr(context, config) -> Dict[str, Any]:
 
 @asset(
     deps=["stage_jobs_greenhouse"],
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "gemini"},
     required_resource_keys={"snowflake", "gemini"}
 )
@@ -2094,7 +2094,7 @@ def stage_jobs_llm_enriched_greenhouse(context, config) -> Dict[str, Any]:
 
 @asset(
     deps=["stage_jobs_workday"],
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "gemini"},
     required_resource_keys={"snowflake", "gemini"}
 )
@@ -2104,7 +2104,7 @@ def stage_jobs_llm_enriched_workday(context, config) -> Dict[str, Any]:
 
 @asset(
     deps=["stage_jobs_smartrecruiters"],
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "gemini"},
     required_resource_keys={"snowflake", "gemini"}
 )
@@ -2115,7 +2115,7 @@ def stage_jobs_llm_enriched_smartrecruiters(context, config) -> Dict[str, Any]:
 @asset(
     deps=["stage_jobs_llm_enriched_bamboohr", "stage_jobs_llm_enriched_greenhouse",
           "stage_jobs_llm_enriched_workday", "stage_jobs_llm_enriched_smartrecruiters"],
-    group_name="stage_cleansing_enrichment_validation_transformation"
+    group_name="2a_stage_cleaning_enrichment"
 )
 def stage_jobs_llm_enriched_unified(context) -> Dict[str, Any]:
     """Lightweight coordinator for LLM enrichment monitoring and validation"""
@@ -3216,7 +3216,7 @@ Google Inc,Technology,workday,https://careers.google.com/jobs/workday,https://ca
 **Dual Processing Architecture:**
 ```python
 @asset(
-    group_name="raw_ingestion_extraction",
+    group_name="1_raw_ingestion_extraction",
     kinds={"python", "sql", "snowflake"},
     deps=["snowflake_master_company_urls"],
     required_resource_keys={"snowflake"}
@@ -4020,7 +4020,7 @@ Create a standardized, automated process for initially setting up the data wareh
 ```python
 @asset(
     description="Initialize RAW schema tables and views",
-    group_name="infrastructure_setup",
+    group_name="0_infrastructure_setup",
     kinds={"snowflake", "SQL"}
 )
 def raw_schema_setup(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -4029,7 +4029,7 @@ def raw_schema_setup(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
 @asset(
     deps=["raw_schema_setup"],
     description="Initialize STAGE schema tables and views",
-    group_name="infrastructure_setup",
+    group_name="0_infrastructure_setup",
     kinds={"snowflake", "SQL"}
 )
 def stage_schema_setup(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -4038,7 +4038,7 @@ def stage_schema_setup(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
 @asset(
     deps=["stage_schema_setup"],
     description="Load static configuration data",
-    group_name="infrastructure_setup",
+    group_name="0_infrastructure_setup",
     kinds={"snowflake", "SQL"}
 )
 def populate_static_data(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -4047,7 +4047,7 @@ def populate_static_data(context, snowflake: SnowflakeResource) -> Dict[str, Any
 @asset(
     deps=["populate_static_data"],
     description="Validate setup completeness",
-    group_name="infrastructure_setup",
+    group_name="0_infrastructure_setup",
     kinds={"snowflake", "SQL"}
 )
 def validate_setup(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -4147,7 +4147,7 @@ pipeline/sql/
 ```python
 @asset(
     description="Initialize Snowflake database, schemas, and roles - foundational setup",
-    group_name="infrastructure_setup",
+    group_name="0_infrastructure_setup",
     kinds={"snowflake", "SQL"},
     compute_kind="snowflake"
 )

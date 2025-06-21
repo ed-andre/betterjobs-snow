@@ -30,7 +30,7 @@ from dagster_betterjobs.resources import SnowflakeResource
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten skills from LLM VARIANT columns",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -196,7 +196,7 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
 
 @asset(
     description="Maintain skill standardization rules and aliases",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -306,7 +306,7 @@ def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake
 @asset(
     deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
     description="Create normalized skills master table with market intelligence",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -565,7 +565,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
 @asset(
     deps=["stage_skills_normalized", "stage_jobs_unified"],
     description="Create job-skill relationships with context tracking",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

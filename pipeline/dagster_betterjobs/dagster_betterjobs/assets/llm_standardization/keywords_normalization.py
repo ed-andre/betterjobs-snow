@@ -37,7 +37,7 @@ from dagster_betterjobs.resources import SnowflakeResource
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten keywords from LLM VARIANT columns",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -178,7 +178,7 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
 
 @asset(
     description="Maintain keyword standardization rules and aliases",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_keywords_standardization_rules(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -276,7 +276,7 @@ def stage_keywords_standardization_rules(context: AssetExecutionContext, snowfla
 
 @asset(
     description="Manage keyword type and category classifications",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_keyword_type_mapping(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -379,7 +379,7 @@ def stage_keyword_type_mapping(context: AssetExecutionContext, snowflake: Snowfl
 @asset(
     deps=["stage_llm_keywords_raw_extraction", "stage_keywords_standardization_rules", "stage_keyword_type_mapping"],
     description="Create normalized keywords master table with market intelligence",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_keywords_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -580,7 +580,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
 @asset(
     deps=["stage_keywords_normalized", "stage_jobs_unified"],
     description="Create job-keyword relationships with context tracking",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

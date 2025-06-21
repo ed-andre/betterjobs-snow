@@ -203,8 +203,8 @@ def execute_sql_file(snowflake: SnowflakeResource, file_path: str, context: Asse
 
 @asset(
     description="Initialize Snowflake database, schemas, and roles - foundational setup",
-    group_name="infrastructure_setup",
-    kinds={"snowflake", "SQL"},
+    group_name="0_infrastructure_setup",
+    kinds={"snowflake", "SQL", "python"},
 )
 def database_schema_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
@@ -233,8 +233,8 @@ def database_schema_setup(context: AssetExecutionContext, snowflake: SnowflakeRe
 
 @asset(
     description="Initialize infrastructure objects using object files - stages, integrations, file formats",
-    group_name="infrastructure_setup",
-    kinds={"snowflake", "SQL"},
+    group_name="0_infrastructure_setup",
+    kinds={"snowflake", "SQL", "python"},
     deps=[database_schema_setup]
 )
 def infrastructure_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -290,8 +290,8 @@ def infrastructure_setup(context: AssetExecutionContext, snowflake: SnowflakeRes
 
 @asset(
     description="Initialize all table objects using object files",
-    group_name="infrastructure_setup",
-    kinds={"snowflake", "SQL"},
+    group_name="0_infrastructure_setup",
+    kinds={"snowflake", "SQL", "python"},
     deps=[infrastructure_setup]
 )
 def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -349,8 +349,8 @@ def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -
 
 @asset(
     description="Initialize all view objects using object files",
-    group_name="infrastructure_setup",
-    kinds={"snowflake", "SQL"},
+    group_name="0_infrastructure_setup",
+    kinds={"snowflake", "SQL", "python"},
     deps=[tables_setup]
 )
 def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -398,8 +398,8 @@ def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) ->
 
 @asset(
     description="Populate static/reference data tables",
-    group_name="infrastructure_setup",
-    kinds={"snowflake", "SQL"},
+    group_name="0_infrastructure_setup",
+    kinds={"snowflake", "SQL", "python"},
     deps=[views_setup]
 )
 def static_data_population(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -455,8 +455,8 @@ def static_data_population(context: AssetExecutionContext, snowflake: SnowflakeR
 
 @asset(
     description="Validate complete setup and data integrity",
-    group_name="infrastructure_setup",
-    kinds={"snowflake", "SQL"},
+    group_name="0_infrastructure_setup",
+    kinds={"snowflake", "SQL", "python"},
     deps=[static_data_population]
 )
 def setup_validation(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

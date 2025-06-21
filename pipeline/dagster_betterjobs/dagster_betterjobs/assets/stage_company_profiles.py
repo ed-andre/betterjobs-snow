@@ -166,7 +166,7 @@ class StageCompanyProfilesConfig(Config):
 
 
 @asset(
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "transformation"},
     required_resource_keys={"snowflake"},
     deps=["raw_company_profiles", "snowflake_master_company_urls"]

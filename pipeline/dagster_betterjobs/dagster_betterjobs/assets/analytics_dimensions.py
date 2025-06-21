@@ -15,7 +15,7 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
 @asset(
     deps=["stage_company_profiles", "stage_jobs_unified"],
     description="Create company dimension with Type 2 SCD for company changes",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -223,7 +223,7 @@ def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeRe
 @asset(
     deps=["stage_jobs_unified"],
     description="Create date dimension table for analytics time-based analysis",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -329,7 +329,7 @@ def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResou
 @asset(
     deps=["stage_locations_normalized"],
     description="Create location dimension with geographic hierarchy and intelligence",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -523,7 +523,7 @@ def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeR
 @asset(
     deps=["stage_jobs_unified"],
     description="Create job classification dimension with hierarchical role taxonomy from LLM-enriched job data",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_job_family(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -793,7 +793,7 @@ def analytics_dim_job_family(context: AssetExecutionContext, snowflake: Snowflak
 @asset(
     deps=["stage_jobs_unified", "stage_jobs_llm_enriched_unified"],
     description="Create platform dimension with ATS characteristics from job data",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1048,7 +1048,7 @@ def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeR
 @asset(
     deps=["stage_skills_normalized"],
     description="Create skills dimension with taxonomy hierarchy and market intelligence",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1352,7 +1352,7 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
 @asset(
     deps=["stage_experience_normalized"],
     description="Create experience requirements dimension table",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_experience(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

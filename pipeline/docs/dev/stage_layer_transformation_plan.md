@@ -1155,7 +1155,7 @@ Based on schema analysis of RAW layer platform differences, Phase 1 will be impl
 **Technical Architecture**:
 ```python
 @asset(
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "transformation"},
     required_resource_keys={"snowflake"},
     deps=[
@@ -1632,7 +1632,7 @@ CREATE TABLE jobs_llm_enriched (
 
 ```python
 @asset(
-    group_name="stage_cleansing_enrichment_validation_transformation",
+    group_name="2a_stage_cleaning_enrichment",
     kinds={"snowflake", "python", "ai"},
     required_resource_keys={"snowflake", "gemini"},
     deps=["stage_jobs_unified"],

@@ -670,7 +670,7 @@ class RawCompanyProfilesConfig(Config):
 
 
 @asset(
-    group_name="raw_ingestion_extraction",
+    group_name="1_raw_ingestion_extraction",
     kinds={"python", "sql", "snowflake"},
     required_resource_keys={"snowflake"}
 )

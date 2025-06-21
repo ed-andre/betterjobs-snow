@@ -34,7 +34,7 @@ class LocationStandardizationConfig(Config):
 @asset(
     deps=["stage_jobs_llm_enriched_unified", "stage_jobs_unified"],
     description="Extract and flatten locations from multiple data sources",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_locations_raw_extraction(
@@ -149,7 +149,7 @@ def stage_llm_locations_raw_extraction(
 
 @asset(
     description="Maintain countries mapping for international location standardization",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"},
     freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)  # Weekly updates
 )
@@ -246,7 +246,7 @@ def stage_countries_mapping(
 
 @asset(
     description="Maintain US states mapping for automatic country inference",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"},
     freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)  # Weekly updates
 )
@@ -336,7 +336,7 @@ def stage_us_states_mapping(
 
 @asset(
     description="Maintain location standardization rules and geographic mappings",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"},
     freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)  # Weekly updates
 )
@@ -420,7 +420,7 @@ def stage_location_standardization_rules(
 @asset(
     deps=["stage_llm_locations_raw_extraction", "stage_location_standardization_rules", "stage_us_states_mapping", "stage_countries_mapping"],
     description="Create normalized locations master table with geographic intelligence",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_locations_normalized(
@@ -675,7 +675,7 @@ def stage_locations_normalized(
 @asset(
     deps=["stage_locations_normalized", "stage_jobs_unified"],
     description="Create job-location relationships with context tracking",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_locations_bridge(

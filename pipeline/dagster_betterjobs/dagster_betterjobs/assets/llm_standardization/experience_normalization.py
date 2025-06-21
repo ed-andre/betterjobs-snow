@@ -35,7 +35,7 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists, execute_
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten experience requirements from LLM VARIANT columns",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -157,7 +157,7 @@ def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflak
 
 @asset(
     description="Maintain experience standardization rules and mappings",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_experience_standardization_rules(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -309,7 +309,7 @@ def stage_experience_standardization_rules(context: AssetExecutionContext, snowf
 @asset(
     deps=["stage_llm_experience_raw_extraction", "stage_experience_standardization_rules"],
     description="Create normalized experience master table with standardized levels",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_experience_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -499,7 +499,7 @@ def stage_experience_normalized(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["stage_experience_normalized", "stage_jobs_unified"],
     description="Create job-experience relationships with requirement context",
-    group_name="llm_standardization",
+    group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_experience_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

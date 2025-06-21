@@ -50,7 +50,7 @@ class WorkdayJobsDiscoveryConfig(Config):
     default_lookback_days: int = 15
 
 @asset(
-    group_name="raw_ingestion_extraction",
+    group_name="1_raw_ingestion_extraction",
     kinds={"API", "snowflake", "python"},
     required_resource_keys={"snowflake"},
     deps=["snowflake_master_company_urls"],

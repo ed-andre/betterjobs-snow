@@ -1071,7 +1071,7 @@ analytics_business_views (Phase 5)
 ```python
 @asset(
     description="Create date dimension table for analytics time-based analysis",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1145,7 +1145,7 @@ changes_detected AS (
 @asset(
     deps=["stage_company_profiles", "stage_jobs_unified"],
     description="Create company dimension with Type 2 SCD for company changes",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1174,7 +1174,7 @@ def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeRe
 @asset(
     deps=["stage_locations_normalized"],
     description="Create location dimension with geographic hierarchy and intelligence",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1280,7 +1280,7 @@ ORDER BY country, state_province, city;
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Create job classification dimension with hierarchical role taxonomy",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_job_family(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1470,7 +1470,7 @@ ORDER BY job_family, seniority_order, job_sub_family;
 @asset(
     deps=["stage_jobs_unified"],
     description="Create platform dimension with ATS characteristics",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1555,7 +1555,7 @@ ORDER BY platform_name;
 @asset(
     deps=["stage_skills_normalized"],
     description="Create skills dimension with taxonomy hierarchy and market intelligence",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1673,7 +1673,7 @@ ORDER BY skill_category, skill_subcategory, frequency_count DESC;
 @asset(
     deps=["stage_experience_normalized"],
     description="Create experience requirements dimension table",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_experience(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1776,7 +1776,7 @@ ORDER BY experience_category, seniority_order, experience_name;
 @asset(
     deps=["stage_keywords_normalized"],
     description="Create keywords taxonomy dimension table",
-    group_name="analytics_dimensions",
+    group_name="3_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_keywords(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

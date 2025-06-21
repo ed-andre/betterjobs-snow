@@ -721,8 +721,9 @@ class SnowflakeMasterCompanyUrlsConfig(Config):
 
 
 @asset(
-    group_name="raw_ingestion_extraction",
+    group_name="1_raw_ingestion_extraction",
     kinds={"python", "sql", "snowflake"},
+    deps=["database_schema_setup", "infrastructure_setup", "tables_setup", "views_setup", "static_data_population"],
     required_resource_keys={"snowflake"}
 )
 def snowflake_master_company_urls(

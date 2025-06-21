@@ -16,7 +16,7 @@ from datetime import datetime
     deps=["stage_skills_normalized", "stage_keywords_normalized", "stage_locations_normalized",
           "stage_job_skills_bridge", "stage_job_keywords_bridge", "stage_job_locations_bridge"],
     description="Comprehensive data quality validation for LLM standardization",
-    group_name="data_quality_governance",
+    group_name="2c_stage_data_quality_governance",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_data_quality_validation(
@@ -323,7 +323,7 @@ def stage_llm_data_quality_validation(
 @asset(
     deps=["stage_llm_data_quality_validation"],
     description="Generate operational quality metrics and KPIs",
-    group_name="data_quality_governance",
+    group_name="2c_stage_data_quality_governance",
     kinds={"snowflake", "python", "SQL"},
     freshness_policy=FreshnessPolicy(maximum_lag_minutes=10080)
 )
@@ -677,7 +677,7 @@ def stage_llm_quality_metrics(
     deps=["stage_skills_normalized", "stage_keywords_normalized", "stage_locations_normalized",
           "stage_job_skills_bridge", "stage_job_keywords_bridge", "stage_job_locations_bridge"],
     description="Detailed coverage analysis and gap identification",
-    group_name="data_quality_governance",
+    group_name="2c_stage_data_quality_governance",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_coverage_analysis(
@@ -1019,7 +1019,7 @@ def stage_llm_coverage_analysis(
     deps=["stage_skills_normalized", "stage_keywords_normalized", "stage_locations_normalized",
           "stage_job_skills_bridge", "stage_job_keywords_bridge", "stage_job_locations_bridge"],
     description="Monitor confidence score distributions and quality trends",
-    group_name="data_quality_governance",
+    group_name="2c_stage_data_quality_governance",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_confidence_monitoring(
@@ -1331,7 +1331,7 @@ def stage_llm_confidence_monitoring(
 @asset(
     deps=["stage_llm_data_quality_validation", "stage_llm_confidence_monitoring"],
     description="Manual review queue management and prioritization",
-    group_name="data_quality_governance",
+    group_name="2c_stage_data_quality_governance",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_manual_review_queue(
