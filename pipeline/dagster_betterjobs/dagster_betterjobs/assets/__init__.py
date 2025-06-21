@@ -81,7 +81,8 @@ from dagster_betterjobs.assets.analytics_dimensions import (
     analytics_dim_date,
     analytics_dim_company,
     analytics_dim_location,
-    analytics_dim_job_family
+    analytics_dim_job_family,
+    analytics_dim_platform
 )
 
 # Infrastructure Setup Assets
@@ -156,6 +157,7 @@ __all__ = [
     "analytics_dim_company",
     "analytics_dim_location",
     "analytics_dim_job_family",
+    "analytics_dim_platform",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",

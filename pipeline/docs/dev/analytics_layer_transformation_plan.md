@@ -1271,7 +1271,7 @@ ORDER BY country, state_province, city;
 - Check clustering effectiveness for query performance
 - Confirm stage confidence score distribution
 
-#### 1.4 `analytics_dim_job_family`
+#### 1.4 `analytics_dim_job_family` ✅ COMPLETE
 **Purpose**: Create job classification dimension with hierarchical role taxonomy
 **Dependencies**: `stage_jobs_llm_enriched_unified`
 **Output**: Job family hierarchy for role analysis and market intelligence
@@ -1461,10 +1461,90 @@ ORDER BY job_family, seniority_order, job_sub_family;
 - **Market Intelligence**: Track demand levels and hiring trends by role type
 - **Management Analytics**: Analyze leadership hiring patterns and team structures
 
-#### 1.5 `analytics_dim_platform`
+#### 1.5 `analytics_dim_platform` ✅ COMPLETE
 **Purpose**: Create platform dimension for ATS classification
-**Dependencies**: `stage_jobs_unified`
+**Dependencies**: `stage_jobs_unified`, `stage_jobs_llm_enriched_unified`
 **Output**: Platform characteristics dimension
+
+```python
+@asset(
+    deps=["stage_jobs_unified"],
+    description="Create platform dimension with ATS characteristics",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build platform dimension from STAGE.JOBS_UNIFIED platform data.
+
+    Processing:
+    - Generate surrogate keys for each ATS platform
+    - Calculate platform characteristics from actual job data
+    - Map platform names to standardized codes
+    - Derive platform metrics as per table definition
+    """
+```
+
+**Implementation Steps**:
+
+**Step 1: Surrogate Key Generation**
+- Generate `platform_key` as surrogate key using `PLATFORM` as natural key
+- Format: `PLT_` + platform name for clear identification
+- Ensure uniqueness and consistency across refreshes
+
+**Step 2: Platform Code Standardization**
+- **Workday**: `workday` → `workday` (platform_code)
+- **Greenhouse**: `greenhouse` → `greenhouse` (platform_code)
+- **BambooHR**: `bamboohr` → `bamboohr` (platform_code)
+- **SmartRecruiters**: `smartrecruiters` → `smartrecruiters` (platform_code)
+- **iCIMS**: `icims` → `icims` (platform_code)
+
+**Step 3: Platform Characteristics Calculation**
+```sql
+-- Calculate platform metrics from actual job data:
+WITH platform_metrics AS (
+    SELECT
+        PLATFORM,
+        COUNT(*) as total_jobs,
+        COUNT(CASE WHEN SALARY_MIN IS NOT NULL AND SALARY_MAX IS NOT NULL THEN 1 END) as jobs_with_salary,
+        AVG(DATA_QUALITY_SCORE) as avg_quality_score,
+        MAX(DATE_RETRIEVED) as last_activity_date
+    FROM STAGE.JOBS_UNIFIED
+    WHERE PLATFORM IS NOT NULL
+      AND PLATFORM != ''
+    GROUP BY PLATFORM
+)
+SELECT
+    'PLT_' || PLATFORM as platform_key,
+    PLATFORM as platform_name,
+    LOWER(PLATFORM) as platform_code,
+
+    -- Derived characteristics per table definition
+    (jobs_with_salary::FLOAT / total_jobs) >= 0.30 as supports_salary_disclosure,
+    LEAST(1.0, GREATEST(0.0, avg_quality_score)) as data_richness_score,
+    CASE
+        WHEN total_jobs >= 1000 THEN 'High'
+        WHEN total_jobs >= 100 THEN 'Medium'
+        ELSE 'Low'
+    END as job_volume_category,
+
+    -- Currently processing jobs (jobs retrieved in last 30 days)
+    (DATEDIFF('day', last_activity_date, CURRENT_DATE) <= 30) as is_active,
+
+    CURRENT_TIMESTAMP as created_timestamp
+
+FROM platform_metrics
+ORDER BY platform_name;
+```
+
+**Step 4: Data Quality Rules**
+- Include only platforms with actual job data
+- Handle null/empty platform values
+- Ensure metric calculations are within expected ranges
+
+**Step 5: Performance Optimization**
+- Cluster by (platform_name) as specified in table definition
+- Optimize for platform-based analytics and filtering
 
 #### 1.6 `analytics_dim_skills`
 **Purpose**: Create skills dimension from normalized skills

@@ -788,3 +788,258 @@ def analytics_dim_job_family(context: AssetExecutionContext, snowflake: Snowflak
 
         finally:
             cursor.close()
+
+
+@asset(
+    deps=["stage_jobs_unified", "stage_jobs_llm_enriched_unified"],
+    description="Create platform dimension with ATS characteristics from job data",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build platform dimension from STAGE.JOBS_UNIFIED platform data.
+
+    This asset creates a comprehensive platform dimension that includes:
+    - Platform identification and standardized codes
+    - Platform characteristics derived from actual job data
+    - Data quality metrics and volume classifications
+    - Activity status tracking
+
+    Processing Logic:
+    1. Calculate platform metrics from job posting data
+    2. Generate platform codes and characteristics
+    3. Determine activity status and data quality scores
+    4. Validate platform dimension completeness
+
+    Returns:
+        Dict containing execution results and platform statistics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_dim_platform.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting platform dimension build from STAGE.JOBS_UNIFIED")
+
+            # Step 1: Clear existing data for complete refresh
+            context.log.info("Clearing existing platform dimension data")
+            cursor.execute(f"DELETE FROM {table_name}")
+
+            # Step 2: Build platform dimension with characteristics
+            context.log.info("Building platform dimension with calculated characteristics")
+
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                platform_key,
+                platform_name,
+                platform_code,
+                supports_salary_disclosure,
+                data_richness_score,
+                job_volume_category,
+                is_active,
+                created_timestamp
+            )
+                         WITH platform_metrics AS (
+                 SELECT
+                     ju.PLATFORM,
+                     COUNT(*) as total_jobs,
+                     COUNT(CASE WHEN lle.SALARY_MIN IS NOT NULL AND lle.SALARY_MAX IS NOT NULL THEN 1 END) as jobs_with_salary,
+                     AVG(COALESCE(ju.DATA_QUALITY_SCORE, 0.0)) as avg_quality_score,
+                     MAX(ju.DATE_RETRIEVED) as last_activity_date,
+                     COUNT(CASE WHEN ju.IS_ACTIVE = TRUE THEN 1 END) as active_jobs
+                 FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+                 LEFT JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED lle ON ju.JOB_UID = lle.JOB_UID
+                 WHERE ju.PLATFORM IS NOT NULL
+                   AND TRIM(ju.PLATFORM) != ''
+                 GROUP BY ju.PLATFORM
+             )
+                         SELECT
+                 'PLT_' || UPPER(PLATFORM) as platform_key,
+                 PLATFORM as platform_name,
+                 LOWER(PLATFORM) as platform_code,
+
+                -- Salary disclosure support (10% threshold)
+                CASE
+                    WHEN total_jobs > 0 THEN (jobs_with_salary::FLOAT / total_jobs) >= 0.10
+                    ELSE FALSE
+                END as supports_salary_disclosure,
+
+                -- Data richness score (0-1 scale, bounded)
+                LEAST(1.0, GREATEST(0.0, COALESCE(avg_quality_score, 0.0))) as data_richness_score,
+
+                -- Job volume categorization
+                CASE
+                    WHEN total_jobs >= 1000 THEN 'High'
+                    WHEN total_jobs >= 100 THEN 'Medium'
+                    ELSE 'Low'
+                END as job_volume_category,
+
+                -- Activity status (jobs retrieved in last 30 days)
+                CASE
+                    WHEN last_activity_date IS NOT NULL
+                         AND DATEDIFF('day', last_activity_date, CURRENT_DATE) <= 30
+                    THEN TRUE
+                    ELSE FALSE
+                END as is_active,
+
+                CURRENT_TIMESTAMP as created_timestamp
+
+            FROM platform_metrics
+            WHERE total_jobs > 0  -- Only include platforms with actual job data
+            ORDER BY total_jobs DESC, PLATFORM
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} platform records")
+
+            # Step 3: Validate data quality and gather statistics
+            context.log.info("Validating platform dimension data quality")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_platforms,
+                COUNT(CASE WHEN is_active = TRUE THEN 1 END) as active_platforms,
+                COUNT(CASE WHEN supports_salary_disclosure = TRUE THEN 1 END) as salary_disclosure_platforms,
+                COUNT(CASE WHEN job_volume_category = 'High' THEN 1 END) as high_volume_platforms,
+                COUNT(CASE WHEN job_volume_category = 'Medium' THEN 1 END) as medium_volume_platforms,
+                COUNT(CASE WHEN job_volume_category = 'Low' THEN 1 END) as low_volume_platforms,
+                AVG(data_richness_score) as avg_data_richness,
+                MIN(data_richness_score) as min_data_richness,
+                MAX(data_richness_score) as max_data_richness
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 4: Platform characteristics analysis
+            cursor.execute(f"""
+            SELECT
+                platform_name,
+                platform_code,
+                supports_salary_disclosure,
+                data_richness_score,
+                job_volume_category,
+                is_active
+            FROM {table_name}
+            ORDER BY
+                CASE job_volume_category
+                    WHEN 'High' THEN 1
+                    WHEN 'Medium' THEN 2
+                    ELSE 3
+                END,
+                data_richness_score DESC,
+                platform_name
+            """)
+
+            platform_details = [
+                {
+                    "platform_name": row[0],
+                    "platform_code": row[1],
+                    "supports_salary_disclosure": row[2],
+                    "data_richness_score": float(row[3]) if row[3] is not None else 0.0,
+                    "job_volume_category": row[4],
+                    "is_active": row[5]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 5: Volume category distribution
+            cursor.execute(f"""
+            SELECT
+                job_volume_category,
+                COUNT(*) as platform_count,
+                AVG(data_richness_score) as avg_quality,
+                COUNT(CASE WHEN is_active = TRUE THEN 1 END) as active_count,
+                COUNT(CASE WHEN supports_salary_disclosure = TRUE THEN 1 END) as salary_disclosure_count
+            FROM {table_name}
+            GROUP BY job_volume_category
+            ORDER BY CASE job_volume_category
+                WHEN 'High' THEN 1
+                WHEN 'Medium' THEN 2
+                ELSE 3
+            END
+            """)
+
+            volume_stats = {
+                row[0]: {
+                    "platform_count": row[1],
+                    "avg_quality": float(row[2]) if row[2] is not None else 0.0,
+                    "active_count": row[3],
+                    "salary_disclosure_count": row[4]
+                }
+                for row in cursor.fetchall()
+            }
+
+            # Step 6: Data quality validation
+            quality_issues = []
+
+            # Check for platforms with very low data quality
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE data_richness_score < 0.1")
+            low_quality_count = cursor.fetchone()[0]
+            if low_quality_count > 0:
+                quality_issues.append(f"{low_quality_count} platforms with very low data quality (<0.1)")
+
+            # Check for inactive platforms
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_active = FALSE")
+            inactive_count = cursor.fetchone()[0]
+            if inactive_count > 0:
+                quality_issues.append(f"{inactive_count} inactive platforms (no jobs in last 30 days)")
+
+            if quality_issues:
+                context.log.warning(f"Data quality issues detected: {', '.join(quality_issues)}")
+
+            context.log.info(f"Platform dimension validation: {validation_result[0]} total platforms, "
+                           f"{validation_result[1]} active, {validation_result[2]} support salary disclosure")
+
+            context.log.info(f"Volume distribution: {validation_result[3]} High, "
+                           f"{validation_result[4]} Medium, {validation_result[5]} Low volume platforms")
+
+            context.log.info(f"Data quality: avg {validation_result[6]:.3f}, "
+                           f"range {validation_result[7]:.3f} - {validation_result[8]:.3f}")
+
+            # Add metadata for Dagster UI
+            context.add_output_metadata({
+                "total_platforms": MetadataValue.int(validation_result[0]),
+                "active_platforms": MetadataValue.int(validation_result[1]),
+                "salary_disclosure_platforms": MetadataValue.int(validation_result[2]),
+                "high_volume_platforms": MetadataValue.int(validation_result[3]),
+                "medium_volume_platforms": MetadataValue.int(validation_result[4]),
+                "low_volume_platforms": MetadataValue.int(validation_result[5]),
+                "avg_data_richness": MetadataValue.float(float(validation_result[6]) if validation_result[6] is not None else 0.0),
+                "platform_details": MetadataValue.json(platform_details[:10]),  # Top 10 platforms
+                "volume_category_stats": MetadataValue.json(volume_stats),
+                "quality_issues_count": MetadataValue.int(len(quality_issues))
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_platforms": validation_result[0],
+                "platform_characteristics": {
+                    "active_platforms": validation_result[1],
+                    "salary_disclosure_platforms": validation_result[2],
+                    "volume_distribution": {
+                        "high": validation_result[3],
+                        "medium": validation_result[4],
+                        "low": validation_result[5]
+                    }
+                },
+                "data_quality_metrics": {
+                    "avg_data_richness": float(validation_result[6]) if validation_result[6] is not None else 0.0,
+                    "min_data_richness": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "max_data_richness": float(validation_result[8]) if validation_result[8] is not None else 0.0,
+                    "quality_issues": quality_issues
+                },
+                "platform_details": platform_details,
+                "volume_category_analysis": volume_stats
+            }
+
+        finally:
+            cursor.close()
