@@ -521,7 +521,7 @@ def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeR
 
 
 @asset(
-    deps=["stage_jobs_llm_enriched_unified"],
+    deps=["stage_jobs_unified"],
     description="Create job classification dimension with hierarchical role taxonomy from LLM-enriched job data",
     group_name="analytics_dimensions",
     kinds={"snowflake", "SQL"}
@@ -1343,6 +1343,337 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
                 },
                 "top_skills": top_skills,
                 "skills_hierarchy": category_stats
+            }
+
+        finally:
+            cursor.close()
+
+
+@asset(
+    deps=["stage_experience_normalized"],
+    description="Create experience requirements dimension table",
+    group_name="analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_experience(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build experience dimension from normalized experience requirements.
+
+    This asset creates an experience dimension table from normalized experience
+    requirements data, applying data quality filters and generating surrogate keys
+    for analytics queries.
+
+    Processing Logic:
+    1. Generate surrogate keys using 'EXP_' + EXPERIENCE_ID format
+    2. Map STAGE fields directly to dimension structure
+    3. Apply data quality filters (confidence >= 0.5)
+    4. Validate experience year ranges and seniority ordering
+    5. Handle both general and technology-specific experience classifications
+
+    Data Quality Rules:
+    - Filter experience levels with CONFIDENCE_SCORE >= 0.5
+    - Ensure required fields are not null: experience_name, experience_category
+    - Validate year ranges: MIN_YEARS_REQUIRED <= MAX_YEARS_REQUIRED when both present
+         - Handle seniority ordering consistency (0-99 scale validation)
+
+    Returns:
+        Dict containing execution results and experience level statistics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_dim_experience.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting experience dimension build from STAGE.EXPERIENCE_NORMALIZED")
+
+            # Step 1: Clear existing data for fresh population
+            context.log.info("Clearing existing experience dimension data")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+
+            # Step 2: Build experience dimension with data quality filters
+            context.log.info("Building experience dimension with quality filters")
+
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                experience_key,
+                experience_id,
+                experience_name,
+                experience_category,
+                min_years_required,
+                max_years_required,
+                seniority_order,
+                experience_description,
+                market_frequency,
+                confidence_score,
+                created_timestamp
+            )
+            WITH experience_prep AS (
+                SELECT
+                    'EXP_' || EXPERIENCE_ID as experience_key,
+                    EXPERIENCE_ID as experience_id,
+                    EXPERIENCE_NAME as experience_name,
+                    EXPERIENCE_CATEGORY as experience_category,
+                    MIN_YEARS_REQUIRED as min_years_required,
+                    MAX_YEARS_REQUIRED as max_years_required,
+                    SENIORITY_ORDER as seniority_order,
+                    EXPERIENCE_DESCRIPTION as experience_description,
+                    MARKET_FREQUENCY as market_frequency,
+                    CONFIDENCE_SCORE as confidence_score,
+                    CURRENT_TIMESTAMP as created_timestamp
+                FROM BETTERJOBS_DB.STAGE.EXPERIENCE_NORMALIZED
+                WHERE CONFIDENCE_SCORE >= 0.5
+                  AND EXPERIENCE_NAME IS NOT NULL
+                  AND TRIM(EXPERIENCE_NAME) != ''
+                  AND EXPERIENCE_CATEGORY IS NOT NULL
+                  AND TRIM(EXPERIENCE_CATEGORY) != ''
+                  AND (MIN_YEARS_REQUIRED IS NULL OR MAX_YEARS_REQUIRED IS NULL
+                       OR MIN_YEARS_REQUIRED <= MAX_YEARS_REQUIRED)
+            )
+            SELECT * FROM experience_prep
+            ORDER BY experience_category, seniority_order, experience_name
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} experience records")
+
+            # Step 3: Validate data quality and gather statistics
+            context.log.info("Validating experience dimension data quality")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_experience_levels,
+                COUNT(DISTINCT experience_category) as unique_categories,
+                COUNT(DISTINCT seniority_order) as unique_seniority_orders,
+                COUNT(CASE WHEN min_years_required IS NOT NULL THEN 1 END) as with_min_years,
+                COUNT(CASE WHEN max_years_required IS NOT NULL THEN 1 END) as with_max_years,
+                COUNT(CASE WHEN min_years_required IS NOT NULL AND max_years_required IS NOT NULL THEN 1 END) as with_year_ranges,
+                COUNT(CASE WHEN seniority_order IS NOT NULL AND seniority_order BETWEEN 0 AND 99 THEN 1 END) as valid_seniority_orders,
+                AVG(confidence_score) as avg_confidence_score,
+                MIN(confidence_score) as min_confidence_score,
+                MAX(confidence_score) as max_confidence_score,
+                SUM(COALESCE(market_frequency, 0)) as total_market_frequency,
+                AVG(COALESCE(market_frequency, 0)) as avg_market_frequency,
+                COUNT(CASE WHEN market_frequency > 0 THEN 1 END) as with_market_data
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 4: Experience category distribution analysis
+            context.log.info("Analyzing experience category distribution")
+
+            cursor.execute(f"""
+            SELECT
+                experience_category,
+                COUNT(*) as level_count,
+                COUNT(CASE WHEN min_years_required IS NOT NULL THEN 1 END) as with_min_years,
+                COUNT(CASE WHEN max_years_required IS NOT NULL THEN 1 END) as with_max_years,
+                AVG(confidence_score) as avg_confidence,
+                SUM(COALESCE(market_frequency, 0)) as category_frequency,
+                MIN(COALESCE(seniority_order, 99)) as min_seniority_order,
+                MAX(COALESCE(seniority_order, 0)) as max_seniority_order
+            FROM {table_name}
+            GROUP BY experience_category
+            ORDER BY level_count DESC
+            """)
+
+            category_stats = [
+                {
+                    "experience_category": row[0],
+                    "level_count": row[1],
+                    "with_min_years": row[2],
+                    "with_max_years": row[3],
+                    "avg_confidence": float(row[4]) if row[4] is not None else 0.0,
+                    "category_frequency": row[5] if row[5] is not None else 0,
+                    "min_seniority_order": row[6] if row[6] != 99 else None,
+                    "max_seniority_order": row[7] if row[7] != 0 else None
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 5: Seniority order analysis
+            cursor.execute(f"""
+            SELECT
+                seniority_order,
+                COUNT(*) as count,
+                LISTAGG(DISTINCT experience_name, ', ') as experience_names,
+                AVG(confidence_score) as avg_confidence,
+                SUM(COALESCE(market_frequency, 0)) as order_frequency
+            FROM {table_name}
+            WHERE seniority_order IS NOT NULL
+            GROUP BY seniority_order
+            ORDER BY seniority_order
+            """)
+
+            seniority_stats = [
+                {
+                    "seniority_order": row[0],
+                    "count": row[1],
+                    "experience_names": row[2],
+                    "avg_confidence": float(row[3]) if row[3] is not None else 0.0,
+                    "order_frequency": row[4] if row[4] is not None else 0
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 6: Experience level details (top by market frequency)
+            cursor.execute(f"""
+            SELECT
+                experience_name,
+                experience_category,
+                min_years_required,
+                max_years_required,
+                seniority_order,
+                market_frequency,
+                confidence_score
+            FROM {table_name}
+            ORDER BY COALESCE(market_frequency, 0) DESC, confidence_score DESC
+            LIMIT 15
+            """)
+
+            top_experience_levels = [
+                {
+                    "experience_name": row[0],
+                    "experience_category": row[1],
+                    "min_years_required": row[2],
+                    "max_years_required": row[3],
+                    "seniority_order": row[4],
+                    "market_frequency": row[5] if row[5] is not None else 0,
+                    "confidence_score": float(row[6]) if row[6] is not None else 0.0
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 7: Data quality validation
+            quality_issues = []
+
+            # Check for experience levels with very low confidence
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE confidence_score < 0.7")
+            low_confidence_count = cursor.fetchone()[0]
+            if low_confidence_count > 0:
+                quality_issues.append(f"{low_confidence_count} experience levels with low confidence (<0.7)")
+
+            # Check for invalid year ranges
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE min_years_required IS NOT NULL
+                  AND max_years_required IS NOT NULL
+                  AND min_years_required > max_years_required
+            """)
+            invalid_ranges_count = cursor.fetchone()[0]
+            if invalid_ranges_count > 0:
+                quality_issues.append(f"{invalid_ranges_count} experience levels with invalid year ranges")
+
+            # Check for missing seniority orders (expected for technology-specific experience levels)
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE seniority_order IS NULL AND experience_category NOT IN ('technology_specific')")
+            missing_seniority_count = cursor.fetchone()[0]
+            if missing_seniority_count > 0:
+                quality_issues.append(f"{missing_seniority_count} experience levels without seniority order")
+
+                        # Check for seniority orders outside expected range (0-99)
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE seniority_order IS NOT NULL
+                  AND (seniority_order < 0 OR seniority_order > 99)
+            """)
+            invalid_seniority_count = cursor.fetchone()[0]
+            if invalid_seniority_count > 0:
+                quality_issues.append(f"{invalid_seniority_count} experience levels with invalid seniority order (not 0-99)")
+
+            if quality_issues:
+                context.log.warning(f"Data quality issues detected: {', '.join(quality_issues)}")
+
+            # Step 8: Completeness check
+            cursor.execute(f"""
+            SELECT
+                COUNT(*) as total_levels,
+                COUNT(CASE WHEN experience_category IS NOT NULL THEN 1 END) as with_category,
+                COUNT(CASE WHEN seniority_order IS NOT NULL THEN 1 END) as with_seniority,
+                COUNT(CASE WHEN market_frequency IS NOT NULL AND market_frequency > 0 THEN 1 END) as with_market_data
+            FROM {table_name}
+            """)
+
+            completeness_result = cursor.fetchone()
+            category_completeness = (completeness_result[1] / completeness_result[0] * 100) if completeness_result[0] > 0 else 0
+            seniority_completeness = (completeness_result[2] / completeness_result[0] * 100) if completeness_result[0] > 0 else 0
+            market_completeness = (completeness_result[3] / completeness_result[0] * 100) if completeness_result[0] > 0 else 0
+
+            context.log.info(f"Experience dimension validation: {validation_result[0]} total experience levels, "
+                           f"{validation_result[1]} categories, {validation_result[2]} seniority orders")
+
+            context.log.info(f"Year ranges: {validation_result[5]} with complete ranges, "
+                           f"{validation_result[6]} with valid seniority orders")
+
+            context.log.info(f"Data quality: avg confidence {validation_result[7]:.3f}, "
+                           f"range {validation_result[8]:.3f} - {validation_result[9]:.3f}")
+
+            context.log.info(f"Market intelligence: {validation_result[10]} total frequency, "
+                           f"{validation_result[12]} levels with market data")
+
+            context.log.info(f"Completeness: {category_completeness:.1f}% categorized, "
+                           f"{seniority_completeness:.1f}% with seniority, "
+                           f"{market_completeness:.1f}% with market data")
+
+            # Add metadata for Dagster UI
+            context.add_output_metadata({
+                "total_experience_levels": MetadataValue.int(validation_result[0]),
+                "unique_categories": MetadataValue.int(validation_result[1]),
+                "unique_seniority_orders": MetadataValue.int(validation_result[2]),
+                "with_year_ranges": MetadataValue.int(validation_result[5]),
+                "valid_seniority_orders": MetadataValue.int(validation_result[6]),
+                "avg_confidence_score": MetadataValue.float(float(validation_result[7]) if validation_result[7] is not None else 0.0),
+                "total_market_frequency": MetadataValue.int(validation_result[10] if validation_result[10] is not None else 0),
+                "with_market_data": MetadataValue.int(validation_result[12]),
+                "category_distribution": MetadataValue.json(category_stats),
+                "seniority_distribution": MetadataValue.json(seniority_stats[:10]),  # Top 10 seniority levels
+                "top_experience_levels": MetadataValue.json(top_experience_levels[:10]),  # Top 10 by frequency
+                "quality_issues_count": MetadataValue.int(len(quality_issues)),
+                "category_completeness": MetadataValue.float(category_completeness),
+                "seniority_completeness": MetadataValue.float(seniority_completeness),
+                "market_completeness": MetadataValue.float(market_completeness)
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_experience_levels": validation_result[0],
+                "experience_classification": {
+                    "unique_categories": validation_result[1],
+                    "unique_seniority_orders": validation_result[2],
+                    "category_distribution": category_stats
+                },
+                "year_requirements": {
+                    "with_min_years": validation_result[3],
+                    "with_max_years": validation_result[4],
+                    "with_year_ranges": validation_result[5]
+                },
+                "seniority_analysis": {
+                    "valid_seniority_orders": validation_result[6],
+                    "seniority_distribution": seniority_stats
+                },
+                "data_quality_metrics": {
+                    "avg_confidence_score": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "min_confidence_score": float(validation_result[8]) if validation_result[8] is not None else 0.0,
+                    "max_confidence_score": float(validation_result[9]) if validation_result[9] is not None else 0.0,
+                    "quality_issues": quality_issues
+                },
+                "market_intelligence": {
+                    "total_market_frequency": validation_result[10] if validation_result[10] is not None else 0,
+                    "avg_market_frequency": float(validation_result[11]) if validation_result[11] is not None else 0.0,
+                    "with_market_data": validation_result[12]
+                },
+                "completeness_metrics": {
+                    "category_completeness": category_completeness,
+                    "seniority_completeness": seniority_completeness,
+                    "market_completeness": market_completeness
+                },
+                "top_experience_levels": top_experience_levels
             }
 
         finally:

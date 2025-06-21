@@ -1664,10 +1664,10 @@ ORDER BY skill_category, skill_subcategory, frequency_count DESC;
 - **Growth Intelligence**: Monitor emerging vs declining technology skills
 - **Search Optimization**: Enable variant-based skill matching and discovery
 
-#### 1.7 `analytics_dim_experience`
+#### 1.7 `analytics_dim_experience` ✅ COMPLETE
 **Purpose**: Create experience dimension from normalized experience requirements
 **Dependencies**: `stage_experience_normalized`
-**Output**: Experience levels and requirements dimension
+**Output**: Experience levels and requirements dimension with seniority ordering and market intelligence
 
 ```python
 @asset(
@@ -1687,6 +1687,85 @@ def analytics_dim_experience(context: AssetExecutionContext, snowflake: Snowflak
     - Handle both general and technology-specific experience
     """
 ```
+
+**Implementation Steps**:
+
+**Step 1: Surrogate Key Generation**
+- Generate `experience_key` using `'EXP_' + EXPERIENCE_ID` format for unique identification
+- Ensure consistency across refreshes for referential integrity
+
+**Step 2: Field Mapping & Transformation**
+```sql
+-- Direct field mappings from STAGE.EXPERIENCE_NORMALIZED:
+EXPERIENCE_ID → experience_id (natural key preservation)
+EXPERIENCE_NAME → experience_name (e.g., 'Entry Level', 'Senior Level')
+EXPERIENCE_CATEGORY → experience_category (general, technology_specific, role_seniority)
+MIN_YEARS_REQUIRED → min_years_required (minimum years for level)
+MAX_YEARS_REQUIRED → max_years_required (maximum years for level)
+SENIORITY_ORDER → seniority_order (1=Entry to 8=Executive ordering)
+EXPERIENCE_DESCRIPTION → experience_description (human-readable description)
+MARKET_FREQUENCY → market_frequency (demand indicator)
+CONFIDENCE_SCORE → confidence_score (normalization quality)
+```
+
+**Step 3: Data Quality Rules**
+- Filter experience levels with `CONFIDENCE_SCORE >= 0.5` for quality assurance
+- Ensure required fields are not null: `experience_name`, `experience_category`
+- Validate experience year ranges: `MIN_YEARS_REQUIRED <= MAX_YEARS_REQUIRED` when both present
+- Handle seniority ordering consistency (1-8 scale validation)
+
+**Step 4: Business Logic Implementation**
+- **Experience Categories**: Handle 'general', 'technology_specific', 'role_seniority' classifications
+- **Seniority Ordering**: Preserve 1-8 scale for analytics queries (1=Entry, 8=Executive)
+- **Market Intelligence**: Include frequency data for experience demand analysis
+- **Year Range Logic**: Ensure logical min/max year relationships for analytics
+
+**Step 5: Performance Optimization**
+- Cluster by (experience_category, seniority_order) for analytical queries
+- Index on experience_key for dimension lookups
+- Optimize for experience-based filtering and seniority hierarchy navigation
+
+**Key Processing Logic**:
+```sql
+WITH experience_prep AS (
+    SELECT
+        'EXP_' || EXPERIENCE_ID as experience_key,
+        EXPERIENCE_ID as experience_id,
+        EXPERIENCE_NAME as experience_name,
+        EXPERIENCE_CATEGORY as experience_category,
+        MIN_YEARS_REQUIRED as min_years_required,
+        MAX_YEARS_REQUIRED as max_years_required,
+        SENIORITY_ORDER as seniority_order,
+        EXPERIENCE_DESCRIPTION as experience_description,
+        MARKET_FREQUENCY as market_frequency,
+        CONFIDENCE_SCORE as confidence_score,
+        CURRENT_TIMESTAMP as created_timestamp
+    FROM BETTERJOBS_DB.STAGE.EXPERIENCE_NORMALIZED
+    WHERE CONFIDENCE_SCORE >= 0.5
+      AND EXPERIENCE_NAME IS NOT NULL
+      AND TRIM(EXPERIENCE_NAME) != ''
+      AND EXPERIENCE_CATEGORY IS NOT NULL
+      AND TRIM(EXPERIENCE_CATEGORY) != ''
+      AND (MIN_YEARS_REQUIRED IS NULL OR MAX_YEARS_REQUIRED IS NULL
+           OR MIN_YEARS_REQUIRED <= MAX_YEARS_REQUIRED)
+)
+SELECT * FROM experience_prep
+ORDER BY experience_category, seniority_order, experience_name;
+```
+
+**Data Quality Validation**:
+- Count source vs target experience levels for completeness
+- Verify seniority order consistency and gaps
+- Validate experience category distribution
+- Check year range logic and outliers
+- Confirm clustering effectiveness for analytical queries
+
+**Business Intelligence Features**:
+- **Experience Level Analytics**: Support experience requirement distribution analysis
+- **Seniority Progression**: Enable career path and progression analytics
+- **Market Demand Analysis**: Track frequency of experience levels in job market
+- **Category Intelligence**: Analyze general vs technology-specific experience patterns
+- **Experience Inflation**: Support trend analysis of experience requirements over time
 
 #### 1.8 `analytics_dim_keywords`
 **Purpose**: Create keywords dimension from normalized keywords taxonomy
