@@ -235,7 +235,7 @@ erDiagram
         date week_start_date "Partitioning Column"
     }
 
-    %% === AGGREGATE SUMMARY TABLES ===
+    %% === AGGREGATE SUMMARY TABLES & VIEWS ===
 
     MARKET_WEEKLY_SUMMARY {
         string summary_key PK
@@ -281,26 +281,26 @@ erDiagram
     }
 
     COMPANY_HIRING_INTELLIGENCE {
-        string intelligence_key PK
-        date analysis_date
-        string company_key FK
-        string week_key
-        integer jobs_posted_last_7_days
-        integer jobs_posted_last_30_days
-        integer current_job_postings
-        string hiring_velocity_trend
-        float week_over_week_growth_rate
-        float salary_transparency_rate
-        number avg_salary_offered
-        float entry_vs_senior_ratio
-        float technical_vs_business_ratio
-        float remote_job_percentage
-        string remote_work_policy
-        integer hiring_rank_in_industry
-        float hiring_competitiveness_score
-        integer sample_size
-        float data_completeness_score
-        timestamp created_timestamp
+        string intelligence_key PK "VIEW - Computed"
+        date analysis_date "VIEW - Computed"
+        string company_key FK "VIEW - Computed"
+        string week_key "VIEW - Computed"
+        integer jobs_posted_last_7_days "VIEW - Computed"
+        integer jobs_posted_last_30_days "VIEW - Computed"
+        integer current_job_postings "VIEW - Computed"
+        string hiring_velocity_trend "VIEW - Computed"
+        float week_over_week_growth_rate "VIEW - Computed"
+        float salary_transparency_rate "VIEW - Computed"
+        number avg_salary_offered "VIEW - Computed"
+        float entry_vs_senior_ratio "VIEW - Computed"
+        float technical_vs_business_ratio "VIEW - Computed"
+        float remote_job_percentage "VIEW - Computed"
+        string remote_work_policy "VIEW - Computed"
+        integer hiring_rank_in_industry "VIEW - Computed"
+        float hiring_competitiveness_score "VIEW - Computed"
+        integer sample_size "VIEW - Computed"
+        float data_completeness_score "VIEW - Computed"
+        timestamp created_timestamp "VIEW - Computed"
     }
 
     %% === RELATIONSHIPS ===
@@ -327,6 +327,9 @@ erDiagram
     SKILLS_TREND_ANALYSIS ||--o{ DIM_SKILLS : "trends_for_skill"
     COMPANY_HIRING_INTELLIGENCE ||--o{ DIM_COMPANY : "intelligence_for_company"
 
+    %% View Relationships (computed from fact tables)
+    FACT_COMPANY_HIRING_WEEKLY ||--o{ COMPANY_HIRING_INTELLIGENCE : "view_computes_from"
+
     %% Skills Bridge Relationship (Many-to-Many through STAGE layer)
     FACT_JOB_POSTINGS ||--o{ DIM_SKILLS : "requires_skills_via_bridge"
 
@@ -346,6 +349,7 @@ erDiagram
 - **Central Fact Table**: `FACT_JOB_POSTINGS` serves as the primary fact table containing individual job posting records
 - **Dimension Tables**: Nine main dimensions providing context and hierarchy for analysis (Date, Company, Location, Job Family, Platform, Skills, Salary, Experience, Keywords)
 - **Specialized Fact Tables**: Pre-aggregated tables for specific analytical domains (skills, company hiring)
+- **Business Intelligence Views**: `COMPANY_HIRING_INTELLIGENCE` implemented as a view to eliminate redundancy while providing executive-ready metrics
 
 ### Data Granularity
 - **Job Postings**: One record per unique job posting (natural grain)

@@ -643,50 +643,19 @@ CREATE TABLE ANALYTICS.SKILLS_TREND_ANALYSIS (
 CLUSTER BY (ANALYSIS_DATE, SKILL_KEY);
 ```
 
-##### 3. `COMPANY_HIRING_INTELLIGENCE` (Company Analysis)
-**Company-specific hiring patterns and intelligence**
+##### 3. `COMPANY_HIRING_INTELLIGENCE` (Company Analysis View)
+**Company-specific hiring patterns and market intelligence computed from weekly fact table**
 
-```sql
-CREATE TABLE ANALYTICS.COMPANY_HIRING_INTELLIGENCE (
-    INTELLIGENCE_KEY STRING PRIMARY KEY,
-    ANALYSIS_DATE DATE,
-    COMPANY_KEY STRING,
-    WEEK_KEY STRING,                        -- YYYY-WW format
+**Implementation Note**: This is implemented as a **VIEW** rather than a table to eliminate redundancy with `FACT_COMPANY_HIRING_WEEKLY`. The view provides market intelligence calculations while sourcing from the foundational weekly fact data.
 
-    -- Hiring Velocity
-    JOBS_POSTED_LAST_7_DAYS INTEGER,
-    JOBS_POSTED_LAST_30_DAYS INTEGER,
-    CURRENT_JOB_POSTINGS INTEGER,
+**Key Calculations**:
+- **Rolling Windows**: 7-day and 30-day hiring metrics calculated using window functions
+- **Industry Rankings**: Company position within industry peer groups using RANK() functions
+- **Competitiveness Scoring**: Market position scoring based on hiring velocity vs industry averages
+- **Work Policy Classification**: Remote work policies derived from percentage breakdowns
+- **Role Distribution Analysis**: Entry vs senior ratios calculated from weekly percentages
 
-    -- Growth Indicators
-    HIRING_VELOCITY_TREND STRING,           -- 'ACCELERATING', 'STABLE', 'DECELERATING'
-    WEEK_OVER_WEEK_GROWTH_RATE FLOAT,
-
-    -- Compensation Strategy
-    SALARY_TRANSPARENCY_RATE FLOAT,         -- Percentage of jobs with salary disclosed
-    AVG_SALARY_OFFERED NUMBER,
-
-    -- Role Distribution
-    ENTRY_VS_SENIOR_RATIO FLOAT,
-    TECHNICAL_VS_BUSINESS_RATIO FLOAT,
-    REMOTE_JOB_PERCENTAGE FLOAT,
-
-    -- Work Arrangement Policy
-    REMOTE_WORK_POLICY STRING,              -- 'FULL_REMOTE', 'HYBRID', 'ONSITE'
-
-    -- Market Position
-    HIRING_RANK_IN_INDUSTRY INTEGER,
-    HIRING_COMPETITIVENESS_SCORE FLOAT,
-
-    -- Quality Metrics
-    SAMPLE_SIZE INTEGER,
-    DATA_COMPLETENESS_SCORE FLOAT,
-
-    -- Audit Fields
-    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) PARTITION BY (ANALYSIS_DATE)
-CLUSTER BY (ANALYSIS_DATE, COMPANY_KEY);
-```
+**Business Value**: Provides executive-ready company intelligence metrics without storing duplicate data, enabling competitive analysis and market positioning insights while maintaining architectural simplicity.
 
 ## Business Views & Analytics Layer
 
@@ -964,7 +933,7 @@ ORDER BY DEMAND_WEEK DESC, JOBS_REQUIRING_SKILL DESC;
 **Components**:
 - Build `MARKET_WEEKLY_SUMMARY` for executive dashboards
 - Create `SKILLS_TREND_ANALYSIS` for technology intelligence
-- Implement `COMPANY_HIRING_INTELLIGENCE` for company analysis
+- Implement `COMPANY_HIRING_INTELLIGENCE` view for company analysis (computed from weekly fact table)
 - Develop automated refresh and calculation processes
 
 **Key Deliverables**:
