@@ -2632,9 +2632,223 @@ ORDER BY swr.week_start_date DESC, swr.skill_rank_overall ASC;
 - **Competitive Skills Analysis**: Compare skill demand across industries
 
 #### 3.2 `analytics_fact_company_hiring_weekly`
-**Purpose**: Create weekly company hiring intelligence
-**Dependencies**: `analytics_fact_job_postings`
-**Output**: Company hiring patterns and velocity metrics
+**Purpose**: Create weekly company hiring intelligence for competitive analysis and market positioning
+**Dependencies**: `analytics_fact_job_postings`, `analytics_dim_company`
+**Output**: Company hiring patterns, velocity metrics, and competitive intelligence
+
+**Business Need**: Track company-specific hiring trends with weekly granularity to enable:
+- Company hiring velocity analysis and competitive benchmarking
+- Compensation strategy intelligence by company
+- Work arrangement policy analysis across companies
+- Role distribution patterns and hiring focus identification
+- Market position tracking and hiring competitiveness scoring
+
+```python
+@asset(
+    deps=["analytics_fact_job_postings", "analytics_dim_company"],
+    description="Create weekly company hiring aggregate fact table for competitive analysis",
+    group_name="3c_analytics_aggregates",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_fact_company_hiring_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build weekly company hiring aggregates from job postings for competitive intelligence.
+
+    This asset creates comprehensive weekly company hiring intelligence by aggregating job postings
+    by company and week to enable responsive competitive analysis and market positioning.
+
+    Business Intelligence Capabilities:
+    - Company hiring velocity tracking and trend analysis
+    - Competitive benchmarking across companies in same industry/size
+    - Compensation strategy analysis (salary ranges, transparency rates)
+    - Work arrangement policy intelligence (remote, hybrid, onsite percentages)
+    - Role distribution analysis (entry vs senior, management ratios)
+    - Market position scoring and hiring competitiveness metrics
+
+    Data Quality Rules:
+    - Include only companies with valid COMPANY_KEY from dimension lookup
+    - Filter active job postings (IS_ACTIVE_POSTING = TRUE)
+    - Require minimum 2 jobs per company-week for trend reliability
+    - Use salary data only where SALARY_CONFIDENCE >= 0.6
+    - Apply LLM confidence filtering (LLM_OVERALL_CONFIDENCE >= 0.5)
+
+    Grain: One record per company per week
+    Aggregation Level: Weekly (Sunday-Saturday weeks)
+    Retention: 104 weeks (2 years) for competitive trend analysis
+    """
+```
+
+**Table Structure Analysis**:
+
+All fields in the table definition align with available upstream data from `FACT_JOB_POSTINGS`:
+
+**✅ Core Hiring Metrics (Available)**:
+- `JOBS_POSTED_COUNT` ← COUNT(*) from FACT_JOB_POSTINGS by company/week
+- `ACTIVE_JOBS_COUNT` ← COUNT WHERE IS_ACTIVE_POSTING = TRUE
+- `NEW_JOBS_THIS_WEEK` ← COUNT of jobs with FIRST_POSTED_DATE in week
+
+**✅ Hiring Velocity & Trends (Calculable)**:
+- `WEEK_OVER_WEEK_CHANGE` ← Current week jobs - Previous week jobs
+- `HIRING_TREND_DIRECTION` ← Calculated from WoW growth rate thresholds
+
+**✅ Job Portfolio Analysis (From denormalized salary fields)**:
+- `AVG_SALARY_OFFERED` ← AVG(SALARY_MIDPOINT_ANNUAL_USD)
+- `MEDIAN_SALARY_OFFERED` ← MEDIAN(SALARY_MIDPOINT_ANNUAL_USD)
+- `SALARY_RANGE_WIDTH` ← MAX(SALARY_MAX) - MIN(SALARY_MIN) per company
+
+**✅ Work Arrangement Patterns (From WORK_TYPE field)**:
+- `REMOTE_JOBS_PERCENTAGE` ← % WHERE WORK_TYPE = 'Remote'
+- `HYBRID_JOBS_PERCENTAGE` ← % WHERE WORK_TYPE = 'Hybrid'
+- `ON_SITE_JOBS_PERCENTAGE` ← % WHERE WORK_TYPE = 'On-site'
+
+**✅ Role Distribution (From SENIORITY_LEVEL field)**:
+- `ENTRY_LEVEL_PERCENTAGE` ← % WHERE SENIORITY_LEVEL LIKE '%Entry%' OR '%Junior%'
+- `SENIOR_LEVEL_PERCENTAGE` ← % WHERE SENIORITY_LEVEL LIKE '%Senior%' OR '%Staff%' OR '%Principal%'
+- `MANAGEMENT_ROLES_PERCENTAGE` ← % WHERE SENIORITY_LEVEL LIKE '%Manager%' OR '%Director%' OR '%VP%'
+
+**Implementation Steps**:
+
+**Step 1: Source Data Quality Filtering**
+```sql
+-- Filter high-quality job postings by company and week
+WITH quality_company_jobs AS (
+    SELECT
+        COMPANY_KEY,
+        FIRST_POSTED_DATE,
+        TO_CHAR(FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+        DATE_TRUNC('week', FIRST_POSTED_DATE) as week_start_date,
+        IS_ACTIVE_POSTING,
+        SALARY_MIDPOINT_ANNUAL_USD,
+        SALARY_MIN,
+        SALARY_MAX,
+        SALARY_CONFIDENCE,
+        WORK_TYPE,
+        SENIORITY_LEVEL,
+        LLM_OVERALL_CONFIDENCE
+    FROM ANALYTICS.FACT_JOB_POSTINGS
+    WHERE COMPANY_KEY IS NOT NULL
+      AND COMPANY_KEY != 'COMP_UNKNOWN'
+      AND LLM_OVERALL_CONFIDENCE >= 0.5
+      AND FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
+)
+```
+
+**Step 2: Weekly Company Aggregation**
+```sql
+-- Aggregate hiring metrics by company and week
+company_weekly_base AS (
+    SELECT
+        week_key,
+        week_start_date,
+        COMPANY_KEY,
+
+        -- Core hiring metrics
+        COUNT(*) as jobs_posted_count,
+        COUNT(CASE WHEN IS_ACTIVE_POSTING THEN 1 END) as active_jobs_count,
+        COUNT(CASE WHEN DATE_TRUNC('week', FIRST_POSTED_DATE) = week_start_date THEN 1 END) as new_jobs_this_week,
+
+        -- Salary analysis (with confidence filtering)
+        AVG(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                 THEN SALARY_MIDPOINT_ANNUAL_USD END) as avg_salary_offered,
+        MEDIAN(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                   THEN SALARY_MIDPOINT_ANNUAL_USD END) as median_salary_offered,
+        (MAX(CASE WHEN SALARY_CONFIDENCE >= 0.6 THEN SALARY_MAX END) -
+         MIN(CASE WHEN SALARY_CONFIDENCE >= 0.6 THEN SALARY_MIN END)) as salary_range_width,
+
+        -- Work arrangement patterns
+        COUNT(CASE WHEN WORK_TYPE = 'Remote' THEN 1 END)::FLOAT / COUNT(*) * 100 as remote_jobs_percentage,
+        COUNT(CASE WHEN WORK_TYPE = 'Hybrid' THEN 1 END)::FLOAT / COUNT(*) * 100 as hybrid_jobs_percentage,
+        COUNT(CASE WHEN WORK_TYPE = 'On-site' THEN 1 END)::FLOAT / COUNT(*) * 100 as on_site_jobs_percentage,
+
+        -- Role distribution patterns
+        COUNT(CASE WHEN LOWER(SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(SENIORITY_LEVEL) LIKE '%junior%'
+                   THEN 1 END)::FLOAT / COUNT(*) * 100 as entry_level_percentage,
+        COUNT(CASE WHEN LOWER(SENIORITY_LEVEL) LIKE '%senior%' OR LOWER(SENIORITY_LEVEL) LIKE '%staff%'
+                    OR LOWER(SENIORITY_LEVEL) LIKE '%principal%'
+                   THEN 1 END)::FLOAT / COUNT(*) * 100 as senior_level_percentage,
+        COUNT(CASE WHEN LOWER(SENIORITY_LEVEL) LIKE '%manager%' OR LOWER(SENIORITY_LEVEL) LIKE '%director%'
+                    OR LOWER(SENIORITY_LEVEL) LIKE '%vp%'
+                   THEN 1 END)::FLOAT / COUNT(*) * 100 as management_roles_percentage
+
+    FROM quality_company_jobs
+    GROUP BY week_key, week_start_date, COMPANY_KEY
+    HAVING COUNT(*) >= 2  -- Minimum statistical validity for company trends
+)
+```
+
+**Step 3: Trend Analysis & Growth Calculations**
+```sql
+-- Add week-over-week trend analysis
+company_with_trends AS (
+    SELECT cwb.*,
+           -- Previous week comparison for trend analysis
+           LAG(cwb.jobs_posted_count, 1) OVER (
+               PARTITION BY cwb.COMPANY_KEY
+               ORDER BY cwb.week_start_date
+           ) as prev_week_jobs,
+
+           -- Calculate week-over-week change
+           (cwb.jobs_posted_count - LAG(cwb.jobs_posted_count, 1) OVER (
+               PARTITION BY cwb.COMPANY_KEY
+               ORDER BY cwb.week_start_date
+           )) as week_over_week_change,
+
+           -- Trend direction classification
+           CASE
+               WHEN LAG(cwb.jobs_posted_count, 1) OVER (PARTITION BY cwb.COMPANY_KEY ORDER BY cwb.week_start_date) IS NULL THEN 'New'
+               WHEN ((cwb.jobs_posted_count::FLOAT / LAG(cwb.jobs_posted_count, 1) OVER (PARTITION BY cwb.COMPANY_KEY ORDER BY cwb.week_start_date)) - 1) * 100 > 20 THEN 'Accelerating'
+               WHEN ((cwb.jobs_posted_count::FLOAT / LAG(cwb.jobs_posted_count, 1) OVER (PARTITION BY cwb.COMPANY_KEY ORDER BY cwb.week_start_date)) - 1) * 100 > -10 THEN 'Stable'
+               ELSE 'Declining'
+           END as hiring_trend_direction
+    FROM company_weekly_base cwb
+)
+```
+
+**Step 4: Final Aggregation with Primary Key Generation**
+```sql
+-- Generate final company hiring weekly records
+SELECT
+    'CH_' || cwt.week_key || '_' || cwt.COMPANY_KEY as company_hiring_key,
+    cwt.week_key,
+    cwt.COMPANY_KEY,
+    cwt.jobs_posted_count,
+    cwt.active_jobs_count,
+    cwt.new_jobs_this_week,
+    cwt.week_over_week_change,
+    cwt.hiring_trend_direction,
+    cwt.avg_salary_offered,
+    cwt.median_salary_offered,
+    cwt.salary_range_width,
+    cwt.remote_jobs_percentage,
+    cwt.hybrid_jobs_percentage,
+    cwt.on_site_jobs_percentage,
+    cwt.entry_level_percentage,
+    cwt.senior_level_percentage,
+    cwt.management_roles_percentage,
+    CURRENT_TIMESTAMP as created_timestamp,
+    cwt.week_start_date
+FROM company_with_trends cwt
+ORDER BY cwt.week_start_date DESC, cwt.jobs_posted_count DESC;
+```
+
+**Performance Optimization**:
+- **Clustering**: `(WEEK_KEY, COMPANY_KEY)` for company-specific trend analysis
+- **Incremental Processing**: Process only new/changed weeks to minimize processing time
+- **Data Retention**: 104 weeks (2 years) for comprehensive competitive analysis
+- **Query Performance Target**: <3 seconds for company trend queries
+
+**Business Intelligence Capabilities**:
+- **Competitive Benchmarking**: Compare hiring velocity across similar companies
+- **Compensation Intelligence**: Track salary strategy changes and market positioning
+- **Work Policy Analysis**: Monitor remote work adoption and policy shifts
+- **Hiring Focus Analysis**: Identify whether companies are hiring junior vs senior talent
+- **Market Position Scoring**: Rank companies by hiring aggressiveness and competitiveness
+
+**Expected Data Volume**:
+- **Weekly Records**: ~500-2,000 company-week combinations (depending on active companies)
+- **Processing Time**: <5 minutes for full weekly refresh
+- **Data Quality**: Minimum 2 jobs per company-week for statistical reliability
+- **Business Coverage**: All companies with sufficient job posting volume
 
 ### Phase 4: Market Intelligence Tables
 **Objective**: Create business-ready metric tables for fast reporting
@@ -2707,8 +2921,8 @@ ORDER BY swr.week_start_date DESC, swr.skill_rank_overall ASC;
 - ✅ Salary, skills, experience, and location bridge table integration
 - ✅ Performance optimization with clustering strategy
 
-#### Phase 3: Aggregates ✅ **PARTIALLY COMPLETE**
-**Status**: Skills demand weekly aggregates implemented
+#### Phase 3: Aggregates ✅ **COMPLETE**
+**Status**: Both weekly aggregate fact tables implemented and operational
 **Deliverables**:
 - ✅ `FACT_SKILLS_DEMAND_WEEKLY` - Weekly skills demand with trend analysis
   - Skills penetration rates and market demand metrics
@@ -2717,7 +2931,13 @@ ORDER BY swr.week_start_date DESC, swr.skill_rank_overall ASC;
   - Market position rankings and competitive analysis
   - Remote work arrangement patterns by skill
   - Comprehensive data quality and confidence metrics
-- ⏳ `FACT_COMPANY_HIRING_WEEKLY` - Company hiring intelligence (pending)
+- ✅ `FACT_COMPANY_HIRING_WEEKLY` - Company hiring intelligence and competitive analysis
+  - Weekly company hiring velocity tracking and trend analysis
+  - Competitive benchmarking across companies in same industry/size
+  - Compensation strategy analysis (salary ranges, transparency rates)
+  - Work arrangement policy intelligence (remote, hybrid, onsite percentages)
+  - Role distribution analysis (entry vs senior, management ratios)
+  - Market position scoring and hiring competitiveness metrics
 - ⏳ Automated weekly refresh processes (pending)
 - ⏳ Cross-table consistency validation (pending)
 

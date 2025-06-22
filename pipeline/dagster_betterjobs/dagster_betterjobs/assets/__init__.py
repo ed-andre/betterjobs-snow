@@ -99,7 +99,8 @@ from dagster_betterjobs.assets.analytics_dimensions import (
 # Analytics Layer Assets - Phase 2: Facts
 from dagster_betterjobs.assets.analytics_facts import (
     analytics_fact_job_postings,
-    analytics_fact_skills_demand_weekly
+    analytics_fact_skills_demand_weekly,
+    analytics_fact_company_hiring_weekly
 )
 
 # Infrastructure Setup Assets
@@ -186,6 +187,7 @@ __all__ = [
     # Analytics layer assets - Phase 2: Facts
     "analytics_fact_job_postings",
     "analytics_fact_skills_demand_weekly",
+    "analytics_fact_company_hiring_weekly",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",

@@ -18,7 +18,7 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
           "analytics_dim_salary", "analytics_dim_experience", "analytics_dim_keywords",
           "stage_jobs_unified", "stage_jobs_llm_enriched_unified", "stage_job_salary_bridge"],
     description="Create primary fact table for job posting analytics",
-    group_name="3b_analytics_facts",
+    group_name="3b_analytics_facts_aggregates",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -527,7 +527,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["analytics_fact_job_postings", "stage_job_skills_bridge", "analytics_dim_skills"],
     description="Create weekly skills demand aggregate fact table for technology trend analysis",
-    group_name="3b_analytics_facts",
+    group_name="3b_analytics_facts_aggregates",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1064,6 +1064,431 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     "weeks_covered": validation_result[2]
                 },
                 "top_skills_analysis": top_skills_stats
+            }
+
+        finally:
+            cursor.close()
+
+
+@asset(
+    deps=["analytics_fact_job_postings", "analytics_dim_company"],
+    description="Create weekly company hiring aggregate fact table for competitive analysis",
+    group_name="3b_analytics_facts_aggregates",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_fact_company_hiring_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build weekly company hiring aggregates from job postings for competitive intelligence.
+
+    This asset creates comprehensive weekly company hiring intelligence by aggregating job postings
+    by company and week to enable responsive competitive analysis and market positioning.
+
+    Business Intelligence Capabilities:
+    - Company hiring velocity tracking and trend analysis
+    - Competitive benchmarking across companies in same industry/size
+    - Compensation strategy analysis (salary ranges, transparency rates)
+    - Work arrangement policy intelligence (remote, hybrid, onsite percentages)
+    - Role distribution analysis (entry vs senior, management ratios)
+    - Market position scoring and hiring competitiveness metrics
+
+    Data Quality Rules:
+    - Include only companies with valid COMPANY_KEY from dimension lookup
+    - Filter active job postings (IS_ACTIVE_POSTING = TRUE)
+    - Require minimum 2 jobs per company-week for trend reliability
+    - Use salary data only where SALARY_CONFIDENCE >= 0.6
+    - Apply LLM confidence filtering (LLM_OVERALL_CONFIDENCE >= 0.5)
+
+    Grain: One record per company per week
+    Aggregation Level: Weekly (Sunday-Saturday weeks)
+    Retention: 104 weeks (2 years) for competitive trend analysis
+
+    Returns:
+        Dict containing processing statistics and competitive intelligence metrics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_fact_company_hiring_weekly.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting weekly company hiring aggregation from fact job postings")
+
+            # Step 1: Clear existing data for complete refresh
+            context.log.info("Clearing existing company hiring weekly data")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+
+            # Step 2: Build company hiring aggregates with comprehensive competitive intelligence
+            context.log.info("Building weekly company hiring aggregates with competitive analysis and trend intelligence")
+
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                company_hiring_key,
+                week_key,
+                company_key,
+                jobs_posted_count,
+                active_jobs_count,
+                new_jobs_this_week,
+                week_over_week_change,
+                hiring_trend_direction,
+                avg_salary_offered,
+                median_salary_offered,
+                salary_range_width,
+                remote_jobs_percentage,
+                hybrid_jobs_percentage,
+                on_site_jobs_percentage,
+                entry_level_percentage,
+                senior_level_percentage,
+                management_roles_percentage,
+                created_timestamp,
+                week_start_date
+            )
+            WITH quality_company_jobs AS (
+                SELECT
+                    COMPANY_KEY,
+                    FIRST_POSTED_DATE,
+                    TO_CHAR(FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+                    DATE_TRUNC('week', FIRST_POSTED_DATE) as week_start_date,
+                    IS_ACTIVE_POSTING,
+                    SALARY_MIDPOINT_ANNUAL_USD,
+                    SALARY_CONFIDENCE,
+                    WORK_TYPE,
+                    SENIORITY_LEVEL,
+                    LLM_OVERALL_CONFIDENCE
+                FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS
+                WHERE COMPANY_KEY IS NOT NULL
+                  AND COMPANY_KEY != 'COMP_UNKNOWN'
+                  AND LLM_OVERALL_CONFIDENCE >= 0.5
+                  AND FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
+            ),
+
+            company_weekly_base AS (
+                SELECT
+                    week_key,
+                    week_start_date,
+                    COMPANY_KEY,
+
+                    -- Core hiring metrics
+                    COUNT(*) as jobs_posted_count,
+                    COUNT(CASE WHEN IS_ACTIVE_POSTING THEN 1 END) as active_jobs_count,
+                    COUNT(CASE WHEN DATE_TRUNC('week', FIRST_POSTED_DATE) = week_start_date THEN 1 END) as new_jobs_this_week,
+
+                                        -- Salary analysis (with confidence filtering) - using only SALARY_MIDPOINT_ANNUAL_USD per table definition
+                    AVG(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                             THEN SALARY_MIDPOINT_ANNUAL_USD END) as avg_salary_offered,
+                    MEDIAN(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                               THEN SALARY_MIDPOINT_ANNUAL_USD END) as median_salary_offered,
+                    -- Calculate salary range width from the midpoint spread (approximation since we don't have min/max in this table)
+                    (MAX(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                              THEN SALARY_MIDPOINT_ANNUAL_USD END) -
+                     MIN(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                              THEN SALARY_MIDPOINT_ANNUAL_USD END)) as salary_range_width,
+
+                    -- Work arrangement patterns
+                    COUNT(CASE WHEN WORK_TYPE = 'Remote' THEN 1 END)::FLOAT / COUNT(*) * 100 as remote_jobs_percentage,
+                    COUNT(CASE WHEN WORK_TYPE = 'Hybrid' THEN 1 END)::FLOAT / COUNT(*) * 100 as hybrid_jobs_percentage,
+                    COUNT(CASE WHEN WORK_TYPE = 'On-site' THEN 1 END)::FLOAT / COUNT(*) * 100 as on_site_jobs_percentage,
+
+                    -- Role distribution patterns
+                    COUNT(CASE WHEN LOWER(SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(SENIORITY_LEVEL) LIKE '%junior%'
+                               THEN 1 END)::FLOAT / COUNT(*) * 100 as entry_level_percentage,
+                    COUNT(CASE WHEN LOWER(SENIORITY_LEVEL) LIKE '%senior%' OR LOWER(SENIORITY_LEVEL) LIKE '%staff%'
+                                OR LOWER(SENIORITY_LEVEL) LIKE '%principal%'
+                               THEN 1 END)::FLOAT / COUNT(*) * 100 as senior_level_percentage,
+                    COUNT(CASE WHEN LOWER(SENIORITY_LEVEL) LIKE '%manager%' OR LOWER(SENIORITY_LEVEL) LIKE '%director%'
+                                OR LOWER(SENIORITY_LEVEL) LIKE '%vp%'
+                               THEN 1 END)::FLOAT / COUNT(*) * 100 as management_roles_percentage
+
+                FROM quality_company_jobs
+                GROUP BY week_key, week_start_date, COMPANY_KEY
+                HAVING COUNT(*) >= 2  -- Minimum statistical validity for company trends
+            ),
+
+            company_with_trends AS (
+                SELECT cwb.*,
+                       -- Previous week comparison for trend analysis
+                       LAG(cwb.jobs_posted_count, 1) OVER (
+                           PARTITION BY cwb.COMPANY_KEY
+                           ORDER BY cwb.week_start_date
+                       ) as prev_week_jobs,
+
+                       -- Calculate week-over-week change
+                       (cwb.jobs_posted_count - LAG(cwb.jobs_posted_count, 1) OVER (
+                           PARTITION BY cwb.COMPANY_KEY
+                           ORDER BY cwb.week_start_date
+                       )) as week_over_week_change,
+
+                       -- Trend direction classification
+                       CASE
+                           WHEN LAG(cwb.jobs_posted_count, 1) OVER (PARTITION BY cwb.COMPANY_KEY ORDER BY cwb.week_start_date) IS NULL THEN 'New'
+                           WHEN ((cwb.jobs_posted_count::FLOAT / LAG(cwb.jobs_posted_count, 1) OVER (PARTITION BY cwb.COMPANY_KEY ORDER BY cwb.week_start_date)) - 1) * 100 > 20 THEN 'Accelerating'
+                           WHEN ((cwb.jobs_posted_count::FLOAT / LAG(cwb.jobs_posted_count, 1) OVER (PARTITION BY cwb.COMPANY_KEY ORDER BY cwb.week_start_date)) - 1) * 100 > -10 THEN 'Stable'
+                           ELSE 'Declining'
+                       END as hiring_trend_direction
+                FROM company_weekly_base cwb
+            )
+
+            SELECT
+                'CH_' || cwt.week_key || '_' || cwt.COMPANY_KEY as company_hiring_key,
+                cwt.week_key,
+                cwt.COMPANY_KEY,
+                cwt.jobs_posted_count,
+                cwt.active_jobs_count,
+                cwt.new_jobs_this_week,
+                cwt.week_over_week_change,
+                cwt.hiring_trend_direction,
+                cwt.avg_salary_offered,
+                cwt.median_salary_offered,
+                cwt.salary_range_width,
+                cwt.remote_jobs_percentage,
+                cwt.hybrid_jobs_percentage,
+                cwt.on_site_jobs_percentage,
+                cwt.entry_level_percentage,
+                cwt.senior_level_percentage,
+                cwt.management_roles_percentage,
+                CURRENT_TIMESTAMP as created_timestamp,
+                cwt.week_start_date
+            FROM company_with_trends cwt
+            ORDER BY cwt.week_start_date DESC, cwt.jobs_posted_count DESC
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} weekly company hiring records")
+
+            # Step 3: Validate data quality and gather competitive intelligence statistics
+            context.log.info("Validating company hiring data quality and gathering competitive intelligence metrics")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_company_weeks,
+                COUNT(DISTINCT company_key) as unique_companies,
+                COUNT(DISTINCT week_key) as unique_weeks,
+
+                -- Hiring metrics
+                SUM(jobs_posted_count) as total_jobs_tracked,
+                AVG(jobs_posted_count) as avg_jobs_per_company_week,
+                MAX(jobs_posted_count) as max_jobs_per_company_week,
+
+                -- Salary analysis
+                COUNT(CASE WHEN avg_salary_offered IS NOT NULL THEN 1 END) as company_weeks_with_salary,
+                AVG(avg_salary_offered) as overall_avg_salary_offered,
+                AVG(median_salary_offered) as overall_median_salary_offered,
+                AVG(salary_range_width) as avg_salary_range_width,
+
+                -- Work arrangement patterns
+                AVG(remote_jobs_percentage) as avg_remote_percentage,
+                AVG(hybrid_jobs_percentage) as avg_hybrid_percentage,
+                AVG(on_site_jobs_percentage) as avg_onsite_percentage,
+
+                -- Role distribution patterns
+                AVG(entry_level_percentage) as avg_entry_level_percentage,
+                AVG(senior_level_percentage) as avg_senior_level_percentage,
+                AVG(management_roles_percentage) as avg_management_percentage,
+
+                -- Trend analysis
+                COUNT(CASE WHEN hiring_trend_direction = 'Accelerating' THEN 1 END) as accelerating_companies,
+                COUNT(CASE WHEN hiring_trend_direction = 'Declining' THEN 1 END) as declining_companies,
+                COUNT(CASE WHEN hiring_trend_direction = 'Stable' THEN 1 END) as stable_companies,
+                COUNT(CASE WHEN hiring_trend_direction = 'New' THEN 1 END) as new_companies,
+
+                -- Temporal coverage
+                MIN(week_start_date) as earliest_week,
+                MAX(week_start_date) as latest_week
+
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 4: Analyze hiring trend distribution
+            context.log.info("Analyzing company hiring trend distribution and competitive intelligence")
+
+            cursor.execute(f"""
+            SELECT
+                hiring_trend_direction,
+                COUNT(*) as company_week_count,
+                AVG(jobs_posted_count) as avg_hiring_volume,
+                AVG(avg_salary_offered) as avg_salary_by_trend,
+                AVG(remote_jobs_percentage) as avg_remote_by_trend
+            FROM {table_name}
+            WHERE week_over_week_change IS NOT NULL
+            GROUP BY hiring_trend_direction
+            ORDER BY company_week_count DESC
+            """)
+
+            trend_stats = [
+                {
+                    "hiring_trend_direction": row[0],
+                    "company_week_count": row[1],
+                    "avg_hiring_volume": float(row[2]) if row[2] is not None else 0.0,
+                    "avg_salary_by_trend": float(row[3]) if row[3] is not None else 0.0,
+                    "avg_remote_by_trend": float(row[4]) if row[4] is not None else 0.0
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 5: Top hiring companies analysis
+            cursor.execute(f"""
+            SELECT
+                dc.COMPANY_NAME,
+                dc.COMPANY_SIZE_CATEGORY,
+                dc.INDUSTRY,
+                AVG(fch.jobs_posted_count) as avg_weekly_hiring,
+                AVG(fch.avg_salary_offered) as avg_salary_offered,
+                AVG(fch.remote_jobs_percentage) as avg_remote_percentage,
+                COUNT(*) as weeks_tracked
+            FROM {table_name} fch
+            JOIN BETTERJOBS_DB.ANALYTICS.DIM_COMPANY dc ON fch.company_key = dc.company_key
+            WHERE fch.week_start_date >= CURRENT_DATE - 30  -- Last 4 weeks
+              AND dc.is_current = TRUE
+            GROUP BY dc.COMPANY_NAME, dc.COMPANY_SIZE_CATEGORY, dc.INDUSTRY
+            ORDER BY avg_weekly_hiring DESC
+            LIMIT 20
+            """)
+
+            top_companies_stats = [
+                {
+                    "company_name": row[0],
+                    "company_size_category": row[1],
+                    "industry": row[2],
+                    "avg_weekly_hiring": float(row[3]) if row[3] is not None else 0.0,
+                    "avg_salary_offered": float(row[4]) if row[4] is not None else 0.0,
+                    "avg_remote_percentage": float(row[5]) if row[5] is not None else 0.0,
+                    "weeks_tracked": row[6]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 6: Data quality validation checks
+            quality_issues = []
+
+            # Check for companies with impossible percentages
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE remote_jobs_percentage < 0 OR remote_jobs_percentage > 100
+                   OR hybrid_jobs_percentage < 0 OR hybrid_jobs_percentage > 100
+                   OR on_site_jobs_percentage < 0 OR on_site_jobs_percentage > 100
+            """)
+            invalid_percentages = cursor.fetchone()[0]
+            if invalid_percentages > 0:
+                quality_issues.append(f"{invalid_percentages} company weeks with invalid work arrangement percentages")
+
+            # Check for unrealistic salary ranges (should be non-negative)
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE salary_range_width IS NOT NULL AND salary_range_width < 0
+            """)
+            negative_salary_ranges = cursor.fetchone()[0]
+            if negative_salary_ranges > 0:
+                quality_issues.append(f"{negative_salary_ranges} company weeks with negative salary ranges")
+
+            # Check for inconsistent job counts
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE new_jobs_this_week > jobs_posted_count
+            """)
+            inconsistent_job_counts = cursor.fetchone()[0]
+            if inconsistent_job_counts > 0:
+                quality_issues.append(f"{inconsistent_job_counts} company weeks with inconsistent job counts")
+
+            if quality_issues:
+                context.log.warning(f"Data quality issues detected: {', '.join(quality_issues)}")
+
+            # Step 7: Calculate derived statistics
+            total_company_weeks = validation_result[0]
+            salary_coverage = (validation_result[6] / total_company_weeks * 100) if total_company_weeks > 0 else 0
+            accelerating_percentage = (validation_result[16] / total_company_weeks * 100) if total_company_weeks > 0 else 0
+            declining_percentage = (validation_result[17] / total_company_weeks * 100) if total_company_weeks > 0 else 0
+
+            context.log.info(f"Company hiring validation: {total_company_weeks} total company-week records, "
+                           f"{validation_result[1]} unique companies, {validation_result[2]} unique weeks")
+
+            context.log.info(f"Competitive intelligence: {validation_result[3]} total jobs tracked, "
+                           f"avg {validation_result[4]:.1f} jobs per company-week, max {validation_result[5]} jobs")
+
+            context.log.info(f"Trend distribution: {accelerating_percentage:.1f}% accelerating, "
+                           f"{declining_percentage:.1f}% declining, avg salary ${validation_result[7]:,.0f}")
+
+            # Add metadata for Dagster UI (convert all numeric types properly for Dagster compatibility)
+            context.add_output_metadata({
+                "total_company_weeks": MetadataValue.int(int(total_company_weeks)),
+                "unique_companies": MetadataValue.int(int(validation_result[1])),
+                "unique_weeks": MetadataValue.int(int(validation_result[2])),
+                "total_jobs_tracked": MetadataValue.int(int(validation_result[3])),
+                "avg_jobs_per_company_week": MetadataValue.float(float(validation_result[4]) if validation_result[4] is not None else 0.0),
+                "max_jobs_per_company_week": MetadataValue.int(int(validation_result[5])),
+                "salary_coverage_percentage": MetadataValue.float(float(salary_coverage)),
+                "overall_avg_salary_offered": MetadataValue.float(float(validation_result[7]) if validation_result[7] is not None else 0.0),
+                "overall_median_salary_offered": MetadataValue.float(float(validation_result[8]) if validation_result[8] is not None else 0.0),
+                "avg_salary_range_width": MetadataValue.float(float(validation_result[9]) if validation_result[9] is not None else 0.0),
+                "avg_remote_percentage": MetadataValue.float(float(validation_result[10]) if validation_result[10] is not None else 0.0),
+                "avg_hybrid_percentage": MetadataValue.float(float(validation_result[11]) if validation_result[11] is not None else 0.0),
+                "avg_onsite_percentage": MetadataValue.float(float(validation_result[12]) if validation_result[12] is not None else 0.0),
+                "avg_entry_level_percentage": MetadataValue.float(float(validation_result[13]) if validation_result[13] is not None else 0.0),
+                "avg_senior_level_percentage": MetadataValue.float(float(validation_result[14]) if validation_result[14] is not None else 0.0),
+                "avg_management_percentage": MetadataValue.float(float(validation_result[15]) if validation_result[15] is not None else 0.0),
+                "accelerating_companies": MetadataValue.int(int(validation_result[16])),
+                "declining_companies": MetadataValue.int(int(validation_result[17])),
+                "stable_companies": MetadataValue.int(int(validation_result[18])),
+                "new_companies": MetadataValue.int(int(validation_result[19])),
+                "accelerating_percentage": MetadataValue.float(float(accelerating_percentage)),
+                "declining_percentage": MetadataValue.float(float(declining_percentage)),
+                "earliest_week": MetadataValue.text(str(validation_result[20])),
+                "latest_week": MetadataValue.text(str(validation_result[21])),
+                "trend_distribution": MetadataValue.json(trend_stats),
+                "top_hiring_companies_last_4_weeks": MetadataValue.json(top_companies_stats),
+                "quality_issues_count": MetadataValue.int(len(quality_issues))
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_company_weeks": total_company_weeks,
+                "competitive_coverage": {
+                    "unique_companies": validation_result[1],
+                    "unique_weeks": validation_result[2],
+                    "total_jobs_tracked": validation_result[3],
+                    "avg_jobs_per_company_week": float(validation_result[4]) if validation_result[4] is not None else 0.0,
+                    "max_jobs_per_company_week": validation_result[5]
+                },
+                "salary_intelligence": {
+                    "salary_coverage_percentage": salary_coverage,
+                    "overall_avg_salary_offered": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "overall_median_salary_offered": float(validation_result[8]) if validation_result[8] is not None else 0.0,
+                    "avg_salary_range_width": float(validation_result[9]) if validation_result[9] is not None else 0.0
+                },
+                "work_arrangement_intelligence": {
+                    "avg_remote_percentage": float(validation_result[10]) if validation_result[10] is not None else 0.0,
+                    "avg_hybrid_percentage": float(validation_result[11]) if validation_result[11] is not None else 0.0,
+                    "avg_onsite_percentage": float(validation_result[12]) if validation_result[12] is not None else 0.0
+                },
+                "role_distribution_intelligence": {
+                    "avg_entry_level_percentage": float(validation_result[13]) if validation_result[13] is not None else 0.0,
+                    "avg_senior_level_percentage": float(validation_result[14]) if validation_result[14] is not None else 0.0,
+                    "avg_management_percentage": float(validation_result[15]) if validation_result[15] is not None else 0.0
+                },
+                "hiring_trend_analysis": {
+                    "accelerating_companies": validation_result[16],
+                    "declining_companies": validation_result[17],
+                    "stable_companies": validation_result[18],
+                    "new_companies": validation_result[19],
+                    "accelerating_percentage": accelerating_percentage,
+                    "declining_percentage": declining_percentage,
+                    "trend_distribution": trend_stats
+                },
+                "quality_metrics": {
+                    "quality_issues": quality_issues
+                },
+                "temporal_coverage": {
+                    "earliest_week": str(validation_result[20]),
+                    "latest_week": str(validation_result[21]),
+                    "weeks_covered": validation_result[2]
+                },
+                "top_companies_analysis": top_companies_stats
             }
 
         finally:
