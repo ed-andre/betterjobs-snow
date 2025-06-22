@@ -1681,6 +1681,200 @@ def analytics_dim_experience(context: AssetExecutionContext, snowflake: Snowflak
 
 
 @asset(
+    deps=["stage_salary_normalized"],
+    description="Create salary dimension with normalized ranges and market intelligence",
+    group_name="3a_analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_salary(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build salary dimension from STAGE.SALARY_NORMALIZED with market intelligence.
+
+    This asset creates a dimension table containing normalized salary ranges with
+    quality indicators, market percentiles, and audit trail information. All salary
+    values are converted to annual USD for consistent analysis.
+
+    Processing:
+    - Generate surrogate keys for each salary range
+    - Map normalized salary fields to dimension structure
+    - Include quality indicators and market percentile data
+    - Handle outlier flags and manual review requirements
+    - Optimize for salary-based analytical queries
+
+    Returns:
+        Dict containing execution results and salary statistics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_dim_salary.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("🔄 Starting salary dimension creation...")
+
+            # Clear existing data for fresh population
+            context.log.info("🧹 Clearing existing salary dimension data")
+            cursor.execute(f"DELETE FROM {table_name}")
+
+            # Insert salary dimension data
+            context.log.info("📊 Populating salary dimension from normalized salary data")
+
+            insert_sql = f"""
+            INSERT INTO {table_name} (
+                SALARY_KEY,
+                SALARY_ID,
+                SALARY_RANGE_NAME,
+                SALARY_MIN_ORIGINAL,
+                SALARY_MAX_ORIGINAL,
+                SALARY_PERIOD_ORIGINAL,
+                SALARY_CURRENCY_ORIGINAL,
+                SALARY_MIN_ANNUAL_USD,
+                SALARY_MAX_ANNUAL_USD,
+                SALARY_MIDPOINT_ANNUAL_USD,
+                NORMALIZATION_FACTOR,
+                CONFIDENCE_SCORE,
+                OUTLIER_FLAG,
+                MANUAL_REVIEW_FLAG,
+                APPROVED_BY_ADMIN,
+                FREQUENCY_COUNT,
+                MARKET_PERCENTILE,
+                CREATED_TIMESTAMP
+            )
+            SELECT
+                'SAL_' || SALARY_ID as SALARY_KEY,
+                SALARY_ID,
+                SALARY_RANGE_NAME,
+                SALARY_MIN_ORIGINAL,
+                SALARY_MAX_ORIGINAL,
+                SALARY_PERIOD_ORIGINAL,
+                SALARY_CURRENCY_ORIGINAL,
+                SALARY_MIN_ANNUAL_USD,
+                SALARY_MAX_ANNUAL_USD,
+                SALARY_MIDPOINT_ANNUAL_USD,
+                NORMALIZATION_FACTOR,
+                CONFIDENCE_SCORE,
+                OUTLIER_FLAG,
+                MANUAL_REVIEW_FLAG,
+                APPROVED_BY_ADMIN,
+                FREQUENCY_COUNT,
+                MARKET_PERCENTILE,
+                CURRENT_TIMESTAMP as CREATED_TIMESTAMP
+            FROM BETTERJOBS_DB.STAGE.SALARY_NORMALIZED
+            WHERE CONFIDENCE_SCORE >= 0.5
+              AND SALARY_MIN_ANNUAL_USD > 0
+              AND SALARY_MAX_ANNUAL_USD > 0
+              AND SALARY_MIN_ANNUAL_USD <= SALARY_MAX_ANNUAL_USD
+            ORDER BY SALARY_MIDPOINT_ANNUAL_USD
+            """
+
+            cursor.execute(insert_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"✅ Inserted {rows_inserted:,} salary dimension records")
+
+            # Get dimension statistics
+            cursor.execute(f"""
+            SELECT
+                COUNT(*) as total_salaries,
+                COUNT(CASE WHEN OUTLIER_FLAG = TRUE THEN 1 END) as outlier_count,
+                COUNT(CASE WHEN MANUAL_REVIEW_FLAG = TRUE THEN 1 END) as manual_review_count,
+                COUNT(CASE WHEN APPROVED_BY_ADMIN = TRUE THEN 1 END) as admin_approved_count,
+                COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.9 THEN 1 END) as high_confidence_count,
+                AVG(CONFIDENCE_SCORE) as avg_confidence,
+                MIN(SALARY_MIDPOINT_ANNUAL_USD) as min_salary,
+                MAX(SALARY_MIDPOINT_ANNUAL_USD) as max_salary,
+                AVG(SALARY_MIDPOINT_ANNUAL_USD) as avg_salary,
+                COUNT(DISTINCT SALARY_PERIOD_ORIGINAL) as unique_periods,
+                COUNT(DISTINCT SALARY_CURRENCY_ORIGINAL) as unique_currencies,
+                SUM(FREQUENCY_COUNT) as total_frequency
+            FROM {table_name}
+            """)
+
+            stats = cursor.fetchone()
+
+            # Get period distribution
+            cursor.execute(f"""
+            SELECT
+                SALARY_PERIOD_ORIGINAL,
+                COUNT(*) as count,
+                AVG(SALARY_MIDPOINT_ANNUAL_USD) as avg_salary,
+                AVG(CONFIDENCE_SCORE) as avg_confidence
+            FROM {table_name}
+            GROUP BY SALARY_PERIOD_ORIGINAL
+            ORDER BY count DESC
+            """)
+
+            period_distribution = cursor.fetchall()
+
+            context.log.info(f"""
+            🎯 Salary Dimension Creation Complete:
+            • Total Salary Ranges: {stats[0]:,}
+            • Outliers: {stats[1]:,}
+            • Manual Review Needed: {stats[2]:,}
+            • Admin Approved: {stats[3]:,}
+            • High Confidence (≥90%): {stats[4]:,}
+            • Average Confidence: {stats[5]:.3f}
+            • Salary Range: ${stats[6]:,.0f} - ${stats[7]:,.0f}
+            • Average Salary: ${stats[8]:,.0f}
+            • Unique Periods: {stats[9]}
+            • Unique Currencies: {stats[10]}
+            • Total Market Frequency: {stats[11]:,}
+            """)
+
+            # Add metadata for Dagster UI
+            context.add_output_metadata({
+                "total_salaries": MetadataValue.int(stats[0]),
+                "outlier_count": MetadataValue.int(stats[1]),
+                "manual_review_count": MetadataValue.int(stats[2]),
+                "admin_approved_count": MetadataValue.int(stats[3]),
+                "high_confidence_count": MetadataValue.int(stats[4]),
+                "avg_confidence": MetadataValue.float(stats[5]),
+                "salary_range": MetadataValue.text(f"${stats[6]:,.0f} - ${stats[7]:,.0f}"),
+                "avg_salary": MetadataValue.int(int(stats[8])),
+                "unique_periods": MetadataValue.int(stats[9]),
+                "unique_currencies": MetadataValue.int(stats[10]),
+                "total_frequency": MetadataValue.int(stats[11])
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "statistics": {
+                    "total_salaries": stats[0],
+                    "outlier_count": stats[1],
+                    "manual_review_count": stats[2],
+                    "admin_approved_count": stats[3],
+                    "high_confidence_count": stats[4],
+                    "avg_confidence": round(stats[5], 3),
+                    "min_salary": int(stats[6]),
+                    "max_salary": int(stats[7]),
+                    "avg_salary": int(stats[8]),
+                    "unique_periods": stats[9],
+                    "unique_currencies": stats[10],
+                    "total_frequency": stats[11]
+                },
+                "period_distribution": [
+                    {
+                        "period": row[0],
+                        "count": row[1],
+                        "avg_salary": int(row[2]) if row[2] else 0,
+                        "avg_confidence": round(row[3], 3) if row[3] else 0
+                    }
+                    for row in period_distribution
+                ]
+            }
+
+        except Exception as e:
+            context.log.error(f"❌ Salary dimension creation failed: {str(e)}")
+            raise
+
+        finally:
+            cursor.close()
+
+
+@asset(
     deps=["stage_keywords_normalized"],
     description="Create keywords taxonomy dimension table",
     group_name="3a_analytics_dimensions",

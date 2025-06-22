@@ -3,7 +3,7 @@
 ## Overview
 This ERD represents the complete Analytics dimensional model for the job market intelligence platform. The model follows a star schema design with fact tables at the center connected to dimension tables, plus specialized aggregate tables for pre-calculated metrics.
 
-## Mermaid ERD
+## Entity Relationship Diagram
 
 ```mermaid
 erDiagram
@@ -130,6 +130,27 @@ erDiagram
         timestamp created_timestamp
     }
 
+    DIM_SALARY {
+        string salary_key PK
+        string salary_id "Natural Key"
+        string salary_range_name
+        number salary_min_original "Audit Trail"
+        number salary_max_original "Audit Trail"
+        string salary_period_original "Audit Trail"
+        string salary_currency_original "Audit Trail"
+        number salary_min_annual_usd "Normalized Value"
+        number salary_max_annual_usd "Normalized Value"
+        number salary_midpoint_annual_usd "Normalized Value"
+        float normalization_factor
+        float confidence_score
+        boolean outlier_flag
+        boolean manual_review_flag
+        boolean approved_by_admin
+        integer frequency_count
+        integer market_percentile
+        timestamp created_timestamp
+    }
+
     %% === MAIN FACT TABLE ===
 
     FACT_JOB_POSTINGS {
@@ -141,6 +162,7 @@ erDiagram
         string platform_key FK
         string experience_key FK
         string keyword_key FK
+        string salary_key FK
         string job_uid "Degenerate Dimension"
         string job_title "Degenerate Dimension"
         string posting_url "Degenerate Dimension"
@@ -291,6 +313,7 @@ erDiagram
     FACT_JOB_POSTINGS ||--o{ DIM_PLATFORM : "sourced_from"
     FACT_JOB_POSTINGS ||--o{ DIM_EXPERIENCE : "requires_experience"
     FACT_JOB_POSTINGS ||--o{ DIM_KEYWORDS : "tagged_with_primary_keyword"
+    FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_range"
 
     %% Skills Fact Table Relationships
     FACT_SKILLS_DEMAND_WEEKLY ||--o{ DIM_SKILLS : "analyzes_skill"
@@ -307,6 +330,9 @@ erDiagram
     %% Skills Bridge Relationship (Many-to-Many through STAGE layer)
     FACT_JOB_POSTINGS ||--o{ DIM_SKILLS : "requires_skills_via_bridge"
 
+    %% Salary Bridge Relationship (Many-to-Many through STAGE layer)
+    FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_via_bridge"
+
     %% Experience Bridge Relationship (Many-to-Many through STAGE layer)
     FACT_JOB_POSTINGS ||--o{ DIM_EXPERIENCE : "requires_experience_via_bridge"
 
@@ -318,7 +344,7 @@ erDiagram
 
 ### Star Schema Architecture
 - **Central Fact Table**: `FACT_JOB_POSTINGS` serves as the primary fact table containing individual job posting records
-- **Dimension Tables**: Eight main dimensions providing context and hierarchy for analysis (Date, Company, Location, Job Family, Platform, Skills, Experience, Keywords)
+- **Dimension Tables**: Nine main dimensions providing context and hierarchy for analysis (Date, Company, Location, Job Family, Platform, Skills, Salary, Experience, Keywords)
 - **Specialized Fact Tables**: Pre-aggregated tables for specific analytical domains (skills, company hiring)
 
 ### Data Granularity
@@ -329,15 +355,17 @@ erDiagram
 
 ### Key Relationships
 1. **Job Postings ↔ Skills**: Many-to-many relationship through `STAGE.JOB_SKILLS_BRIDGE`
-2. **Job Postings ↔ Experience**: Many-to-many relationship through `STAGE.JOB_EXPERIENCE_BRIDGE`
-3. **Job Postings ↔ Keywords**: Many-to-many relationship through `STAGE.JOB_KEYWORDS_BRIDGE`
-4. **Company SCD Type 2**: Historical tracking of company changes over time
-5. **Time-based Partitioning**: All fact tables partitioned by date for performance
+2. **Job Postings ↔ Salary**: Many-to-many relationship through `STAGE.JOB_SALARY_BRIDGE`
+3. **Job Postings ↔ Experience**: Many-to-many relationship through `STAGE.JOB_EXPERIENCE_BRIDGE`
+4. **Job Postings ↔ Keywords**: Many-to-many relationship through `STAGE.JOB_KEYWORDS_BRIDGE`
+5. **Company SCD Type 2**: Historical tracking of company changes over time
+6. **Time-based Partitioning**: All fact tables partitioned by date for performance
 
 ### Business Intelligence Features
 - **Pre-calculated Metrics**: Aggregate tables for dashboard performance
 - **Trend Analysis**: Week-over-week and month-over-month calculations
 - **Market Intelligence**: Skills demand, salary analysis, and company hiring patterns
+- **Salary Intelligence**: Normalized salary ranges, market percentiles, confidence scoring, and outlier detection with full audit trail
 - **Experience Analytics**: Seniority level analysis, experience requirement trends, and career progression insights
 - **Keyword Intelligence**: Job description analysis, industry terminology trends, and content categorization
 - **Data Quality Tracking**: Confidence scores and completeness metrics throughout
