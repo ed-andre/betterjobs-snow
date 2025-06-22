@@ -8,7 +8,8 @@ Phase 1: Skills Normalization Assets
 Phase 2: Keywords Normalization Assets
 Phase 3: Location Standardization Assets
 Phase 4: Experience Normalization Assets (BUG-015)
-Phase 5: Data Quality and Validation Assets
+Phase 5: Salary Normalization Assets (ENHANCEMENT-022)
+Phase 6: Data Quality and Validation Assets
 """
 
 from .skills_normalization import (
@@ -40,6 +41,12 @@ from .experience_normalization import (
     stage_experience_standardization_rules,
     stage_experience_normalized,
     stage_job_experience_bridge
+)
+
+from .salary_normalization import (
+    stage_salary_raw_extraction,
+    stage_salary_normalized,
+    stage_job_salary_bridge
 )
 
 from .data_quality import (
@@ -78,7 +85,12 @@ __all__ = [
     "stage_experience_normalized",
     "stage_job_experience_bridge",
 
-    # Phase 5: Data Quality and Validation Assets
+    # Phase 5: Salary Normalization Assets (ENHANCEMENT-022)
+    "stage_salary_raw_extraction",
+    "stage_salary_normalized",
+    "stage_job_salary_bridge",
+
+    # Phase 6: Data Quality and Validation Assets
     "stage_llm_data_quality_validation",
     "stage_llm_quality_metrics",
     "stage_llm_coverage_analysis",

@@ -65,6 +65,13 @@ from dagster_betterjobs.assets.llm_standardization.experience_normalization impo
     stage_experience_standardization_rules
 )
 
+# ENHANCEMENT-022: Salary Normalization Assets
+from dagster_betterjobs.assets.llm_standardization.salary_normalization import (
+    stage_salary_raw_extraction,
+    stage_salary_normalized,
+    stage_job_salary_bridge
+)
+
 # PHASE-4: Data Quality and Validation Assets
 from dagster_betterjobs.assets.llm_standardization.data_quality import (
     stage_llm_data_quality_validation,
@@ -86,6 +93,11 @@ from dagster_betterjobs.assets.analytics_dimensions import (
     analytics_dim_skills,
     analytics_dim_experience,
     analytics_dim_keywords
+)
+
+# Analytics Layer Assets - Phase 2: Facts
+from dagster_betterjobs.assets.analytics_facts import (
+    analytics_fact_job_postings
 )
 
 # Infrastructure Setup Assets
@@ -148,6 +160,10 @@ __all__ = [
     "stage_experience_normalized",
     "stage_job_experience_bridge",
     "stage_experience_standardization_rules",
+    # ENHANCEMENT-022: Salary Normalization Assets
+    "stage_salary_raw_extraction",
+    "stage_salary_normalized",
+    "stage_job_salary_bridge",
     # LLM data standardization assets - Phase 4: Data Quality and Validation
     "stage_llm_data_quality_validation",
     "stage_llm_quality_metrics",
@@ -164,6 +180,8 @@ __all__ = [
     "analytics_dim_skills",
     "analytics_dim_experience",
     "analytics_dim_keywords",
+    # Analytics layer assets - Phase 2: Facts
+    "analytics_fact_job_postings",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",
