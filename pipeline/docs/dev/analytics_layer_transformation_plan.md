@@ -156,6 +156,7 @@ CREATE TABLE ANALYTICS.FACT_JOB_POSTINGS (
     platform_key STRING,
     experience_key STRING,               -- FK to DIM_EXPERIENCE
     keyword_key STRING,                  -- FK to DIM_KEYWORDS (primary keyword for job)
+    salary_key STRING,                   -- FK to DIM_SALARY (normalized salary data)
 
     -- Degenerate Dimensions
     job_uid STRING,                      -- Natural key from STAGE.JOBS_UNIFIED.JOB_UID
@@ -470,7 +471,42 @@ CREATE TABLE ANALYTICS.DIM_SKILLS (
 ) CLUSTER BY (skill_category, skill_subcategory);
 ```
 
-##### 7. `DIM_EXPERIENCE` (Experience Requirements Dimension)
+##### 7. `DIM_SALARY` (Salary Dimension)
+**Normalized Salary Ranges (Built from STAGE.SALARY_NORMALIZED)**
+
+```sql
+CREATE TABLE ANALYTICS.DIM_SALARY (
+    SALARY_KEY STRING PRIMARY KEY,
+    SALARY_ID STRING,                    -- FK to STAGE.SALARY_NORMALIZED.SALARY_ID
+    SALARY_RANGE_NAME STRING,            -- Human-readable salary range description
+
+    -- Original Values (Audit Trail)
+    SALARY_MIN_ORIGINAL NUMBER,          -- From STAGE.SALARY_NORMALIZED.SALARY_MIN_ORIGINAL
+    SALARY_MAX_ORIGINAL NUMBER,          -- From STAGE.SALARY_NORMALIZED.SALARY_MAX_ORIGINAL
+    SALARY_PERIOD_ORIGINAL STRING,       -- From STAGE.SALARY_NORMALIZED.SALARY_PERIOD_ORIGINAL
+    SALARY_CURRENCY_ORIGINAL STRING,     -- From STAGE.SALARY_NORMALIZED.SALARY_CURRENCY_ORIGINAL
+
+    -- Normalized Values (All Annual USD)
+    SALARY_MIN_ANNUAL_USD NUMBER,        -- From STAGE.SALARY_NORMALIZED.SALARY_MIN_ANNUAL_USD
+    SALARY_MAX_ANNUAL_USD NUMBER,        -- From STAGE.SALARY_NORMALIZED.SALARY_MAX_ANNUAL_USD
+    SALARY_MIDPOINT_ANNUAL_USD NUMBER,   -- From STAGE.SALARY_NORMALIZED.SALARY_MIDPOINT_ANNUAL_USD
+    NORMALIZATION_FACTOR FLOAT,          -- From STAGE.SALARY_NORMALIZED.NORMALIZATION_FACTOR
+
+    -- Quality & Validation
+    CONFIDENCE_SCORE FLOAT,              -- From STAGE.SALARY_NORMALIZED.CONFIDENCE_SCORE
+    OUTLIER_FLAG BOOLEAN,                -- From STAGE.SALARY_NORMALIZED.OUTLIER_FLAG
+    MANUAL_REVIEW_FLAG BOOLEAN,          -- From STAGE.SALARY_NORMALIZED.MANUAL_REVIEW_FLAG
+    APPROVED_BY_ADMIN BOOLEAN,           -- From STAGE.SALARY_NORMALIZED.APPROVED_BY_ADMIN
+
+    -- Market Intelligence
+    FREQUENCY_COUNT INTEGER,             -- From STAGE.SALARY_NORMALIZED.FREQUENCY_COUNT
+    MARKET_PERCENTILE INTEGER,           -- From STAGE.SALARY_NORMALIZED.MARKET_PERCENTILE
+
+    created_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (salary_midpoint_annual_usd);
+```
+
+##### 8. `DIM_EXPERIENCE` (Experience Requirements Dimension)
 **Experience Levels and Requirements Classification (Built from STAGE.EXPERIENCE_NORMALIZED)**
 
 ```sql
@@ -494,7 +530,7 @@ CREATE TABLE ANALYTICS.DIM_EXPERIENCE (
 ) CLUSTER BY (experience_category, seniority_order);
 ```
 
-##### 8. `DIM_KEYWORDS` (Keywords Taxonomy Dimension)
+##### 9. `DIM_KEYWORDS` (Keywords Taxonomy Dimension)
 **Keywords Classification (Built from STAGE.KEYWORDS_NORMALIZED)**
 
 ```sql
@@ -883,11 +919,12 @@ ORDER BY DEMAND_WEEK DESC, JOBS_REQUIRING_SKILL DESC;
 - Develop `DIM_JOB_FAMILY` with role taxonomy
 - Build `DIM_PLATFORM` for ATS classification
 - Create `DIM_SKILLS` with skills taxonomy
+- Create `DIM_SALARY` with normalized salary ranges
 - Create `DIM_EXPERIENCE` with experience requirements
 - Create `DIM_KEYWORDS` with keywords taxonomy
 
 **Key Deliverables**:
-- All 8 dimension tables created and populated (including DIM_EXPERIENCE and DIM_KEYWORDS)
+- All 9 dimension tables created and populated (including DIM_SALARY, DIM_EXPERIENCE, and DIM_KEYWORDS)
 - Surrogate key generation logic
 - Data quality validation framework
 - Performance optimization (clustering/partitioning)
@@ -1071,7 +1108,7 @@ analytics_business_views (Phase 5)
 ```python
 @asset(
     description="Create date dimension table for analytics time-based analysis",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1145,7 +1182,7 @@ changes_detected AS (
 @asset(
     deps=["stage_company_profiles", "stage_jobs_unified"],
     description="Create company dimension with Type 2 SCD for company changes",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1174,7 +1211,7 @@ def analytics_dim_company(context: AssetExecutionContext, snowflake: SnowflakeRe
 @asset(
     deps=["stage_locations_normalized"],
     description="Create location dimension with geographic hierarchy and intelligence",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1280,7 +1317,7 @@ ORDER BY country, state_province, city;
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Create job classification dimension with hierarchical role taxonomy",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_job_family(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1470,7 +1507,7 @@ ORDER BY job_family, seniority_order, job_sub_family;
 @asset(
     deps=["stage_jobs_unified"],
     description="Create platform dimension with ATS characteristics",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1546,7 +1583,109 @@ ORDER BY platform_name;
 - Cluster by (platform_name) as specified in table definition
 - Optimize for platform-based analytics and filtering
 
-#### 1.6 `analytics_dim_skills` ✅ COMPLETE
+#### 1.6 `analytics_dim_salary`
+**Purpose**: Create salary dimension from normalized salary ranges
+**Dependencies**: `stage_salary_normalized`
+**Output**: Salary dimension with normalized ranges and market intelligence
+
+```python
+@asset(
+    deps=["stage_salary_normalized"],
+    description="Create salary dimension with normalized ranges and market intelligence",
+    group_name="3a_analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_salary(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build salary dimension from STAGE.SALARY_NORMALIZED with market intelligence.
+
+    Processing:
+    - Generate surrogate keys for each salary range
+    - Map normalized salary fields to dimension structure
+    - Include quality indicators and market percentile data
+    - Handle outlier flags and manual review requirements
+    - Optimize for salary-based analytical queries
+    """
+```
+
+**Implementation Steps**:
+
+**Step 1: Surrogate Key Generation**
+- Generate `salary_key` using `'SAL_' + SALARY_ID` format for unique identification
+- Ensure consistency across refreshes for referential integrity
+
+**Step 2: Field Mapping & Transformation**
+```sql
+-- Direct field mappings from STAGE.SALARY_NORMALIZED:
+SALARY_ID → salary_id (natural key preservation)
+SALARY_RANGE_NAME → salary_range_name (human-readable description)
+SALARY_MIN_ORIGINAL → salary_min_original (audit trail)
+SALARY_MAX_ORIGINAL → salary_max_original (audit trail)
+SALARY_PERIOD_ORIGINAL → salary_period_original (audit trail)
+SALARY_CURRENCY_ORIGINAL → salary_currency_original (audit trail)
+SALARY_MIN_ANNUAL_USD → salary_min_annual_usd (normalized value)
+SALARY_MAX_ANNUAL_USD → salary_max_annual_usd (normalized value)
+SALARY_MIDPOINT_ANNUAL_USD → salary_midpoint_annual_usd (normalized value)
+NORMALIZATION_FACTOR → normalization_factor (conversion multiplier)
+CONFIDENCE_SCORE → confidence_score (quality indicator)
+OUTLIER_FLAG → outlier_flag (quality flag)
+MANUAL_REVIEW_FLAG → manual_review_flag (quality flag)
+APPROVED_BY_ADMIN → approved_by_admin (approval status)
+FREQUENCY_COUNT → frequency_count (market frequency)
+MARKET_PERCENTILE → market_percentile (market position)
+```
+
+**Step 3: Data Quality Rules**
+- Filter salaries with `CONFIDENCE_SCORE >= 0.5` for quality assurance
+- Include flagged outliers but mark appropriately for analysis
+- Ensure normalized values are positive and logical
+- Handle manual review flagged records appropriately
+
+**Step 4: Performance Optimization**
+- Cluster by `salary_midpoint_annual_usd` for salary-based analytics
+- Optimize for salary range queries and market analysis
+- Index on salary_key for dimension lookups
+
+**Key Processing Logic**:
+```sql
+WITH salary_prep AS (
+    SELECT
+        'SAL_' || SALARY_ID as salary_key,
+        SALARY_ID as salary_id,
+        SALARY_RANGE_NAME as salary_range_name,
+        SALARY_MIN_ORIGINAL as salary_min_original,
+        SALARY_MAX_ORIGINAL as salary_max_original,
+        SALARY_PERIOD_ORIGINAL as salary_period_original,
+        SALARY_CURRENCY_ORIGINAL as salary_currency_original,
+        SALARY_MIN_ANNUAL_USD as salary_min_annual_usd,
+        SALARY_MAX_ANNUAL_USD as salary_max_annual_usd,
+        SALARY_MIDPOINT_ANNUAL_USD as salary_midpoint_annual_usd,
+        NORMALIZATION_FACTOR as normalization_factor,
+        CONFIDENCE_SCORE as confidence_score,
+        OUTLIER_FLAG as outlier_flag,
+        MANUAL_REVIEW_FLAG as manual_review_flag,
+        APPROVED_BY_ADMIN as approved_by_admin,
+        FREQUENCY_COUNT as frequency_count,
+        MARKET_PERCENTILE as market_percentile,
+        CURRENT_TIMESTAMP as created_timestamp
+    FROM BETTERJOBS_DB.STAGE.SALARY_NORMALIZED
+    WHERE CONFIDENCE_SCORE >= 0.5
+      AND SALARY_MIN_ANNUAL_USD > 0
+      AND SALARY_MAX_ANNUAL_USD > 0
+      AND SALARY_MIN_ANNUAL_USD <= SALARY_MAX_ANNUAL_USD
+)
+SELECT * FROM salary_prep
+ORDER BY salary_midpoint_annual_usd;
+```
+
+**Business Intelligence Features**:
+- **Salary Range Analytics**: Support normalized salary analysis across all periods and currencies
+- **Market Intelligence**: Track salary percentiles and market position
+- **Quality Indicators**: Enable confidence-based filtering for analysis
+- **Outlier Analysis**: Support identification and analysis of salary outliers
+- **Audit Trail**: Maintain original values for data lineage and validation
+
+#### 1.7 `analytics_dim_skills` ✅ COMPLETE
 **Purpose**: Create skills dimension from normalized skills taxonomy
 **Dependencies**: `stage_skills_normalized`
 **Output**: Skills classification dimension with hierarchy and market intelligence
@@ -1555,7 +1694,7 @@ ORDER BY platform_name;
 @asset(
     deps=["stage_skills_normalized"],
     description="Create skills dimension with taxonomy hierarchy and market intelligence",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1673,7 +1812,7 @@ ORDER BY skill_category, skill_subcategory, frequency_count DESC;
 @asset(
     deps=["stage_experience_normalized"],
     description="Create experience requirements dimension table",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_experience(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1776,7 +1915,7 @@ ORDER BY experience_category, seniority_order, experience_name;
 @asset(
     deps=["stage_keywords_normalized"],
     description="Create keywords taxonomy dimension table",
-    group_name="3_analytics_dimensions",
+    group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_keywords(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1889,7 +2028,7 @@ ORDER BY keyword_type, keyword_category, frequency_count DESC;
 ### Phase 2: Primary Fact Table Implementation
 
 #### 2.1 `analytics_fact_job_postings`
-**Purpose**: Create primary fact table for job posting analytics
+**Purpose**: Create primary fact table for job posting analytics with complete business measures
 **Dependencies**: All dimension tables, `stage_jobs_unified`, `stage_jobs_llm_enriched_unified`
 **Output**: Core fact table with measures and dimension keys
 
@@ -1897,29 +2036,209 @@ ORDER BY keyword_type, keyword_category, frequency_count DESC;
 @asset(
     deps=["analytics_dim_date", "analytics_dim_company", "analytics_dim_location",
           "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills",
-          "analytics_dim_experience", "analytics_dim_keywords",
-          "stage_jobs_unified", "stage_jobs_llm_enriched_unified"],
+          "analytics_dim_salary", "analytics_dim_experience", "analytics_dim_keywords",
+          "stage_jobs_unified", "stage_jobs_llm_enriched_unified", "stage_job_salary_bridge"],
     description="Create primary fact table for job posting analytics",
-    group_name="analytics_facts",
+    group_name="3b_analytics_facts",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
     Build the primary fact table for job posting analytics.
 
-    Processing:
-    - Join STAGE tables with dimension lookups
-    - Apply business rules and data quality filters
-    - Generate surrogate keys and measures
-    - Implement incremental loading logic
+    This asset creates the core fact table that serves as the foundation for all job market analytics.
+    It combines job data from STAGE sources with dimension lookups to create a business-ready
+    analytical structure.
+
+    Processing Logic:
+    1. Join STAGE.JOBS_UNIFIED with STAGE.JOBS_LLM_ENRICHED for complete job data
+    2. Lookup dimension keys for all foreign key relationships
+    3. Apply data quality filters and business rules
+    4. Generate surrogate keys and calculate derived measures
+    5. Implement incremental loading with change detection
+    6. Validate fact table completeness and integrity
+
+    Data Quality Rules:
+    - Filter jobs with IS_ACTIVE = TRUE for current analysis
+    - Require valid COMPANY_ID for company dimension lookups
+    - Apply LLM confidence thresholds for enriched data inclusion
+    - Validate date ranges and posting date logic
+    - Handle missing dimension keys gracefully with default values
+
+    Returns:
+        Dict containing execution results and job posting statistics
     """
 ```
 
-**Key Implementation Tasks**:
-1. **Dimension Key Lookups**: Map natural keys to surrogate keys
-2. **Measure Calculations**: Salary midpoints, experience calculations
-3. **Data Quality Rules**: Filter invalid or incomplete records
-4. **Incremental Processing**: Daily refresh with change detection
+**Implementation Steps**:
+
+**Step 1: Source Data Integration**
+- **Primary Source**: `STAGE.JOBS_UNIFIED` (core job data)
+- **Secondary Source**: `STAGE.JOBS_LLM_ENRICHED` (enriched attributes)
+- **Join Strategy**: LEFT JOIN on JOB_UID to preserve all jobs even without LLM enrichment
+- **Data Quality Filter**: Include jobs with basic data completeness requirements
+
+**Step 2: Dimension Key Lookups**
+```sql
+-- Dimension key mapping strategy:
+DATE_POSTED_KEY     ← TO_CHAR(ju.DATE_POSTED, 'YYYYMMDD')          -- Direct date key generation
+COMPANY_KEY         ← dc.COMPANY_KEY WHERE dc.COMPANY_ID = ju.COMPANY_ID AND dc.IS_CURRENT = TRUE
+LOCATION_KEY        ← dl.LOCATION_KEY WHERE dl.LOCATION_NAME = ju.LOCATION_STANDARDIZED
+JOB_FAMILY_KEY      ← djf.JOB_FAMILY_KEY WHERE djf.JOB_FAMILY = lle.JOB_FAMILY AND djf.SENIORITY_LEVEL = lle.SENIORITY_LEVEL
+PLATFORM_KEY        ← dp.PLATFORM_KEY WHERE dp.PLATFORM_NAME = ju.PLATFORM
+EXPERIENCE_KEY      ← de.EXPERIENCE_KEY WHERE de.EXPERIENCE_LEVEL = lle.EXPERIENCE_LEVEL (primary lookup)
+KEYWORD_KEY         ← dk.KEYWORD_KEY WHERE dk.KEYWORD_TEXT = primary keyword from lle.PRIMARY_KEYWORDS[0]
+SALARY_KEY          ← ds.SALARY_KEY FROM stage_job_salary_bridge jsb JOIN ds WHERE jsb.JOB_UID = ju.JOB_UID
+```
+
+**Step 3: Field Mapping & Transformation**
+```sql
+-- Direct field mappings from STAGE sources:
+JOB_UID             ← ju.JOB_UID (natural key preservation)
+JOB_TITLE           ← ju.JOB_TITLE_CLEAN (cleaned job title)
+POSTING_URL         ← ju.JOB_URL (original job posting URL)
+
+-- Salary measures from STAGE.JOBS_LLM_ENRICHED:
+SALARY_MIN          ← lle.SALARY_MIN
+SALARY_MAX          ← lle.SALARY_MAX
+SALARY_CURRENCY     ← COALESCE(lle.SALARY_CURRENCY, 'USD')
+SALARY_PERIOD       ← lle.SALARY_PERIOD
+
+-- Experience measures from STAGE.JOBS_LLM_ENRICHED:
+EXPERIENCE_MIN_YEARS ← lle.MIN_YEARS_EXPERIENCE
+EXPERIENCE_MAX_YEARS ← lle.MAX_YEARS_EXPERIENCE
+EXPERIENCE_LEVEL     ← lle.EXPERIENCE_LEVEL
+
+-- Quality and confidence measures:
+SALARY_CONFIDENCE     ← lle.SALARY_CONFIDENCE
+LLM_OVERALL_CONFIDENCE ← lle.LLM_OVERALL_CONFIDENCE
+DATA_QUALITY_SCORE    ← ju.DATA_QUALITY_SCORE
+
+-- Job classification from STAGE.JOBS_LLM_ENRICHED:
+JOB_FAMILY           ← lle.JOB_FAMILY
+JOB_SUB_FAMILY       ← lle.JOB_SUB_FAMILY
+SENIORITY_LEVEL      ← lle.SENIORITY_LEVEL
+
+-- Work arrangement from STAGE.JOBS_LLM_ENRICHED:
+WORK_TYPE            ← lle.WORK_TYPE
+REMOTE_FLEXIBILITY   ← lle.REMOTE_FLEXIBILITY
+
+-- Boolean flags:
+IS_ACTIVE_POSTING    ← ju.IS_ACTIVE
+IS_EQUITY_MENTIONED  ← COALESCE(lle.EQUITY_MENTIONED, FALSE)
+IS_BONUS_MENTIONED   ← COALESCE(lle.BONUS_MENTIONED, FALSE)
+LLM_NEEDS_MANUAL_REVIEW ← COALESCE(lle.LLM_NEEDS_MANUAL_REVIEW, FALSE)
+
+-- Important dates:
+FIRST_POSTED_DATE    ← ju.DATE_POSTED
+DATE_RETRIEVED       ← ju.DATE_RETRIEVED
+
+-- Partitioning field:
+PARTITION_DATE       ← DATE_TRUNC('month', ju.DATE_POSTED)
+```
+
+**Step 4: Surrogate Key Generation**
+- **Primary Key**: `JOB_POSTING_KEY` = `'JP_' + JOB_UID` for unique identification
+- **Consistent Generation**: Ensure same key for same job across refreshes
+- **Performance Optimization**: Use clustering on dimension keys for query performance
+
+**Step 5: Data Quality Rules**
+- **Active Jobs**: `ju.IS_ACTIVE = TRUE` for current market analysis
+- **Valid Companies**: `ju.COMPANY_ID IS NOT NULL AND ju.COMPANY_ID != ''`
+- **Date Validation**: `ju.DATE_POSTED >= '2020-01-01'` for reasonable date ranges
+- **Language Filter**: `ju.IS_ENGLISH = TRUE` for consistent analysis (optional)
+- **LLM Quality**: Include LLM data only when `lle.LLM_OVERALL_CONFIDENCE >= 0.5`
+- **Salary Quality**: Include salary data only when `lle.SALARY_CONFIDENCE >= 0.6`
+
+**Step 6: Default Value Handling**
+```sql
+-- Handle missing dimension keys with defaults:
+COMPANY_KEY         ← COALESCE(lookup_result, 'COMP_UNKNOWN')
+LOCATION_KEY        ← COALESCE(lookup_result, 'LOC_UNKNOWN')
+JOB_FAMILY_KEY      ← COALESCE(lookup_result, 'JF_UNKNOWN')
+PLATFORM_KEY        ← COALESCE(lookup_result, 'PLT_' + ju.PLATFORM)
+EXPERIENCE_KEY      ← COALESCE(lookup_result, 'EXP_UNKNOWN')
+KEYWORD_KEY         ← COALESCE(lookup_result, 'KWD_UNKNOWN')
+```
+
+**Step 7: Incremental Loading Strategy**
+- **Processing Mode**: Complete refresh for simplicity (jobs don't change frequently)
+- **Change Detection**: Compare against existing records for delta identification
+- **Partition Management**: Partition by PARTITION_DATE (monthly) for query performance
+- **Data Freshness**: Process all jobs from STAGE layer daily
+
+**Step 8: Business Rules & Validations**
+```sql
+-- Core business rules:
+1. One record per unique job posting (JOB_UID is unique)
+2. All jobs must have valid date posted
+3. Company dimension lookup required for business analysis
+4. Platform must be from known ATS systems
+5. Salary data included only with sufficient confidence
+6. Experience data validated for logical ranges (0-50 years)
+7. Work arrangement standardized to known categories
+```
+
+**Step 9: Performance Optimization**
+- **Clustering**: `(DATE_POSTED_KEY, COMPANY_KEY, LOCATION_KEY, JOB_FAMILY_KEY)`
+- **Partitioning**: `PARTITION BY (PARTITION_DATE)` for monthly partitions
+- **Indexing Strategy**: Optimize for common analytical query patterns
+- **Query Performance Target**: <2 seconds for standard fact table queries
+
+**Step 10: Data Validation & Quality Checks**
+```sql
+-- Post-load validation queries:
+1. Record count validation: Compare with source STAGE tables
+2. Dimension key integrity: Verify all foreign keys exist in dimensions
+3. Date range validation: Ensure posting dates are reasonable
+4. Salary range validation: Check for outliers and invalid values
+5. Completeness metrics: Calculate percentage of jobs with each measure
+6. Business rule compliance: Verify all business rules are enforced
+```
+
+**Key Implementation Challenges**:
+
+**Challenge 1: Dimension Key Lookups**
+- **Issue**: Multiple dimension lookups per job can be slow
+- **Solution**: Use efficient JOIN strategy with dimension tables
+- **Mitigation**: Implement lookup caching and optimized JOIN ordering
+
+**Challenge 2: Missing LLM Enrichment**
+- **Issue**: Not all jobs have LLM enrichment data
+- **Solution**: LEFT JOIN with STAGE.JOBS_LLM_ENRICHED and handle NULLs gracefully
+- **Business Rule**: Include jobs without enrichment but flag for limited analytics
+
+**Challenge 3: Primary Keyword Selection**
+- **Issue**: Jobs may have multiple keywords, need to select primary
+- **Solution**: Use first element of lle.PRIMARY_KEYWORDS array or most frequent keyword
+- **Fallback**: Default to 'KWD_UNKNOWN' if no keywords available
+
+**Challenge 4: Experience Mapping**
+- **Issue**: LLM experience levels may not match dimension experience categories
+- **Solution**: Implement fuzzy matching logic for experience level lookups
+- **Business Rule**: Map similar experience levels to closest dimension match
+
+**Challenge 5: Location Standardization**
+- **Issue**: STAGE location names may not exactly match dimension location names
+- **Solution**: Implement location matching logic with fuzzy string matching
+- **Data Quality**: Track location lookup success rates for improvement
+
+**Step 11: Success Metrics & KPIs**
+```sql
+-- Key success metrics to track:
+- Total job postings loaded
+- Percentage with successful dimension lookups
+- Percentage with LLM enrichment data
+- Percentage with salary information
+- Data quality score distribution
+- Processing time per batch
+- Query performance benchmarks
+```
+
+**Expected Data Volume**: ~50,000-100,000 job postings per refresh
+**Processing Time Target**: <10 minutes for complete refresh
+**Data Quality Target**: >95% successful dimension lookups
+**Business Coverage**: >90% of jobs with essential business measures
 
 ### Phase 3: Aggregate Fact Tables Implementation
 

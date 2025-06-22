@@ -200,27 +200,21 @@ The job ID is the segment after the 4th slash (/) and before the next dash (-).
 - `pipeline/dagster_betterjobs/dagster_betterjobs/scrapers/smartrecruiters_scraper.py`
 
 ### Resolution
-**Fixed**: Updated job ID extraction logic in `smartrecruiters_scraper.py` (lines 186-202)
+**Fixed**: Updated job ID extraction logic in `SmartRecruitersJobScraper.get_job_details()` method
 
-**Changes Made**:
-1. Modified URL parsing to specifically target the 3rd path segment (index 2)
-2. Added logic to extract numeric part before any dash separator
-3. Added validation to ensure extracted job ID is numeric
-4. Improved error handling and logging for invalid job IDs
+**Issue**: The regex pattern `r'/([^/]+)$'` was extracting the last URL segment (company name) instead of the job ID
 
-**New Logic**:
+**Solution**: Updated extraction logic to properly parse SmartRecruiters URL structure:
 ```python
-# SmartRecruiters URL format: https://jobs.smartrecruiters.com/CompanyName/JobID-job-title
-path_segments = urlparse(job_url).path.split('/')
-if len(path_segments) >= 3:
-    job_segment = path_segments[2]  # Get JobID-title segment
-    job_id = job_segment.split('-')[0]  # Extract numeric part before dash
-    # Validate numeric job ID
-    if not re.match(r'^\d+$', job_id):
-        job_id = None
+# Extract job ID from URL path (format: /company/job_id-job_title)
+if match:
+    path_parts = job_url.split('/')
+    if len(path_parts) >= 5:
+        job_id_part = path_parts[4]  # Get segment after company
+        job_id = job_id_part.split('-')[0]  # Extract ID before first dash
 ```
 
-This fix ensures proper extraction of numeric job IDs like `3743990008187744` instead of company names.
+**Result**: Proper job ID extraction preventing duplicate issues
 
 ---
 
@@ -2045,6 +2039,74 @@ This pattern should be applied to **all critical data population assets**:
 - ✅ Data verification prevents silent failures
 - ✅ Downstream data quality protected
 - ✅ Pipeline reliability and confidence restored
+
+---
+
+## BUG-017: Analytics Fact Job Postings Duplicate Records
+
+**Status**: OPEN 🔴
+**Severity**: High
+**Component**: Analytics Layer - Fact Table
+**Date Reported**: 2025-06-22
+
+### Description
+The `ANALYTICS.FACT_JOB_POSTINGS` table contains duplicate records for the same job posting, with identical data except for different `JOB_FAMILY_KEY` values. This causes data quality issues and inflated metrics in analytics queries.
+
+### Root Cause Analysis
+The issue appears to be in the `analytics_dim_job_family` dimension creation and its join logic back to the fact table. The problem stems possibly from:
+
+1. **Dimension Creation Logic**: A single job from `STAGE.JOBS_LLM_ENRICHED` can create multiple records in `DIM_JOB_FAMILY` if it has the same `JOB_FAMILY` and `SENIORITY_LEVEL` but different `JOB_SUB_FAMILY` values.
+
+2. **Incomplete Join Logic**: The original join in `analytics_fact_job_postings` only matched on `JOB_FAMILY` and `SENIORITY_LEVEL`, but not `JOB_SUB_FAMILY`:
+   ```sql
+   LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_JOB_FAMILY djf
+       ON jd.JOB_FAMILY = djf.JOB_FAMILY
+       AND jd.SENIORITY_LEVEL = djf.SENIORITY_LEVEL
+   ```
+
+3. **Cartesian Product Effect**: When one job matches multiple dimension records, it creates multiple fact table records for the same job posting.
+
+### Reproduction Steps
+1. Run `analytics_dim_job_family` asset
+2. Run `analytics_fact_job_postings` asset
+3. Query for duplicate job postings:
+   ```sql
+   SELECT JOB_UID, COUNT(*) as duplicate_count
+   FROM ANALYTICS.FACT_JOB_POSTINGS
+   GROUP BY JOB_UID
+   HAVING COUNT(*) > 1
+   ```
+4. Observe identical records with different `JOB_FAMILY_KEY` values
+
+### Expected vs Actual
+**Expected**: One record per unique job posting (`JOB_UID`)
+**Actual**: Multiple records per job posting when job has multiple sub-family classifications
+
+### Evidence
+Screenshot shows same `JOB_POSTING_KEY` (JP_bc5aa293e7c13eddce2e0fef7acbaf30) appearing twice with different `JOB_FAMILY_KEY` values but otherwise identical data.
+
+### Impact
+- **Data Quality**: Inflated job counts in analytics
+- **Business Metrics**: Incorrect hiring velocity and market intelligence
+- **User Trust**: Inaccurate reporting undermines analytics credibility
+- **Performance**: Unnecessary storage and processing overhead
+
+### Files Affected
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_dimensions.py` (DIM_JOB_FAMILY creation)
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_facts.py` (fact table join logic)
+- `pipeline/sql/objects/tables/analytics_fact_job_postings.sql` (table definition)
+
+### Potential Solutions
+1. **Fix Join Logic**: Add `JOB_SUB_FAMILY` to the join condition (partially implemented in recent changes)
+2. **Dimension Deduplication**: Modify dimension creation to avoid multiple records for same job classification
+3. **Primary Key Selection**: Implement logic to select single "primary" job family per job
+4. **Grain Validation**: Add constraints to prevent duplicate job postings in fact table
+
+### Investigation Required
+- [ ] Analyze how many jobs have multiple sub-family classifications
+- [ ] Determine business rules for primary job family selection
+- [ ] Validate if recent join logic fix resolves the issue completely
+- [ ] Implement data quality constraints to prevent future duplicates
 
 ---
 
