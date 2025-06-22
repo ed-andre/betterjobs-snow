@@ -14,7 +14,7 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
 
 @asset(
     deps=["analytics_dim_date", "analytics_dim_company", "analytics_dim_location",
-          "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills"
+          "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills",
           "analytics_dim_salary", "analytics_dim_experience", "analytics_dim_keywords",
           "stage_jobs_unified", "stage_jobs_llm_enriched_unified", "stage_job_salary_bridge"],
     description="Create primary fact table for job posting analytics",
@@ -518,6 +518,552 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                     "jobs_needing_review": validation_result[23]
                 },
                 "platform_analysis": platform_stats
+            }
+
+        finally:
+            cursor.close()
+
+
+@asset(
+    deps=["analytics_fact_job_postings", "stage_job_skills_bridge", "analytics_dim_skills"],
+    description="Create weekly skills demand aggregate fact table for technology trend analysis",
+    group_name="3b_analytics_facts",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build weekly skills demand aggregates from job postings and skills relationships.
+
+    This asset creates comprehensive weekly skill demand intelligence by aggregating job postings
+    by skill, week, job family, and location to enable responsive technology trend analysis.
+
+    Processing Logic:
+    1. Join FACT_JOB_POSTINGS with JOB_SKILLS_BRIDGE to get job-skill relationships
+    2. Group by week, skill, job family, and location for comprehensive market view
+    3. Calculate core demand metrics (penetration rates, job counts, growth rates)
+    4. Compute salary analysis and skill premiums using denormalized salary fields
+    5. Generate skill rankings within job families and overall market
+    6. Apply week-over-week trend analysis with directional classification
+    7. Implement data quality filtering using confidence scores from bridge table
+
+    Data Quality Rules:
+    - Include only skills with OVERALL_CONFIDENCE >= 0.7 from bridge table
+    - Filter active job postings (IS_ACTIVE_POSTING = TRUE)
+    - Require minimum 3 jobs per skill-week combination for statistical validity
+    - Use salary data only where SALARY_CONFIDENCE >= 0.6
+    - Apply LLM confidence filtering (LLM_OVERALL_CONFIDENCE >= 0.5)
+
+    Grain: One record per skill per week per job family per location
+    Aggregation Level: Weekly (Sunday-Saturday weeks)
+    Retention: 104 weeks (2 years) for trend analysis
+
+    Performance Optimization:
+    - Partition by WEEK_START_DATE for time-based queries
+    - Cluster by (WEEK_KEY, SKILL_KEY, JOB_FAMILY_KEY) for analytical patterns
+    - Pre-calculate rankings and growth rates for dashboard performance
+
+    Returns:
+        Dict containing processing statistics and data quality metrics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_fact_skills_demand_weekly.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting weekly skills demand aggregation from fact job postings and skills bridge")
+
+            # Step 1: Clear existing data for complete refresh
+            context.log.info("Clearing existing skills demand weekly data")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+
+            # Step 2: Build skills demand aggregates with comprehensive analytics
+            context.log.info("Building weekly skills demand aggregates with trend analysis and market intelligence")
+
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                skills_weekly_key,
+                week_key,
+                skill_key,
+                job_family_key,
+                location_key,
+                active_jobs_with_skill,
+                total_active_jobs,
+                skill_penetration_rate,
+                avg_salary_midpoint_annual_usd,
+                baseline_salary_midpoint_annual_usd,
+                salary_premium_annual_usd,
+                salary_premium_percentage,
+                salary_sample_size,
+                week_over_week_change,
+                week_over_week_growth_rate,
+                trend_direction,
+                four_week_moving_average,
+                skill_rank_in_family,
+                skill_rank_overall,
+                market_share_in_family,
+                avg_skill_confidence,
+                data_completeness_score,
+                sample_size,
+                remote_jobs_with_skill,
+                remote_skill_percentage,
+                created_timestamp,
+                processing_date,
+                week_start_date,
+                week_end_date
+            )
+            WITH quality_job_skills AS (
+                SELECT
+                    fjp.JOB_POSTING_KEY,
+                    fjp.JOB_UID,
+                    fjp.DATE_POSTED_KEY,
+                    fjp.FIRST_POSTED_DATE,
+                    fjp.JOB_FAMILY_KEY,
+                    fjp.LOCATION_KEY,
+                    fjp.SALARY_MIDPOINT_ANNUAL_USD,
+                    fjp.WORK_TYPE,
+                    fjp.IS_ACTIVE_POSTING,
+                    fjp.SALARY_CONFIDENCE,
+                    fjp.LLM_OVERALL_CONFIDENCE,
+
+                    -- Skills from bridge table with confidence filtering
+                    jsb.SKILL_ID,
+                    jsb.SKILL_CATEGORY,
+                    jsb.OVERALL_CONFIDENCE as skill_extraction_confidence,
+
+                    -- Generate week keys for aggregation
+                    TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+                    DATE_TRUNC('week', fjp.FIRST_POSTED_DATE) as week_start_date,
+                    DATE_TRUNC('week', fjp.FIRST_POSTED_DATE) + 6 as week_end_date
+
+                FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
+                INNER JOIN BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE jsb
+                    ON fjp.JOB_UID = jsb.JOB_UID
+
+                WHERE fjp.IS_ACTIVE_POSTING = TRUE
+                  AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
+                  AND jsb.OVERALL_CONFIDENCE >= 0.7        -- High-confidence skill extractions only
+                  AND jsb.NEEDS_REVIEW = FALSE
+                  AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
+            ),
+
+            skills_weekly_base AS (
+                SELECT
+                    qjs.week_key,
+                    qjs.week_start_date,
+                    qjs.week_end_date,
+                    ds.SKILL_KEY,
+                    ds.SKILL_NAME,
+                    ds.SKILL_CATEGORY,
+                    qjs.JOB_FAMILY_KEY,
+                    qjs.LOCATION_KEY,
+
+                    -- Core demand metrics
+                    COUNT(DISTINCT qjs.JOB_UID) as active_jobs_with_skill,
+                    AVG(qjs.skill_extraction_confidence) as avg_skill_confidence,
+                    COUNT(DISTINCT qjs.JOB_UID) as sample_size,
+
+                    -- Salary analysis (using denormalized fields)
+                    AVG(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 AND qjs.SALARY_MIDPOINT_ANNUAL_USD > 0
+                             THEN qjs.SALARY_MIDPOINT_ANNUAL_USD END) as avg_salary_midpoint_annual_usd,
+                    COUNT(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 AND qjs.SALARY_MIDPOINT_ANNUAL_USD > 0
+                               THEN 1 END) as salary_sample_size,
+
+                    -- Work arrangement analysis
+                    COUNT(CASE WHEN qjs.WORK_TYPE = 'Remote' THEN 1 END) as remote_jobs_with_skill,
+
+                    -- Data completeness tracking
+                    COUNT(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 THEN 1 END)::FLOAT /
+                    COUNT(DISTINCT qjs.JOB_UID) as data_completeness_score
+
+                FROM quality_job_skills qjs
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON qjs.SKILL_ID = ds.SKILL_ID
+
+                WHERE ds.SKILL_KEY IS NOT NULL
+
+                GROUP BY qjs.week_key, qjs.week_start_date, qjs.week_end_date,
+                         ds.SKILL_KEY, ds.SKILL_NAME, ds.SKILL_CATEGORY,
+                         qjs.JOB_FAMILY_KEY, qjs.LOCATION_KEY
+
+                HAVING COUNT(DISTINCT qjs.JOB_UID) >= 3  -- Minimum statistical validity
+            ),
+
+            market_context AS (
+                SELECT
+                    qjs.week_key,
+                    qjs.JOB_FAMILY_KEY,
+                    qjs.LOCATION_KEY,
+
+                    -- Total market size for penetration rate calculation
+                    COUNT(DISTINCT qjs.JOB_UID) as total_active_jobs,
+
+                    -- Baseline salary (jobs WITHOUT specific skills) for premium calculation
+                    AVG(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 AND qjs.SALARY_MIDPOINT_ANNUAL_USD > 0
+                             THEN qjs.SALARY_MIDPOINT_ANNUAL_USD END) as baseline_salary_midpoint_annual_usd
+
+                FROM quality_job_skills qjs
+                GROUP BY qjs.week_key, qjs.JOB_FAMILY_KEY, qjs.LOCATION_KEY
+            ),
+
+            skills_with_trends AS (
+                SELECT swb.*,
+                       mc.total_active_jobs,
+                       mc.baseline_salary_midpoint_annual_usd,
+
+                       -- Penetration rate calculation
+                       swb.active_jobs_with_skill::FLOAT / mc.total_active_jobs * 100 as skill_penetration_rate,
+
+                       -- Salary premium calculations
+                       (swb.avg_salary_midpoint_annual_usd - mc.baseline_salary_midpoint_annual_usd) as salary_premium_annual_usd,
+                       CASE WHEN mc.baseline_salary_midpoint_annual_usd > 0
+                            THEN ((swb.avg_salary_midpoint_annual_usd / mc.baseline_salary_midpoint_annual_usd) - 1) * 100
+                            ELSE NULL END as salary_premium_percentage,
+
+                       -- Remote work percentage
+                       swb.remote_jobs_with_skill::FLOAT / swb.active_jobs_with_skill * 100 as remote_skill_percentage,
+
+                       -- Week-over-week trend analysis
+                       LAG(swb.active_jobs_with_skill, 1) OVER (
+                           PARTITION BY swb.skill_key, swb.job_family_key, swb.location_key
+                           ORDER BY swb.week_start_date
+                       ) as prev_week_jobs,
+
+                       -- 4-week moving average for trend smoothing
+                       AVG(swb.active_jobs_with_skill) OVER (
+                           PARTITION BY swb.skill_key, swb.job_family_key, swb.location_key
+                           ORDER BY swb.week_start_date
+                           ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+                       ) as four_week_moving_average
+
+                FROM skills_weekly_base swb
+                INNER JOIN market_context mc
+                    ON swb.week_key = mc.week_key
+                    AND swb.job_family_key = mc.job_family_key
+                    AND swb.location_key = mc.location_key
+            ),
+
+            skills_with_rankings AS (
+                SELECT swt.*,
+                       -- Week-over-week change calculations
+                       (swt.active_jobs_with_skill - swt.prev_week_jobs) as week_over_week_change,
+                       CASE WHEN swt.prev_week_jobs > 0
+                            THEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100
+                            ELSE NULL END as week_over_week_growth_rate,
+
+                       -- Trend direction classification
+                       CASE
+                           WHEN swt.prev_week_jobs IS NULL THEN 'NEW'
+                           WHEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100 > 25 THEN 'GROWING'
+                           WHEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100 > 5 THEN 'STABLE'
+                           WHEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100 > -10 THEN 'STABLE'
+                           ELSE 'DECLINING'
+                       END as trend_direction,
+
+                       -- Skill rankings within job family
+                       RANK() OVER (
+                           PARTITION BY swt.week_key, swt.job_family_key
+                           ORDER BY swt.active_jobs_with_skill DESC
+                       ) as skill_rank_in_family,
+
+                       -- Overall market ranking
+                       RANK() OVER (
+                           PARTITION BY swt.week_key
+                           ORDER BY swt.active_jobs_with_skill DESC
+                       ) as skill_rank_overall,
+
+                       -- Market share within job family
+                       swt.active_jobs_with_skill::FLOAT / SUM(swt.active_jobs_with_skill) OVER (
+                           PARTITION BY swt.week_key, swt.job_family_key
+                       ) * 100 as market_share_in_family
+
+                FROM skills_with_trends swt
+            )
+
+            SELECT
+                -- Primary key generation
+                'SW_' || swr.week_key || '_' || swr.skill_key || '_' || swr.job_family_key || '_' || swr.location_key as skills_weekly_key,
+
+                -- Dimension keys
+                swr.week_key,
+                swr.skill_key,
+                swr.job_family_key,
+                swr.location_key,
+
+                -- Core demand metrics
+                swr.active_jobs_with_skill,
+                swr.total_active_jobs,
+                swr.skill_penetration_rate,
+
+                -- Enhanced salary analysis
+                swr.avg_salary_midpoint_annual_usd,
+                swr.baseline_salary_midpoint_annual_usd,
+                swr.salary_premium_annual_usd,
+                swr.salary_premium_percentage,
+                swr.salary_sample_size,
+
+                -- Trend analysis
+                swr.week_over_week_change,
+                swr.week_over_week_growth_rate,
+                swr.trend_direction,
+                swr.four_week_moving_average,
+
+                -- Market position
+                swr.skill_rank_in_family,
+                swr.skill_rank_overall,
+                swr.market_share_in_family,
+
+                -- Data quality metrics
+                swr.avg_skill_confidence,
+                swr.data_completeness_score,
+                swr.sample_size,
+
+                -- Work arrangement analysis
+                swr.remote_jobs_with_skill,
+                swr.remote_skill_percentage,
+
+                -- Audit fields
+                CURRENT_TIMESTAMP as created_timestamp,
+                CURRENT_DATE as processing_date,
+                swr.week_start_date,
+                swr.week_end_date
+
+            FROM skills_with_rankings swr
+            ORDER BY swr.week_start_date DESC, swr.skill_rank_overall ASC
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} weekly skills demand records")
+
+            # Step 3: Validate data quality and gather statistics
+            context.log.info("Validating skills demand data quality and gathering market intelligence statistics")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_skill_weeks,
+                COUNT(DISTINCT skill_key) as unique_skills,
+                COUNT(DISTINCT week_key) as unique_weeks,
+                COUNT(DISTINCT job_family_key) as unique_job_families,
+                COUNT(DISTINCT location_key) as unique_locations,
+
+                -- Demand metrics
+                SUM(active_jobs_with_skill) as total_skill_job_instances,
+                AVG(skill_penetration_rate) as avg_penetration_rate,
+                AVG(active_jobs_with_skill) as avg_jobs_per_skill_week,
+
+                -- Salary analysis
+                COUNT(CASE WHEN avg_salary_midpoint_annual_usd IS NOT NULL THEN 1 END) as skill_weeks_with_salary,
+                AVG(avg_salary_midpoint_annual_usd) as overall_avg_salary,
+                AVG(salary_premium_percentage) as avg_salary_premium,
+                AVG(salary_sample_size) as avg_salary_sample_size,
+
+                -- Trend analysis
+                COUNT(CASE WHEN trend_direction = 'GROWING' THEN 1 END) as growing_skills,
+                COUNT(CASE WHEN trend_direction = 'DECLINING' THEN 1 END) as declining_skills,
+                COUNT(CASE WHEN trend_direction = 'STABLE' THEN 1 END) as stable_skills,
+                COUNT(CASE WHEN trend_direction = 'NEW' THEN 1 END) as new_skills,
+
+                -- Work arrangement analysis
+                AVG(remote_skill_percentage) as avg_remote_percentage,
+                COUNT(CASE WHEN remote_skill_percentage > 50 THEN 1 END) as remote_friendly_skills,
+
+                -- Quality metrics
+                AVG(avg_skill_confidence) as overall_avg_confidence,
+                AVG(data_completeness_score) as overall_completeness,
+                AVG(sample_size) as avg_sample_size,
+
+                -- Temporal coverage
+                MIN(week_start_date) as earliest_week,
+                MAX(week_start_date) as latest_week
+
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 4: Analyze skills trend distribution
+            context.log.info("Analyzing skills trend distribution and market intelligence")
+
+            cursor.execute(f"""
+            SELECT
+                trend_direction,
+                COUNT(*) as skill_week_count,
+                AVG(skill_penetration_rate) as avg_penetration,
+                AVG(week_over_week_growth_rate) as avg_growth_rate,
+                AVG(salary_premium_percentage) as avg_premium
+            FROM {table_name}
+            WHERE week_over_week_growth_rate IS NOT NULL
+            GROUP BY trend_direction
+            ORDER BY skill_week_count DESC
+            """)
+
+            trend_stats = [
+                {
+                    "trend_direction": row[0],
+                    "skill_week_count": row[1],
+                    "avg_penetration": float(row[2]) if row[2] is not None else 0.0,
+                    "avg_growth_rate": float(row[3]) if row[3] is not None else 0.0,
+                    "avg_premium": float(row[4]) if row[4] is not None else 0.0
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 5: Top skills analysis
+            cursor.execute(f"""
+            SELECT
+                ds.SKILL_NAME,
+                ds.SKILL_CATEGORY,
+                AVG(fsw.active_jobs_with_skill) as avg_weekly_demand,
+                AVG(fsw.skill_penetration_rate) as avg_penetration_rate,
+                AVG(fsw.salary_premium_percentage) as avg_salary_premium,
+                AVG(fsw.remote_skill_percentage) as avg_remote_percentage,
+                COUNT(*) as weeks_tracked
+            FROM {table_name} fsw
+            JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON fsw.skill_key = ds.skill_key
+            WHERE fsw.week_start_date >= CURRENT_DATE - 30  -- Last 4 weeks
+            GROUP BY ds.SKILL_NAME, ds.SKILL_CATEGORY
+            ORDER BY avg_weekly_demand DESC
+            LIMIT 20
+            """)
+
+            top_skills_stats = [
+                {
+                    "skill_name": row[0],
+                    "skill_category": row[1],
+                    "avg_weekly_demand": float(row[2]) if row[2] is not None else 0.0,
+                    "avg_penetration_rate": float(row[3]) if row[3] is not None else 0.0,
+                    "avg_salary_premium": float(row[4]) if row[4] is not None else 0.0,
+                    "avg_remote_percentage": float(row[5]) if row[5] is not None else 0.0,
+                    "weeks_tracked": row[6]
+                }
+                for row in cursor.fetchall()
+            ]
+
+            # Step 6: Data quality validation checks
+            quality_issues = []
+
+            # Check for skills with impossible penetration rates
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE skill_penetration_rate < 0 OR skill_penetration_rate > 100
+            """)
+            invalid_penetration = cursor.fetchone()[0]
+            if invalid_penetration > 0:
+                quality_issues.append(f"{invalid_penetration} skill weeks with invalid penetration rates")
+
+            # Check for unrealistic salary premiums
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE salary_premium_percentage IS NOT NULL AND ABS(salary_premium_percentage) > 500
+            """)
+            unrealistic_premiums = cursor.fetchone()[0]
+            if unrealistic_premiums > 0:
+                quality_issues.append(f"{unrealistic_premiums} skill weeks with unrealistic salary premiums (>500%)")
+
+            # Check for inconsistent trend directions
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM {table_name}
+                WHERE trend_direction = 'GROWING' AND week_over_week_growth_rate <= 5
+            """)
+            inconsistent_trends = cursor.fetchone()[0]
+            if inconsistent_trends > 0:
+                quality_issues.append(f"{inconsistent_trends} skill weeks with inconsistent trend classification")
+
+            if quality_issues:
+                context.log.warning(f"Data quality issues detected: {', '.join(quality_issues)}")
+
+            # Step 7: Calculate derived statistics
+            total_skill_weeks = validation_result[0]
+            salary_coverage = (validation_result[7] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
+            growing_percentage = (validation_result[11] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
+            declining_percentage = (validation_result[12] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
+
+            context.log.info(f"Skills demand validation: {total_skill_weeks} total skill-week records, "
+                           f"{validation_result[1]} unique skills, {validation_result[2]} unique weeks")
+
+            context.log.info(f"Market intelligence: {validation_result[6]} total skill-job instances, "
+                           f"avg penetration {validation_result[7]:.2f}%, avg premium {validation_result[9]:.1f}%")
+
+            context.log.info(f"Trend distribution: {growing_percentage:.1f}% growing, "
+                           f"{declining_percentage:.1f}% declining, avg confidence {validation_result[16]:.3f}")
+
+            # Add metadata for Dagster UI (convert all numeric types properly for Dagster compatibility)
+            context.add_output_metadata({
+                "total_skill_weeks": MetadataValue.int(int(total_skill_weeks)),
+                "unique_skills": MetadataValue.int(int(validation_result[1])),
+                "unique_weeks": MetadataValue.int(int(validation_result[2])),
+                "unique_job_families": MetadataValue.int(int(validation_result[3])),
+                "unique_locations": MetadataValue.int(int(validation_result[4])),
+                "total_skill_job_instances": MetadataValue.int(int(validation_result[5])),
+                "avg_penetration_rate": MetadataValue.float(float(validation_result[6]) if validation_result[6] is not None else 0.0),
+                "avg_jobs_per_skill_week": MetadataValue.float(float(validation_result[7]) if validation_result[7] is not None else 0.0),
+                "salary_coverage_percentage": MetadataValue.float(float(salary_coverage)),
+                "overall_avg_salary": MetadataValue.float(float(validation_result[9]) if validation_result[9] is not None else 0.0),
+                "avg_salary_premium": MetadataValue.float(float(validation_result[10]) if validation_result[10] is not None else 0.0),
+                "growing_skills_percentage": MetadataValue.float(float(growing_percentage)),
+                "declining_skills_percentage": MetadataValue.float(float(declining_percentage)),
+                "avg_remote_percentage": MetadataValue.float(float(validation_result[15]) if validation_result[15] is not None else 0.0),
+                "remote_friendly_skills": MetadataValue.int(int(validation_result[16])),
+                "overall_avg_confidence": MetadataValue.float(float(validation_result[17]) if validation_result[17] is not None else 0.0),
+                "overall_completeness": MetadataValue.float(float(validation_result[18]) if validation_result[18] is not None else 0.0),
+                "avg_sample_size": MetadataValue.float(float(validation_result[19]) if validation_result[19] is not None else 0.0),
+                "earliest_week": MetadataValue.text(str(validation_result[20])),
+                "latest_week": MetadataValue.text(str(validation_result[21])),
+                "trend_distribution": MetadataValue.json(trend_stats),
+                "top_skills_last_4_weeks": MetadataValue.json(top_skills_stats),
+                "quality_issues_count": MetadataValue.int(len(quality_issues))
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_skill_weeks": total_skill_weeks,
+                "market_coverage": {
+                    "unique_skills": validation_result[1],
+                    "unique_weeks": validation_result[2],
+                    "unique_job_families": validation_result[3],
+                    "unique_locations": validation_result[4],
+                    "total_skill_job_instances": validation_result[5]
+                },
+                "demand_metrics": {
+                    "avg_penetration_rate": float(validation_result[6]) if validation_result[6] is not None else 0.0,
+                    "avg_jobs_per_skill_week": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "avg_sample_size": float(validation_result[19]) if validation_result[19] is not None else 0.0
+                },
+                "salary_intelligence": {
+                    "salary_coverage_percentage": salary_coverage,
+                    "overall_avg_salary": float(validation_result[9]) if validation_result[9] is not None else 0.0,
+                    "avg_salary_premium": float(validation_result[10]) if validation_result[10] is not None else 0.0,
+                    "avg_salary_sample_size": float(validation_result[11]) if validation_result[11] is not None else 0.0
+                },
+                "trend_analysis": {
+                    "growing_skills": validation_result[12],
+                    "declining_skills": validation_result[13],
+                    "stable_skills": validation_result[14],
+                    "new_skills": validation_result[15],
+                    "growing_percentage": growing_percentage,
+                    "declining_percentage": declining_percentage,
+                    "trend_distribution": trend_stats
+                },
+                "work_arrangement_intelligence": {
+                    "avg_remote_percentage": float(validation_result[16]) if validation_result[16] is not None else 0.0,
+                    "remote_friendly_skills": validation_result[17]
+                },
+                "quality_metrics": {
+                    "overall_avg_confidence": float(validation_result[18]) if validation_result[18] is not None else 0.0,
+                    "overall_completeness": float(validation_result[19]) if validation_result[19] is not None else 0.0,
+                    "quality_issues": quality_issues
+                },
+                "temporal_coverage": {
+                    "earliest_week": str(validation_result[20]),
+                    "latest_week": str(validation_result[21]),
+                    "weeks_covered": validation_result[2]
+                },
+                "top_skills_analysis": top_skills_stats
             }
 
         finally:

@@ -2243,90 +2243,483 @@ KEYWORD_KEY         ← COALESCE(lookup_result, 'KWD_UNKNOWN')
 ### Phase 3: Aggregate Fact Tables Implementation
 
 #### 3.1 `analytics_fact_skills_demand_weekly`
-**Purpose**: Create weekly skills demand aggregates
-**Dependencies**: `analytics_fact_job_postings`, `stage_job_skills_bridge`
-**Output**: Skills demand trends with weekly granularity
+**Purpose**: Create weekly skills demand aggregates for responsive technology trend analysis
+**Dependencies**: `analytics_fact_job_postings`, `stage_job_skills_bridge`, `analytics_dim_skills`
+**Output**: Skills demand trends with weekly granularity for market intelligence
+
+**Business Need**: Track technology skills demand with weekly granularity to enable timely identification of:
+- Emerging vs declining technology trends
+- Skills salary premiums and market value
+- Geographic and industry skill distribution patterns
+- Weekly hiring velocity by technology stack
 
 ```python
 @asset(
-    deps=["analytics_fact_job_postings", "stage_job_skills_bridge"],
-    description="Create weekly skills demand aggregate fact table",
-    group_name="analytics_aggregates",
+    deps=["analytics_fact_job_postings", "stage_job_skills_bridge", "analytics_dim_skills"],
+    description="Create weekly skills demand aggregate fact table for technology trend analysis",
+    group_name="3c_analytics_aggregates",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Aggregate job postings by skill and week for trend analysis.
+    Build weekly skills demand aggregates from job postings and skills relationships.
 
-    Processing:
-    - Calculate skill penetration rates
-    - Compute salary premiums by skill
-    - Track week-over-week growth
-    - Generate skill ranking metrics
+    This asset creates comprehensive weekly skill demand intelligence by aggregating job postings
+    by skill, week, job family, and location to enable responsive technology trend analysis.
+
+    Processing Logic:
+    1. Join FACT_JOB_POSTINGS with JOB_SKILLS_BRIDGE to get job-skill relationships
+    2. Group by week, skill, job family, and location for comprehensive market view
+    3. Calculate core demand metrics (penetration rates, job counts, growth rates)
+    4. Compute salary analysis and skill premiums using denormalized salary fields
+    5. Generate skill rankings within job families and overall market
+    6. Apply week-over-week trend analysis with directional classification
+    7. Implement data quality filtering using confidence scores from bridge table
+
+    Data Quality Rules:
+    - Include only skills with OVERALL_CONFIDENCE >= 0.7 from bridge table
+    - Filter active job postings (IS_ACTIVE_POSTING = TRUE)
+    - Require minimum 3 jobs per skill-week combination for statistical validity
+    - Use salary data only where SALARY_CONFIDENCE >= 0.6
+    - Apply LLM confidence filtering (LLM_OVERALL_CONFIDENCE >= 0.5)
+
+    Grain: One record per skill per week per job family per location
+    Aggregation Level: Weekly (Sunday-Saturday weeks)
+    Retention: 104 weeks (2 years) for trend analysis
+
+    Performance Optimization:
+    - Partition by WEEK_START_DATE for time-based queries
+    - Cluster by (WEEK_KEY, SKILL_KEY, JOB_FAMILY_KEY) for analytical patterns
+    - Pre-calculate rankings and growth rates for dashboard performance
+
+    Returns:
+        Dict containing processing statistics and data quality metrics
     """
 ```
+
+**Table Structure Review & Updates**:
+
+Based on the current `analytics_fact_job_postings` implementation with denormalized salary fields, the table structure needs these updates:
+
+```sql
+-- UPDATED TABLE STRUCTURE (aligned with fact table implementation):
+CREATE TABLE ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY (
+    -- Primary Key & Week Hierarchy
+    SKILLS_WEEKLY_KEY STRING PRIMARY KEY,       -- Format: 'SW_' + WEEK_KEY + '_' + SKILL_KEY + '_' + JOB_FAMILY_KEY + '_' + LOCATION_KEY
+    WEEK_KEY STRING,                            -- YYYY-WW format (e.g., '2025-25')
+    SKILL_KEY STRING,                           -- FK to DIM_SKILLS
+    JOB_FAMILY_KEY STRING,                      -- FK to DIM_JOB_FAMILY
+    LOCATION_KEY STRING,                        -- FK to DIM_LOCATION
+
+    -- Core Demand Metrics
+    ACTIVE_JOBS_WITH_SKILL INTEGER,             -- Active jobs requiring this skill in the week
+    TOTAL_ACTIVE_JOBS INTEGER,                  -- Total active jobs in same category (job family + location)
+    SKILL_PENETRATION_RATE FLOAT,               -- Percentage of jobs requiring this skill (jobs_with_skill/total_jobs)
+
+    -- Enhanced Salary Analysis (using denormalized annual USD fields)
+    AVG_SALARY_MIDPOINT_ANNUAL_USD NUMBER,      -- Average salary midpoint for jobs with this skill
+    BASELINE_SALARY_MIDPOINT_ANNUAL_USD NUMBER, -- Average salary midpoint for jobs WITHOUT this skill (for premium calc)
+    SALARY_PREMIUM_ANNUAL_USD NUMBER,           -- Absolute premium in USD (avg_with_skill - avg_without_skill)
+    SALARY_PREMIUM_PERCENTAGE FLOAT,            -- Percentage premium this skill commands
+    SALARY_SAMPLE_SIZE INTEGER,                 -- Number of jobs with salary data for confidence
+
+    -- Trend Analysis & Growth Metrics
+    WEEK_OVER_WEEK_CHANGE INTEGER,              -- Change in job count from previous week
+    WEEK_OVER_WEEK_GROWTH_RATE FLOAT,          -- Percentage change week-over-week
+    TREND_DIRECTION STRING,                     -- 'GROWING', 'STABLE', 'DECLINING', 'NEW' (based on growth rate thresholds)
+    FOUR_WEEK_MOVING_AVERAGE FLOAT,            -- 4-week moving average for trend smoothing
+
+    -- Market Position & Competitive Analysis
+    SKILL_RANK_IN_FAMILY INTEGER,              -- Rank within job family (1 = most in-demand)
+    SKILL_RANK_OVERALL INTEGER,                -- Overall market rank across all skills
+    MARKET_SHARE_IN_FAMILY FLOAT,              -- Share of total job family demand
+
+    -- Data Quality & Confidence Metrics
+    AVG_SKILL_CONFIDENCE FLOAT,                -- Average extraction confidence from bridge table
+    DATA_COMPLETENESS_SCORE FLOAT,             -- Percentage of complete skill records
+    SAMPLE_SIZE INTEGER,                       -- Total job postings analyzed for this skill
+
+    -- Work Arrangement Analysis (new insight)
+    REMOTE_JOBS_WITH_SKILL INTEGER,            -- Remote jobs requiring this skill
+    REMOTE_SKILL_PERCENTAGE FLOAT,             -- Percentage of skill demand that's remote-friendly
+
+    -- Audit & Processing Fields
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    PROCESSING_DATE DATE DEFAULT CURRENT_DATE,  -- When this week's data was calculated
+    WEEK_START_DATE DATE,                       -- First day of week (Sunday) for partitioning
+    WEEK_END_DATE DATE                          -- Last day of week (Saturday) for reference
+) PARTITION BY (WEEK_START_DATE)
+CLUSTER BY (WEEK_KEY, SKILL_KEY, JOB_FAMILY_KEY);
+```
+
+**Implementation Steps**:
+
+**Step 1: Source Data Integration & Quality Filtering**
+```sql
+-- Core source query with quality filters:
+WITH quality_job_skills AS (
+    SELECT
+        fjp.JOB_POSTING_KEY,
+        fjp.JOB_UID,
+        fjp.DATE_POSTED_KEY,
+        fjp.FIRST_POSTED_DATE,
+        fjp.JOB_FAMILY_KEY,
+        fjp.LOCATION_KEY,
+        fjp.SALARY_MIDPOINT_ANNUAL_USD,
+        fjp.WORK_TYPE,
+        fjp.IS_ACTIVE_POSTING,
+        fjp.SALARY_CONFIDENCE,
+        fjp.LLM_OVERALL_CONFIDENCE,
+
+        -- Skills from bridge table with confidence filtering
+        jsb.SKILL_ID,
+        jsb.SKILL_CATEGORY,
+        jsb.OVERALL_CONFIDENCE as skill_extraction_confidence,
+
+        -- Generate week keys for aggregation
+        TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+        DATE_TRUNC('week', fjp.FIRST_POSTED_DATE) as week_start_date,
+        DATE_TRUNC('week', fjp.FIRST_POSTED_DATE) + 6 as week_end_date
+
+    FROM ANALYTICS.FACT_JOB_POSTINGS fjp
+    INNER JOIN BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE jsb
+        ON fjp.JOB_UID = jsb.JOB_UID
+
+    WHERE fjp.IS_ACTIVE_POSTING = TRUE
+      AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
+      AND jsb.OVERALL_CONFIDENCE >= 0.7        -- High-confidence skill extractions only
+      AND jsb.NEEDS_REVIEW = FALSE
+      AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
+)
+```
+
+**Step 2: Weekly Skill Demand Aggregation**
+```sql
+-- Primary aggregation by skill, week, job family, location:
+skills_weekly_base AS (
+    SELECT
+        qjs.week_key,
+        qjs.week_start_date,
+        qjs.week_end_date,
+        ds.SKILL_KEY,
+        ds.SKILL_NAME,
+        ds.SKILL_CATEGORY,
+        qjs.JOB_FAMILY_KEY,
+        qjs.LOCATION_KEY,
+
+        -- Core demand metrics
+        COUNT(DISTINCT qjs.JOB_UID) as active_jobs_with_skill,
+        AVG(qjs.skill_extraction_confidence) as avg_skill_confidence,
+        COUNT(DISTINCT qjs.JOB_UID) as sample_size,
+
+        -- Salary analysis (using denormalized fields)
+        AVG(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 AND qjs.SALARY_MIDPOINT_ANNUAL_USD > 0
+                 THEN qjs.SALARY_MIDPOINT_ANNUAL_USD END) as avg_salary_midpoint_annual_usd,
+        COUNT(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 AND qjs.SALARY_MIDPOINT_ANNUAL_USD > 0
+                   THEN 1 END) as salary_sample_size,
+
+        -- Work arrangement analysis
+        COUNT(CASE WHEN qjs.WORK_TYPE = 'Remote' THEN 1 END) as remote_jobs_with_skill,
+
+        -- Data completeness tracking
+        COUNT(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 THEN 1 END)::FLOAT /
+        COUNT(DISTINCT qjs.JOB_UID) as data_completeness_score
+
+    FROM quality_job_skills qjs
+    INNER JOIN ANALYTICS.DIM_SKILLS ds ON qjs.SKILL_ID = ds.SKILL_ID
+
+    WHERE ds.SKILL_KEY IS NOT NULL
+
+    GROUP BY qjs.week_key, qjs.week_start_date, qjs.week_end_date,
+             ds.SKILL_KEY, ds.SKILL_NAME, ds.SKILL_CATEGORY,
+             qjs.JOB_FAMILY_KEY, qjs.LOCATION_KEY
+
+    HAVING COUNT(DISTINCT qjs.JOB_UID) >= 3  -- Minimum statistical validity
+)
+```
+
+**Step 3: Market Context & Baseline Calculations**
+```sql
+-- Calculate total market context and salary baselines:
+market_context AS (
+    SELECT
+        qjs.week_key,
+        qjs.JOB_FAMILY_KEY,
+        qjs.LOCATION_KEY,
+
+        -- Total market size for penetration rate calculation
+        COUNT(DISTINCT qjs.JOB_UID) as total_active_jobs,
+
+        -- Baseline salary (jobs WITHOUT specific skills) for premium calculation
+        AVG(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 AND qjs.SALARY_MIDPOINT_ANNUAL_USD > 0
+                 THEN qjs.SALARY_MIDPOINT_ANNUAL_USD END) as baseline_salary_midpoint_annual_usd
+
+    FROM quality_job_skills qjs
+    GROUP BY qjs.week_key, qjs.JOB_FAMILY_KEY, qjs.LOCATION_KEY
+)
+```
+
+**Step 4: Trend Analysis & Week-over-Week Calculations**
+```sql
+-- Add trend analysis with previous week comparison:
+skills_with_trends AS (
+    SELECT swb.*,
+           mc.total_active_jobs,
+           mc.baseline_salary_midpoint_annual_usd,
+
+           -- Penetration rate calculation
+           swb.active_jobs_with_skill::FLOAT / mc.total_active_jobs * 100 as skill_penetration_rate,
+
+           -- Salary premium calculations
+           (swb.avg_salary_midpoint_annual_usd - mc.baseline_salary_midpoint_annual_usd) as salary_premium_annual_usd,
+           CASE WHEN mc.baseline_salary_midpoint_annual_usd > 0
+                THEN ((swb.avg_salary_midpoint_annual_usd / mc.baseline_salary_midpoint_annual_usd) - 1) * 100
+                ELSE NULL END as salary_premium_percentage,
+
+           -- Remote work percentage
+           swb.remote_jobs_with_skill::FLOAT / swb.active_jobs_with_skill * 100 as remote_skill_percentage,
+
+           -- Week-over-week trend analysis
+           LAG(swb.active_jobs_with_skill, 1) OVER (
+               PARTITION BY swb.skill_key, swb.job_family_key, swb.location_key
+               ORDER BY swb.week_start_date
+           ) as prev_week_jobs,
+
+           -- 4-week moving average for trend smoothing
+           AVG(swb.active_jobs_with_skill) OVER (
+               PARTITION BY swb.skill_key, swb.job_family_key, swb.location_key
+               ORDER BY swb.week_start_date
+               ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
+           ) as four_week_moving_average
+
+    FROM skills_weekly_base swb
+    INNER JOIN market_context mc
+        ON swb.week_key = mc.week_key
+        AND swb.job_family_key = mc.job_family_key
+        AND swb.location_key = mc.location_key
+)
+```
+
+**Step 5: Ranking & Market Position Analysis**
+```sql
+-- Calculate skill rankings within job families and overall market:
+skills_with_rankings AS (
+    SELECT swt.*,
+           -- Week-over-week change calculations
+           (swt.active_jobs_with_skill - swt.prev_week_jobs) as week_over_week_change,
+           CASE WHEN swt.prev_week_jobs > 0
+                THEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100
+                ELSE NULL END as week_over_week_growth_rate,
+
+           -- Trend direction classification
+           CASE
+               WHEN swt.prev_week_jobs IS NULL THEN 'NEW'
+               WHEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100 > 25 THEN 'GROWING'
+               WHEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100 > 5 THEN 'STABLE'
+               WHEN ((swt.active_jobs_with_skill::FLOAT / swt.prev_week_jobs) - 1) * 100 > -10 THEN 'STABLE'
+               ELSE 'DECLINING'
+           END as trend_direction,
+
+           -- Skill rankings within job family
+           RANK() OVER (
+               PARTITION BY swt.week_key, swt.job_family_key
+               ORDER BY swt.active_jobs_with_skill DESC
+           ) as skill_rank_in_family,
+
+           -- Overall market ranking
+           RANK() OVER (
+               PARTITION BY swt.week_key
+               ORDER BY swt.active_jobs_with_skill DESC
+           ) as skill_rank_overall,
+
+           -- Market share within job family
+           swt.active_jobs_with_skill::FLOAT / SUM(swt.active_jobs_with_skill) OVER (
+               PARTITION BY swt.week_key, swt.job_family_key
+           ) * 100 as market_share_in_family
+
+    FROM skills_with_trends swt
+)
+```
+
+**Step 6: Final Aggregation & Key Generation**
+```sql
+-- Generate final table with surrogate keys:
+SELECT
+    -- Primary key generation
+    'SW_' || swr.week_key || '_' || swr.skill_key || '_' || swr.job_family_key || '_' || swr.location_key as skills_weekly_key,
+
+    -- Dimension keys
+    swr.week_key,
+    swr.skill_key,
+    swr.job_family_key,
+    swr.location_key,
+
+    -- Core demand metrics
+    swr.active_jobs_with_skill,
+    swr.total_active_jobs,
+    swr.skill_penetration_rate,
+
+    -- Enhanced salary analysis
+    swr.avg_salary_midpoint_annual_usd,
+    swr.baseline_salary_midpoint_annual_usd,
+    swr.salary_premium_annual_usd,
+    swr.salary_premium_percentage,
+    swr.salary_sample_size,
+
+    -- Trend analysis
+    swr.week_over_week_change,
+    swr.week_over_week_growth_rate,
+    swr.trend_direction,
+    swr.four_week_moving_average,
+
+    -- Market position
+    swr.skill_rank_in_family,
+    swr.skill_rank_overall,
+    swr.market_share_in_family,
+
+    -- Data quality metrics
+    swr.avg_skill_confidence,
+    swr.data_completeness_score,
+    swr.sample_size,
+
+    -- Work arrangement analysis
+    swr.remote_jobs_with_skill,
+    swr.remote_skill_percentage,
+
+    -- Audit fields
+    CURRENT_TIMESTAMP as created_timestamp,
+    CURRENT_DATE as processing_date,
+    swr.week_start_date,
+    swr.week_end_date
+
+FROM skills_with_rankings swr
+ORDER BY swr.week_start_date DESC, swr.skill_rank_overall ASC;
+```
+
+**Data Quality Validation & Business Rules**:
+
+```sql
+-- Post-processing validation checks:
+1. UNIQUENESS: Verify SKILLS_WEEKLY_KEY uniqueness
+2. COMPLETENESS: Ensure all active skills have weekly records
+3. PENETRATION RATES: Validate 0 <= skill_penetration_rate <= 100
+4. TREND LOGIC: Verify trend_direction matches growth_rate thresholds
+5. RANKING INTEGRITY: Ensure ranking consistency within partitions
+6. SALARY LOGIC: Validate salary premium calculations and outliers
+7. TEMPORAL CONSISTENCY: Ensure week keys align with actual week dates
+```
+
+**Performance Optimization Strategy**:
+
+- **Partitioning**: Monthly partitions by `WEEK_START_DATE` for 2-year retention
+- **Clustering**: `(WEEK_KEY, SKILL_KEY, JOB_FAMILY_KEY)` for analytical query patterns
+- **Incremental Processing**: Process only new/changed weeks to minimize processing time
+- **Pre-aggregation**: Calculate complex metrics once for dashboard performance
+- **Index Strategy**: Optimize for skill trend queries and ranking analysis
+
+**Expected Data Volume & Performance**:
+- **Weekly Records**: ~50,000-100,000 skill-week-family-location combinations
+- **Processing Time**: <15 minutes for full weekly refresh
+- **Query Performance**: <2 seconds for skill trend analysis
+- **Data Retention**: 104 weeks (2 years) for comprehensive trend analysis
+
+**Business Intelligence Capabilities**:
+- **Technology Trend Detection**: Identify emerging and declining skills weekly
+- **Salary Premium Analysis**: Quantify skill value in the job market
+- **Geographic Skill Distribution**: Track skills demand by location
+- **Remote Work Trends**: Analyze remote-friendly skill categories
+- **Market Share Intelligence**: Track skill adoption within job families
+- **Competitive Skills Analysis**: Compare skill demand across industries
 
 #### 3.2 `analytics_fact_company_hiring_weekly`
 **Purpose**: Create weekly company hiring intelligence
 **Dependencies**: `analytics_fact_job_postings`
 **Output**: Company hiring patterns and velocity metrics
 
-### Phase 4: Market Intelligence Tables Implementation
+### Phase 4: Market Intelligence Tables
+**Objective**: Create business-ready metric tables for fast reporting
 
-#### 4.1 `analytics_market_weekly_summary`
-**Purpose**: Pre-aggregated executive metrics
-**Dependencies**: `analytics_fact_job_postings`
-**Output**: Weekly market overview for dashboards
+**Components**:
+- Build `MARKET_WEEKLY_SUMMARY` for executive dashboards
+- Create `SKILLS_TREND_ANALYSIS` for technology intelligence
+- Implement `COMPANY_HIRING_INTELLIGENCE` for company analysis
+- Develop automated refresh and calculation processes
 
-#### 4.2 `analytics_skills_trend_analysis`
-**Purpose**: Skills intelligence with trend analysis
-**Dependencies**: `analytics_fact_skills_demand_weekly`
-**Output**: Skills market intelligence for reporting
+**Key Deliverables**:
+- Pre-calculated metric tables with sub-second query response
+- Weekly automated metric generation
+- Business rule validation and anomaly detection
 
-#### 4.3 `analytics_company_hiring_intelligence`
-**Purpose**: Company-specific hiring analytics
-**Dependencies**: `analytics_fact_company_hiring_weekly`
-**Output**: Company intelligence for competitive analysis
+### Phase 5: Business Views & Analytics Interface
+**Objective**: Create user-friendly views and analytics interfaces
 
-### Phase 5: Business Views Implementation
+**Components**:
+- Develop executive dashboard views
+- Create specialized analytics views for each business domain
+- Build data access layer for BI tools
+- Implement row-level security and access controls
 
-#### 5.1 `analytics_view_weekly_market_overview`
-**Purpose**: Executive dashboard view
-**Dependencies**: Market intelligence tables
-**Output**: Business-ready view for reporting
+**Key Deliverables**:
+- Production-ready business views
+- BI tool connectivity and optimization
+- User access management and security
 
-#### 5.2 `analytics_view_salary_intelligence`
-**Purpose**: Compensation analysis view
-**Dependencies**: `analytics_fact_job_postings`
-**Output**: Salary benchmarking analytics
+### Phase 6: Advanced Analytics & Intelligence
+**Objective**: Implement predictive analytics and market intelligence
 
-#### 5.3 `analytics_view_skills_market_intelligence`
-**Purpose**: Technology trends view
-**Dependencies**: Skills trend tables
-**Output**: Skills demand analytics
+**Components**:
+- Build trend analysis and forecasting capabilities
+- Create market anomaly detection
+- Implement comparative analytics and benchmarking
+- Develop alerting and notification systems
+
+**Key Deliverables**:
+- Advanced analytics capabilities
+- Automated market intelligence reporting
+- Predictive insights and trend forecasting
 
 ### Implementation Phases Timeline
 
-#### Phase 1: Foundation
+#### Phase 1: Foundation ✅ **COMPLETE**
+**Status**: All dimension tables implemented and operational
 **Deliverables**:
-- All 8 dimension tables created and populated (including DIM_EXPERIENCE and DIM_KEYWORDS)
-- Surrogate key generation logic
-- Data quality validation framework
-- Performance optimization (clustering/partitioning)
+- ✅ All 9 dimension tables created and populated:
+  - `DIM_DATE` - Date dimension with business calendar
+  - `DIM_COMPANY` - Company dimension with SCD Type 2
+  - `DIM_LOCATION` - Location dimension with geographic hierarchy
+  - `DIM_JOB_FAMILY` - Job classification with role taxonomy
+  - `DIM_PLATFORM` - ATS platform characteristics
+  - `DIM_SKILLS` - Skills taxonomy from normalized data
+  - `DIM_SALARY` - Normalized salary ranges and market intelligence
+  - `DIM_EXPERIENCE` - Experience levels and requirements
+  - `DIM_KEYWORDS` - Keywords classification with hierarchy
+- ✅ Surrogate key generation logic implemented
+- ✅ Data quality validation framework established
+- ✅ Performance optimization (clustering) implemented
 
-#### Phase 2: Core Facts
+#### Phase 2: Core Facts ✅ **COMPLETE**
+**Status**: Primary fact table implemented and operational
 **Deliverables**:
-- `FACT_JOB_POSTINGS` table operational
-- Incremental loading process
-- Data lineage and audit capabilities
-- Query performance benchmarks
+- ✅ `FACT_JOB_POSTINGS` table operational with comprehensive measures
+- ✅ Complete dimensional model integration with all 9 dimensions
+- ✅ Data quality filtering and business rules implementation
+- ✅ LLM enrichment data integration with confidence scoring
+- ✅ Salary, skills, experience, and location bridge table integration
+- ✅ Performance optimization with clustering strategy
 
-#### Phase 3: Aggregates
+#### Phase 3: Aggregates ✅ **PARTIALLY COMPLETE**
+**Status**: Skills demand weekly aggregates implemented
 **Deliverables**:
-- Weekly skills demand aggregates
-- Company hiring intelligence aggregates
-- Automated weekly refresh processes
-- Cross-table consistency validation
+- ✅ `FACT_SKILLS_DEMAND_WEEKLY` - Weekly skills demand with trend analysis
+  - Skills penetration rates and market demand metrics
+  - Salary premium analysis and skill value quantification
+  - Week-over-week growth tracking and trend classification
+  - Market position rankings and competitive analysis
+  - Remote work arrangement patterns by skill
+  - Comprehensive data quality and confidence metrics
+- ⏳ `FACT_COMPANY_HIRING_WEEKLY` - Company hiring intelligence (pending)
+- ⏳ Automated weekly refresh processes (pending)
+- ⏳ Cross-table consistency validation (pending)
 
 #### Phase 4: Market Intelligence
 **Deliverables**:
