@@ -941,6 +941,142 @@ ORDER BY DEMAND_WEEK DESC, JOBS_REQUIRING_SKILL DESC;
 - Weekly automated metric generation
 - Business rule validation and anomaly detection
 
+#### 4.1 `analytics_market_weekly_summary`
+**Purpose**: Create weekly market summary table for executive dashboard performance
+**Dependencies**: `analytics_fact_job_postings`
+**Output**: Pre-aggregated weekly market metrics with sub-second query response
+
+```python
+@asset(
+    deps=["analytics_fact_job_postings"],
+    description="Create weekly market summary table for executive dashboard performance",
+    group_name="3d_analytics_market_intelligence",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_market_weekly_summary(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build weekly market summary table from FACT_JOB_POSTINGS for executive dashboard performance.
+
+    This asset creates pre-aggregated weekly market metrics to ensure sub-second executive dashboard
+    performance while minimizing storage overhead (~52 records per year).
+
+    Processing Logic:
+    1. Aggregate job postings by week (Sunday-Saturday) from FACT_JOB_POSTINGS
+    2. Calculate core market metrics (job counts, velocity, growth rates)
+    3. Compute salary intelligence using denormalized annual USD fields
+    4. Analyze work arrangement trends from WORK_TYPE field
+    5. Generate data quality metrics and sample size indicators
+    6. Implement incremental processing for new weeks only
+
+    Data Quality Rules:
+    - Include only active job postings (IS_ACTIVE_POSTING = TRUE)
+    - Use salary data only where SALARY_CONFIDENCE >= 0.6
+    - Apply LLM confidence filtering (LLM_OVERALL_CONFIDENCE >= 0.5)
+    - Require minimum 100 jobs per week for statistical validity
+    - Validate week-over-week calculations for outlier detection
+
+    Performance Features:
+    - Weekly grain provides optimal balance of detail vs. performance
+    - Pre-calculated metrics eliminate dashboard query complexity
+    - Partitioned by WEEK_ENDING_DATE for efficient time-based queries
+    - Clustered by WEEK_KEY for analytical access patterns
+
+    Business Intelligence:
+    - Executive KPI tracking: hiring velocity, market temperature, growth trends
+    - Salary market intelligence: median/average compensation trends
+    - Work arrangement insights: remote/hybrid/onsite adoption patterns
+    - Data quality monitoring: completeness and confidence metrics
+
+    Returns:
+        Dict containing processing statistics and market summary metrics
+    """
+```
+
+**Implementation Steps**:
+
+**Step 1: Field Validation & Upstream Alignment**
+✅ **All Required Fields Available in FACT_JOB_POSTINGS**:
+- `FIRST_POSTED_DATE` → Week calculations ✅
+- `IS_ACTIVE_POSTING` → TOTAL_ACTIVE_JOBS ✅
+- `SALARY_MIN_ANNUAL_USD`, `SALARY_MAX_ANNUAL_USD` → Salary intelligence ✅
+- `WORK_TYPE` → Work arrangement percentages ✅
+- `DATA_QUALITY_SCORE` → Quality metrics ✅
+- `SALARY_CONFIDENCE` → Salary quality filtering ✅
+- `LLM_OVERALL_CONFIDENCE` → LLM quality filtering ✅
+
+**Step 2: Weekly Aggregation Strategy**
+```sql
+-- Core aggregation approach:
+WITH weekly_job_data AS (
+    SELECT
+        DATE_TRUNC('week', FIRST_POSTED_DATE) as week_start_date,
+        DATE_TRUNC('week', FIRST_POSTED_DATE) + 6 as week_ending_date,
+        TO_CHAR(FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+
+        -- Job counting logic
+        COUNT(*) as total_jobs_posted,
+        COUNT(CASE WHEN IS_ACTIVE_POSTING THEN 1 END) as total_active_jobs,
+        COUNT(CASE WHEN DATE_TRUNC('week', FIRST_POSTED_DATE) = week_start_date THEN 1 END) as new_jobs_posted,
+
+        -- Salary calculations (using denormalized fields for performance)
+        MEDIAN(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                    THEN SALARY_MIDPOINT_ANNUAL_USD END) as median_salary_all_roles,
+        AVG(CASE WHEN SALARY_CONFIDENCE >= 0.6 AND SALARY_MIDPOINT_ANNUAL_USD > 0
+                 THEN SALARY_MIDPOINT_ANNUAL_USD END) as avg_salary_all_roles,
+
+        -- Work arrangement percentages
+        COUNT(CASE WHEN WORK_TYPE = 'Remote' THEN 1 END)::FLOAT / COUNT(*) * 100 as remote_work_percentage,
+        COUNT(CASE WHEN WORK_TYPE = 'Hybrid' THEN 1 END)::FLOAT / COUNT(*) * 100 as hybrid_work_percentage,
+        COUNT(CASE WHEN WORK_TYPE = 'On-site' THEN 1 END)::FLOAT / COUNT(*) * 100 as onsite_work_percentage,
+
+        -- Quality metrics
+        COUNT(*) as sample_size,
+        AVG(DATA_QUALITY_SCORE) as data_quality_score
+
+    FROM ANALYTICS.FACT_JOB_POSTINGS
+    WHERE IS_ACTIVE_POSTING = TRUE
+      AND LLM_OVERALL_CONFIDENCE >= 0.5
+      AND FIRST_POSTED_DATE >= CURRENT_DATE - 365  -- 1 year retention
+    GROUP BY week_start_date, week_ending_date, week_key
+    HAVING COUNT(*) >= 100  -- Minimum statistical validity
+)
+```
+
+**Step 3: Growth Calculations**
+```sql
+-- Add week-over-week growth metrics:
+weekly_with_trends AS (
+    SELECT wjd.*,
+           LAG(wjd.total_jobs_posted, 1) OVER (ORDER BY wjd.week_start_date) as prev_week_jobs,
+           ((wjd.total_jobs_posted::FLOAT / LAG(wjd.total_jobs_posted, 1) OVER (ORDER BY wjd.week_start_date)) - 1) * 100 as week_over_week_growth_rate,
+           wjd.total_jobs_posted::FLOAT / 7 as posting_velocity_daily
+    FROM weekly_job_data wjd
+)
+```
+
+**Step 4: Business Rules & Data Quality**
+- **Minimum Sample Size**: 100 jobs per week for executive reporting validity
+- **Salary Quality**: Include salary data only with confidence >= 0.6
+- **LLM Quality**: Apply overall confidence filter >= 0.5
+- **Date Range**: 1 year retention for trending analysis
+- **Active Jobs**: Include only active postings for current market state
+
+**Step 5: Incremental Processing Strategy**
+```sql
+-- Process only new weeks to optimize performance:
+WHERE NOT EXISTS (
+    SELECT 1 FROM ANALYTICS.MARKET_WEEKLY_SUMMARY existing
+    WHERE existing.WEEK_KEY = calculated.week_key
+)
+-- OR update existing weeks if data has changed (rare)
+```
+
+**Expected Data Volume & Performance**:
+- **Weekly Records**: ~52 per year (minimal storage overhead)
+- **Processing Time**: <2 minutes for weekly refresh
+- **Query Performance**: <500ms for executive dashboard queries
+- **Data Retention**: 2 years for trend analysis
+
 ### Phase 5: Business Views & Analytics Interface
 **Objective**: Create user-friendly views and analytics interfaces
 
@@ -2910,12 +3046,19 @@ ORDER BY cwt.week_start_date DESC, cwt.jobs_posted_count DESC;
 - ⏳ Automated weekly refresh processes (pending)
 - ⏳ Cross-table consistency validation (pending)
 
-#### Phase 4: Market Intelligence
+#### Phase 4: Market Intelligence ✅ **IN PROGRESS**
+**Status**: Market weekly summary table implemented and operational
 **Deliverables**:
-- Pre-calculated market metrics
-- Executive dashboard data
-- Automated metric generation
-- Business rule validation
+- ✅ `MARKET_WEEKLY_SUMMARY` - Pre-calculated market metrics for executive dashboards
+  - Weekly job posting velocity and market temperature indicators
+  - Salary intelligence with median/average compensation trends
+  - Work arrangement patterns (remote/hybrid/onsite percentages)
+  - Executive KPI tracking with week-over-week growth rates
+  - Data quality monitoring and completeness metrics
+- ⏳ `SKILLS_TREND_ANALYSIS` - Technology intelligence (pending)
+- ⏳ `COMPANY_HIRING_INTELLIGENCE` - Company analysis (pending)
+- ⏳ Automated metric generation (pending)
+- ⏳ Business rule validation (pending)
 
 #### Phase 5: Business Views
 **Deliverables**:
