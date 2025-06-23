@@ -100,7 +100,8 @@ from dagster_betterjobs.assets.analytics_dimensions import (
 from dagster_betterjobs.assets.analytics_facts import (
     analytics_fact_job_postings,
     analytics_fact_skills_demand_weekly,
-    analytics_fact_company_hiring_weekly
+    analytics_fact_company_hiring_weekly,
+    analytics_market_weekly_summary
 )
 
 # Infrastructure Setup Assets
@@ -188,6 +189,7 @@ __all__ = [
     "analytics_fact_job_postings",
     "analytics_fact_skills_demand_weekly",
     "analytics_fact_company_hiring_weekly",
+    "analytics_market_weekly_summary",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",
