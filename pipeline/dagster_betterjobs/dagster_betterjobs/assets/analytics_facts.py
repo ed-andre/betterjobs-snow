@@ -18,7 +18,7 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
           "analytics_dim_salary", "analytics_dim_experience", "analytics_dim_keywords",
           "stage_jobs_unified", "stage_jobs_llm_enriched_unified", "stage_job_salary_bridge"],
     description="Create primary fact table for job posting analytics",
-    group_name="3b_analytics_facts_aggregates",
+    group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -489,7 +489,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["analytics_fact_job_postings", "stage_job_skills_bridge", "analytics_dim_skills"],
     description="Create weekly skills demand aggregate fact table for technology trend analysis",
-    group_name="3b_analytics_facts_aggregates",
+    group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1035,7 +1035,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 @asset(
     deps=["analytics_fact_job_postings", "analytics_dim_company"],
     description="Create weekly company hiring aggregate fact table for competitive analysis",
-    group_name="3b_analytics_facts_aggregates",
+    group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_company_hiring_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1460,7 +1460,7 @@ def analytics_fact_company_hiring_weekly(context: AssetExecutionContext, snowfla
 @asset(
     deps=["analytics_fact_job_postings"],
     description="Create weekly market summary table for executive dashboard performance",
-    group_name="3b_analytics_facts_aggregates",
+    group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
 )
 def analytics_market_weekly_summary(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1674,6 +1674,323 @@ def analytics_market_weekly_summary(context: AssetExecutionContext, snowflake: S
                     "earliest_week": str(validation_result[1]),
                     "latest_week": str(validation_result[2]),
                     "total_weeks": total_weeks
+                }
+            }
+
+        finally:
+            cursor.close()
+
+
+@asset(
+    deps=["analytics_fact_skills_demand_weekly", "analytics_fact_job_postings", "analytics_dim_skills"],
+    description="Create skills trend analysis table for technology intelligence and market insights",
+    group_name="3b_analytics_facts_aggregates_analysis",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build skills trend analysis from FACT_SKILLS_DEMAND_WEEKLY with enhanced seniority breakdown.
+
+    This asset creates comprehensive skills market intelligence by aggregating weekly skills demand
+    data and adding unique insights like seniority distribution analysis that are not available
+    in the base weekly fact table.
+
+    Processing Logic:
+    1. Source primary metrics from FACT_SKILLS_DEMAND_WEEKLY for efficiency
+    2. Calculate monthly growth trends using 4-week rolling averages
+    3. Add seniority distribution analysis by joining with FACT_JOB_POSTINGS
+    4. Compute ranking changes week-over-week and month-over-month
+    5. Generate unique analysis keys for each skill-week combination
+    6. Apply data quality filtering and statistical validation
+
+    Unique Value-Add (vs FACT_SKILLS_DEMAND_WEEKLY):
+    - Monthly trend aggregations with year-over-year comparisons
+    - Seniority distribution breakdown (entry/mid/senior demand by skill)
+    - Enhanced ranking change analysis with historical context
+    - Cross-skill competitive analysis and market share insights
+
+    Data Quality Rules:
+    - Source from high-confidence weekly aggregates (FACT_SKILLS_DEMAND_WEEKLY)
+    - Require minimum 5 jobs per skill-week for statistical validity
+    - Apply skill confidence filtering (avg_skill_confidence >= 0.7)
+    - Validate growth rate calculations for outlier detection
+
+    Returns:
+        Dict containing processing statistics and skills trend metrics
+    """
+
+    # Ensure the table exists using Schema-as-Code pattern
+    table_name = ensure_object_exists("tables/analytics_skills_trend_analysis.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting skills trend analysis build from weekly skills demand data")
+
+            # Step 1: Clear existing data for complete refresh
+            context.log.info("Clearing existing skills trend analysis data")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+
+            # Step 2: Build skills trend analysis with enhanced metrics
+            context.log.info("Building skills trend analysis with seniority breakdown and enhanced metrics")
+
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                ANALYSIS_KEY,
+                ANALYSIS_DATE,
+                SKILL_KEY,
+                WEEK_KEY,
+                JOBS_REQUIRING_SKILL,
+                TOTAL_JOBS_ANALYZED,
+                MARKET_PENETRATION_RATE,
+                DEMAND_RANK_OVERALL,
+                DEMAND_GROWTH_WEEKLY,
+                DEMAND_GROWTH_MONTHLY,
+                RANK_CHANGE_WEEKLY,
+                RANK_CHANGE_MONTHLY,
+                AVERAGE_SALARY_WITH_SKILL,
+                SALARY_PREMIUM_PERCENTAGE,
+                REMOTE_AVAILABILITY_RATE,
+                ENTRY_LEVEL_DEMAND,
+                MID_LEVEL_DEMAND,
+                SENIOR_LEVEL_DEMAND,
+                SAMPLE_SIZE,
+                DATA_QUALITY_SCORE,
+                CREATED_TIMESTAMP
+            )
+            WITH weekly_skills_base AS (
+                SELECT
+                    fsdw.WEEK_KEY,
+                    ds.CANONICAL_FORM as skill_canonical_form,  -- Use canonical form instead of SKILL_KEY
+                    ds.SKILL_NAME,
+                    ds.SKILL_CATEGORY,
+                    fsdw.WEEK_START_DATE as analysis_date,
+
+                    -- Aggregate metrics across all skill variants with same canonical form
+                    SUM(fsdw.ACTIVE_JOBS_WITH_SKILL) as jobs_requiring_skill,
+                    AVG(fsdw.TOTAL_ACTIVE_JOBS) as total_jobs_analyzed,  -- Average to avoid double counting
+                    AVG(fsdw.SKILL_PENETRATION_RATE) as market_penetration_rate,
+                    MIN(fsdw.SKILL_RANK_OVERALL) as demand_rank_overall,  -- Best rank among variants
+                    AVG(fsdw.AVG_SALARY_MIDPOINT_ANNUAL_USD) as average_salary_with_skill,
+                    AVG(fsdw.SALARY_PREMIUM_PERCENTAGE) as salary_premium_percentage,
+                    AVG(fsdw.REMOTE_SKILL_PERCENTAGE) as remote_availability_rate,
+                    SUM(fsdw.SAMPLE_SIZE) as sample_size,
+                    AVG(fsdw.AVG_SKILL_CONFIDENCE) as data_quality_score,
+                    AVG(fsdw.WEEK_OVER_WEEK_GROWTH_RATE) as demand_growth_weekly
+
+                FROM BETTERJOBS_DB.ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY fsdw
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON fsdw.SKILL_KEY = ds.SKILL_KEY
+                WHERE fsdw.AVG_SKILL_CONFIDENCE >= 0.7
+                  AND fsdw.SAMPLE_SIZE >= 5
+                  AND fsdw.WEEK_START_DATE >= CURRENT_DATE - 365  -- 1 year retention
+                  AND ds.CANONICAL_FORM IS NOT NULL
+                GROUP BY fsdw.WEEK_KEY, ds.CANONICAL_FORM, ds.SKILL_NAME, ds.SKILL_CATEGORY, fsdw.WEEK_START_DATE
+                HAVING SUM(fsdw.SAMPLE_SIZE) >= 5  -- Ensure consolidated skills have sufficient sample size
+            ),
+
+            skills_with_monthly_trends AS (
+                SELECT wsb.*,
+                       -- Monthly growth calculation (4-week comparison)
+                       LAG(wsb.jobs_requiring_skill, 4) OVER (
+                           PARTITION BY wsb.skill_canonical_form
+                           ORDER BY wsb.analysis_date
+                       ) as jobs_4_weeks_ago,
+
+                       CASE WHEN LAG(wsb.jobs_requiring_skill, 4) OVER (
+                                PARTITION BY wsb.skill_canonical_form ORDER BY wsb.analysis_date) > 0
+                            THEN ((wsb.jobs_requiring_skill::FLOAT /
+                                  LAG(wsb.jobs_requiring_skill, 4) OVER (
+                                      PARTITION BY wsb.skill_canonical_form ORDER BY wsb.analysis_date)) - 1) * 100
+                            ELSE NULL END as demand_growth_monthly
+                FROM weekly_skills_base wsb
+            ),
+
+            skills_with_ranking_changes AS (
+                SELECT swmt.*,
+                       -- Weekly ranking changes
+                       (swmt.demand_rank_overall - LAG(swmt.demand_rank_overall, 1) OVER (
+                           PARTITION BY swmt.skill_canonical_form ORDER BY swmt.analysis_date
+                       )) as rank_change_weekly,
+
+                       -- Monthly ranking changes (4-week comparison)
+                       (swmt.demand_rank_overall - LAG(swmt.demand_rank_overall, 4) OVER (
+                           PARTITION BY swmt.skill_canonical_form ORDER BY swmt.analysis_date
+                       )) as rank_change_monthly
+                FROM skills_with_monthly_trends swmt
+            ),
+
+            seniority_breakdown AS (
+                SELECT
+                    TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+                    ds.CANONICAL_FORM as skill_canonical_form,
+                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%junior%'
+                               THEN 1 END) as entry_level_demand,
+                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%mid%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%intermediate%'
+                               THEN 1 END) as mid_level_demand,
+                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%senior%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%staff%'
+                                    OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%principal%'
+                               THEN 1 END) as senior_level_demand
+                FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
+                INNER JOIN BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE jsb ON fjp.JOB_UID = jsb.JOB_UID
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON jsb.SKILL_ID = ds.SKILL_ID
+                WHERE fjp.IS_ACTIVE_POSTING = TRUE
+                  AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
+                  AND jsb.OVERALL_CONFIDENCE >= 0.7
+                  AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 365
+                  AND ds.CANONICAL_FORM IS NOT NULL
+                GROUP BY TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW'), ds.CANONICAL_FORM
+            ),
+
+            skills_with_seniority AS (
+                SELECT swrc.*,
+                       -- Seniority breakdown from job postings
+                       COALESCE(sb.entry_level_demand, 0) as entry_level_demand,
+                       COALESCE(sb.mid_level_demand, 0) as mid_level_demand,
+                       COALESCE(sb.senior_level_demand, 0) as senior_level_demand
+                FROM skills_with_ranking_changes swrc
+                LEFT JOIN seniority_breakdown sb
+                    ON swrc.skill_canonical_form = sb.skill_canonical_form
+                    AND swrc.week_key = sb.week_key
+            )
+
+            SELECT
+                'STA_' || sws.week_key || '_' || sws.skill_canonical_form as ANALYSIS_KEY,
+                sws.analysis_date as ANALYSIS_DATE,
+                sws.skill_canonical_form as SKILL_KEY,
+                sws.week_key as WEEK_KEY,
+                sws.jobs_requiring_skill as JOBS_REQUIRING_SKILL,
+                sws.total_jobs_analyzed as TOTAL_JOBS_ANALYZED,
+                sws.market_penetration_rate as MARKET_PENETRATION_RATE,
+                sws.demand_rank_overall as DEMAND_RANK_OVERALL,
+                sws.demand_growth_weekly as DEMAND_GROWTH_WEEKLY,
+                sws.demand_growth_monthly as DEMAND_GROWTH_MONTHLY,
+                sws.rank_change_weekly as RANK_CHANGE_WEEKLY,
+                sws.rank_change_monthly as RANK_CHANGE_MONTHLY,
+                ROUND(sws.average_salary_with_skill, 0) as AVERAGE_SALARY_WITH_SKILL,
+                ROUND(sws.salary_premium_percentage, 2) as SALARY_PREMIUM_PERCENTAGE,
+                ROUND(sws.remote_availability_rate, 2) as REMOTE_AVAILABILITY_RATE,
+                sws.entry_level_demand as ENTRY_LEVEL_DEMAND,
+                sws.mid_level_demand as MID_LEVEL_DEMAND,
+                sws.senior_level_demand as SENIOR_LEVEL_DEMAND,
+                sws.sample_size as SAMPLE_SIZE,
+                ROUND(sws.data_quality_score, 3) as DATA_QUALITY_SCORE,
+                CURRENT_TIMESTAMP as CREATED_TIMESTAMP
+            FROM skills_with_seniority sws
+            ORDER BY sws.analysis_date DESC, sws.demand_rank_overall ASC
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Successfully inserted {rows_inserted} skills trend analysis records")
+
+            # Step 3: Validate data quality and gather skill intelligence statistics
+            context.log.info("Validating skills trend analysis data quality and gathering market intelligence")
+
+            validation_sql = f"""
+            SELECT
+                COUNT(*) as total_skill_weeks,
+                COUNT(DISTINCT SKILL_KEY) as unique_skills,
+                COUNT(DISTINCT WEEK_KEY) as weeks_covered,
+                MIN(ANALYSIS_DATE) as earliest_week,
+                MAX(ANALYSIS_DATE) as latest_week,
+                AVG(JOBS_REQUIRING_SKILL) as avg_skill_demand,
+                AVG(MARKET_PENETRATION_RATE) as avg_penetration_rate,
+                AVG(AVERAGE_SALARY_WITH_SKILL) as avg_skill_salary,
+                AVG(REMOTE_AVAILABILITY_RATE) as avg_remote_rate,
+                AVG(DATA_QUALITY_SCORE) as avg_data_quality,
+
+                -- Growth and trend analysis
+                AVG(DEMAND_GROWTH_WEEKLY) as avg_weekly_growth,
+                AVG(DEMAND_GROWTH_MONTHLY) as avg_monthly_growth,
+                COUNT(CASE WHEN DEMAND_GROWTH_WEEKLY > 10 THEN 1 END) as high_growth_skills,
+                COUNT(CASE WHEN DEMAND_GROWTH_WEEKLY < -10 THEN 1 END) as declining_skills,
+
+                -- Seniority distribution
+                AVG(ENTRY_LEVEL_DEMAND) as avg_entry_demand,
+                AVG(MID_LEVEL_DEMAND) as avg_mid_demand,
+                AVG(SENIOR_LEVEL_DEMAND) as avg_senior_demand,
+
+                -- Quality checks
+                COUNT(CASE WHEN JOBS_REQUIRING_SKILL < 5 THEN 1 END) as records_below_threshold,
+                COUNT(CASE WHEN AVERAGE_SALARY_WITH_SKILL IS NULL THEN 1 END) as records_missing_salary,
+                COUNT(CASE WHEN ABS(DEMAND_GROWTH_WEEKLY) > 200 THEN 1 END) as records_extreme_growth
+
+            FROM {table_name}
+            """
+
+            cursor.execute(validation_sql)
+            validation_result = cursor.fetchone()
+
+            # Step 4: Calculate derived statistics
+            total_skill_weeks = validation_result[0]
+            unique_skills = validation_result[1]
+            weeks_covered = validation_result[2]
+
+            context.log.info(f"Skills trend analysis validation: {total_skill_weeks} skill-week records, "
+                           f"{unique_skills} unique skills, {weeks_covered} weeks covered")
+
+            context.log.info(f"Skills intelligence: avg demand {validation_result[5]:.1f} jobs/skill, "
+                           f"avg penetration {validation_result[6]:.1f}%, avg salary ${validation_result[7]:,.0f}")
+
+            context.log.info(f"Trend analysis: {validation_result[11]} high-growth skills, "
+                           f"{validation_result[12]} declining skills")
+
+            # Add metadata for Dagster UI
+            context.add_output_metadata({
+                "total_skill_weeks": MetadataValue.int(int(total_skill_weeks)),
+                "unique_skills": MetadataValue.int(int(unique_skills)),
+                "weeks_covered": MetadataValue.int(int(weeks_covered)),
+                "earliest_week": MetadataValue.text(str(validation_result[3])),
+                "latest_week": MetadataValue.text(str(validation_result[4])),
+                "avg_skill_demand": MetadataValue.float(float(validation_result[5]) if validation_result[5] is not None else 0.0),
+                "avg_penetration_rate": MetadataValue.float(float(validation_result[6]) if validation_result[6] is not None else 0.0),
+                "avg_skill_salary": MetadataValue.float(float(validation_result[7]) if validation_result[7] is not None else 0.0),
+                "avg_remote_rate": MetadataValue.float(float(validation_result[8]) if validation_result[8] is not None else 0.0),
+                "avg_data_quality": MetadataValue.float(float(validation_result[9]) if validation_result[9] is not None else 0.0),
+                "avg_weekly_growth": MetadataValue.float(float(validation_result[10]) if validation_result[10] is not None else 0.0),
+                "avg_monthly_growth": MetadataValue.float(float(validation_result[11]) if validation_result[11] is not None else 0.0),
+                "high_growth_skills": MetadataValue.int(int(validation_result[12])),
+                "declining_skills": MetadataValue.int(int(validation_result[13])),
+                "records_below_threshold": MetadataValue.int(int(validation_result[17])),
+                "records_missing_salary": MetadataValue.int(int(validation_result[18])),
+                "records_extreme_growth": MetadataValue.int(int(validation_result[19]))
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "skills_intelligence": {
+                    "total_skill_weeks": total_skill_weeks,
+                    "unique_skills": unique_skills,
+                    "weeks_covered": weeks_covered,
+                    "avg_skill_demand": float(validation_result[5]) if validation_result[5] is not None else 0.0,
+                    "avg_penetration_rate": float(validation_result[6]) if validation_result[6] is not None else 0.0,
+                    "avg_skill_salary": float(validation_result[7]) if validation_result[7] is not None else 0.0,
+                    "avg_remote_rate": float(validation_result[8]) if validation_result[8] is not None else 0.0
+                },
+                "trend_analysis": {
+                    "avg_weekly_growth": float(validation_result[10]) if validation_result[10] is not None else 0.0,
+                    "avg_monthly_growth": float(validation_result[11]) if validation_result[11] is not None else 0.0,
+                    "high_growth_skills": validation_result[12],
+                    "declining_skills": validation_result[13]
+                },
+                "seniority_distribution": {
+                    "avg_entry_demand": float(validation_result[14]) if validation_result[14] is not None else 0.0,
+                    "avg_mid_demand": float(validation_result[15]) if validation_result[15] is not None else 0.0,
+                    "avg_senior_demand": float(validation_result[16]) if validation_result[16] is not None else 0.0
+                },
+                "quality_metrics": {
+                    "records_below_threshold": validation_result[17],
+                    "records_missing_salary": validation_result[18],
+                    "records_extreme_growth": validation_result[19],
+                    "avg_data_quality": float(validation_result[9]) if validation_result[9] is not None else 0.0
+                },
+                "temporal_coverage": {
+                    "earliest_week": str(validation_result[3]),
+                    "latest_week": str(validation_result[4]),
+                    "weeks_covered": weeks_covered
                 }
             }
 

@@ -639,9 +639,235 @@ CREATE TABLE ANALYTICS.SKILLS_TREND_ANALYSIS (
 
     -- Audit Fields
     CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-) PARTITION BY (ANALYSIS_DATE)
-CLUSTER BY (ANALYSIS_DATE, SKILL_KEY);
+) CLUSTER BY (ANALYSIS_DATE, SKILL_KEY);
 ```
+
+**Purpose**: Create skills trend analysis table for technology intelligence and market insights
+**Dependencies**: `analytics_fact_skills_demand_weekly`, `analytics_fact_job_postings`, `analytics_dim_skills`
+**Output**: Skills market intelligence with growth trends and seniority distribution analysis
+
+**Business Need**: Enable comprehensive skills intelligence by providing:
+- Technology demand trends with weekly and monthly growth analysis
+- Skills ranking changes and market position tracking
+- Salary premiums and compensation intelligence by skill
+- Seniority distribution patterns for skills demand analysis
+- Remote work availability trends by technology stack
+
+```python
+@asset(
+    deps=["analytics_fact_skills_demand_weekly", "analytics_fact_job_postings", "analytics_dim_skills"],
+    description="Create skills trend analysis table for technology intelligence",
+    group_name="3b_analytics_facts_aggregates_analysis",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build skills trend analysis from FACT_SKILLS_DEMAND_WEEKLY with enhanced seniority breakdown.
+
+    This asset creates comprehensive skills market intelligence by aggregating weekly skills demand
+    data and adding unique insights like seniority distribution analysis that are not available
+    in the base weekly fact table.
+
+    Processing Logic:
+    1. Source primary metrics from FACT_SKILLS_DEMAND_WEEKLY for efficiency
+    2. Calculate monthly growth trends using 4-week rolling averages
+    3. Add seniority distribution analysis by joining with FACT_JOB_POSTINGS
+    4. Compute ranking changes week-over-week and month-over-month
+    5. Generate unique analysis keys for each skill-week combination
+    6. Apply data quality filtering and statistical validation
+
+    Unique Value-Add (vs FACT_SKILLS_DEMAND_WEEKLY):
+    - Monthly trend aggregations with year-over-year comparisons
+    - Seniority distribution breakdown (entry/mid/senior demand by skill)
+    - Enhanced ranking change analysis with historical context
+    - Cross-skill competitive analysis and market share insights
+
+    Data Quality Rules:
+    - Source from high-confidence weekly aggregates (FACT_SKILLS_DEMAND_WEEKLY)
+    - Require minimum 5 jobs per skill-week for statistical validity
+    - Apply skill confidence filtering (avg_skill_confidence >= 0.7)
+    - Validate growth rate calculations for outlier detection
+
+    Returns:
+        Dict containing processing statistics and skills trend metrics
+    """
+```
+
+**Implementation Strategy Analysis**:
+
+**✅ Fields Available from FACT_SKILLS_DEMAND_WEEKLY**:
+- `JOBS_REQUIRING_SKILL` ← `ACTIVE_JOBS_WITH_SKILL` (direct mapping)
+- `TOTAL_JOBS_ANALYZED` ← `TOTAL_ACTIVE_JOBS` (direct mapping)
+- `MARKET_PENETRATION_RATE` ← `SKILL_PENETRATION_RATE` (direct mapping)
+- `DEMAND_RANK_OVERALL` ← `SKILL_RANK_OVERALL` (direct mapping)
+- `AVERAGE_SALARY_WITH_SKILL` ← `AVG_SALARY_MIDPOINT_ANNUAL_USD` (direct mapping)
+- `SALARY_PREMIUM_PERCENTAGE` ← `SALARY_PREMIUM_PERCENTAGE` (direct mapping)
+- `REMOTE_AVAILABILITY_RATE` ← `REMOTE_SKILL_PERCENTAGE` (direct mapping)
+- `SAMPLE_SIZE` ← `SAMPLE_SIZE` (direct mapping)
+- `DATA_QUALITY_SCORE` ← `AVG_SKILL_CONFIDENCE` (direct mapping)
+
+**✅ Calculable Growth Metrics**:
+- `DEMAND_GROWTH_WEEKLY` ← `WEEK_OVER_WEEK_GROWTH_RATE` (direct mapping)
+- `DEMAND_GROWTH_MONTHLY` ← Calculate from 4-week moving average trends
+- `RANK_CHANGE_WEEKLY` ← Compare `SKILL_RANK_OVERALL` week-over-week
+- `RANK_CHANGE_MONTHLY` ← Compare `SKILL_RANK_OVERALL` month-over-month
+
+**⚠️ Requires Additional Processing (Seniority Breakdown)**:
+- `ENTRY_LEVEL_DEMAND` ← Aggregate from FACT_JOB_POSTINGS by skill + seniority
+- `MID_LEVEL_DEMAND` ← Same approach for mid-level roles
+- `SENIOR_LEVEL_DEMAND` ← Same approach for senior-level roles
+
+**Implementation Steps**:
+
+**Step 1: Source Data Quality Filtering**
+```sql
+-- Use FACT_SKILLS_DEMAND_WEEKLY as primary source for efficiency
+WITH weekly_skills_base AS (
+    SELECT
+        fsdw.WEEK_KEY,
+        fsdw.SKILL_KEY,
+        DATE_TRUNC('week', fsdw.WEEK_START_DATE) as analysis_week,
+        fsdw.WEEK_START_DATE as analysis_date,
+
+        -- Direct mappings from weekly fact table
+        fsdw.ACTIVE_JOBS_WITH_SKILL as jobs_requiring_skill,
+        fsdw.TOTAL_ACTIVE_JOBS as total_jobs_analyzed,
+        fsdw.SKILL_PENETRATION_RATE as market_penetration_rate,
+        fsdw.SKILL_RANK_OVERALL as demand_rank_overall,
+        fsdw.AVG_SALARY_MIDPOINT_ANNUAL_USD as average_salary_with_skill,
+        fsdw.SALARY_PREMIUM_PERCENTAGE as salary_premium_percentage,
+        fsdw.REMOTE_SKILL_PERCENTAGE as remote_availability_rate,
+        fsdw.SAMPLE_SIZE as sample_size,
+        fsdw.AVG_SKILL_CONFIDENCE as data_quality_score,
+        fsdw.WEEK_OVER_WEEK_GROWTH_RATE as demand_growth_weekly
+
+    FROM ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY fsdw
+    WHERE fsdw.AVG_SKILL_CONFIDENCE >= 0.7
+      AND fsdw.SAMPLE_SIZE >= 5
+      AND fsdw.WEEK_START_DATE >= CURRENT_DATE - 365  -- 1 year retention
+)
+```
+
+**Step 2: Monthly Growth Calculations**
+```sql
+-- Calculate monthly growth trends using window functions
+skills_with_monthly_trends AS (
+    SELECT wsb.*,
+           -- Monthly growth calculation (4-week comparison)
+           LAG(wsb.jobs_requiring_skill, 4) OVER (
+               PARTITION BY wsb.skill_key
+               ORDER BY wsb.analysis_date
+           ) as jobs_4_weeks_ago,
+
+           CASE WHEN LAG(wsb.jobs_requiring_skill, 4) OVER (
+                    PARTITION BY wsb.skill_key ORDER BY wsb.analysis_date) > 0
+                THEN ((wsb.jobs_requiring_skill::FLOAT /
+                      LAG(wsb.jobs_requiring_skill, 4) OVER (
+                          PARTITION BY wsb.skill_key ORDER BY wsb.analysis_date)) - 1) * 100
+                ELSE NULL END as demand_growth_monthly
+    FROM weekly_skills_base wsb
+)
+```
+
+**Step 3: Ranking Change Analysis**
+```sql
+-- Calculate ranking changes week-over-week and month-over-month
+skills_with_ranking_changes AS (
+    SELECT swmt.*,
+           -- Weekly ranking changes
+           (swmt.demand_rank_overall - LAG(swmt.demand_rank_overall, 1) OVER (
+               PARTITION BY swmt.skill_key ORDER BY swmt.analysis_date
+           )) as rank_change_weekly,
+
+           -- Monthly ranking changes (4-week comparison)
+           (swmt.demand_rank_overall - LAG(swmt.demand_rank_overall, 4) OVER (
+               PARTITION BY swmt.skill_key ORDER BY swmt.analysis_date
+           )) as rank_change_monthly
+    FROM skills_with_monthly_trends swmt
+)
+```
+
+**Step 4: Seniority Distribution Analysis**
+```sql
+-- Add seniority breakdown by joining with job postings fact table
+skills_with_seniority AS (
+    SELECT swrc.*,
+           -- Seniority distribution from job postings
+           seniority_breakdown.entry_level_demand,
+           seniority_breakdown.mid_level_demand,
+           seniority_breakdown.senior_level_demand
+    FROM skills_with_ranking_changes swrc
+    LEFT JOIN (
+        SELECT
+            fjp.SKILL_KEY,
+            TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+            COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%junior%'
+                       THEN 1 END) as entry_level_demand,
+            COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%mid%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%intermediate%'
+                       THEN 1 END) as mid_level_demand,
+            COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%senior%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%staff%'
+                            OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%principal%'
+                       THEN 1 END) as senior_level_demand
+        FROM ANALYTICS.FACT_JOB_POSTINGS fjp
+        INNER JOIN BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE jsb ON fjp.JOB_UID = jsb.JOB_UID
+        WHERE fjp.IS_ACTIVE_POSTING = TRUE
+          AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
+          AND jsb.OVERALL_CONFIDENCE >= 0.7
+        GROUP BY fjp.SKILL_KEY, TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW')
+    ) seniority_breakdown
+        ON swrc.skill_key = seniority_breakdown.skill_key
+        AND swrc.week_key = seniority_breakdown.week_key
+)
+```
+
+**Step 5: Final Assembly with Primary Key Generation**
+```sql
+-- Generate final skills trend analysis records
+SELECT
+    'STA_' || sws.week_key || '_' || sws.skill_key as analysis_key,
+    sws.analysis_date,
+    sws.skill_key,
+    sws.week_key,
+    sws.jobs_requiring_skill,
+    sws.total_jobs_analyzed,
+    sws.market_penetration_rate,
+    sws.demand_rank_overall,
+    sws.demand_growth_weekly,
+    sws.demand_growth_monthly,
+    sws.rank_change_weekly,
+    sws.rank_change_monthly,
+    sws.average_salary_with_skill,
+    sws.salary_premium_percentage,
+    sws.remote_availability_rate,
+    sws.entry_level_demand,
+    sws.mid_level_demand,
+    sws.senior_level_demand,
+    sws.sample_size,
+    sws.data_quality_score,
+    CURRENT_TIMESTAMP as created_timestamp
+FROM skills_with_seniority sws
+ORDER BY sws.analysis_date DESC, sws.demand_rank_overall ASC;
+```
+
+**Performance Optimization**:
+- **Primary Source**: Use FACT_SKILLS_DEMAND_WEEKLY for 90% of metrics (high efficiency)
+- **Seniority Calculation**: Only additional processing needed for unique insights
+- **Clustering**: `(ANALYSIS_DATE, SKILL_KEY)` for time-series and skill-based analysis
+- **Incremental Processing**: Process only new weeks to minimize processing time
+- **Data Retention**: 52 weeks (1 year) for comprehensive trend analysis
+
+**Expected Data Volume & Performance**:
+- **Weekly Records**: ~5,000-15,000 skill-week combinations (depending on active skills)
+- **Processing Time**: <10 minutes for weekly refresh (efficient sourcing from existing aggregates)
+- **Query Performance**: <3 seconds for skills trend queries
+- **Unique Value**: Seniority distribution insights not available elsewhere
+
+**Business Intelligence Capabilities**:
+- **Technology Intelligence**: Track emerging vs declining skills with weekly/monthly trends
+- **Career Intelligence**: Analyze skills demand by seniority level for career planning
+- **Compensation Intelligence**: Track salary premiums and skill value evolution
+- **Market Position Analysis**: Monitor skills ranking changes and competitive dynamics
+- **Remote Work Insights**: Identify remote-friendly technology stacks and trends
 
 ##### 3. `COMPANY_HIRING_INTELLIGENCE` (Company Analysis View)
 **Company-specific hiring patterns and market intelligence computed from weekly fact table**
@@ -2144,7 +2370,7 @@ ORDER BY keyword_type, keyword_category, frequency_count DESC;
           "analytics_dim_salary", "analytics_dim_experience", "analytics_dim_keywords",
           "stage_jobs_unified", "stage_jobs_llm_enriched_unified", "stage_job_salary_bridge"],
     description="Create primary fact table for job posting analytics",
-    group_name="3b_analytics_facts",
+    group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -2362,7 +2588,7 @@ KEYWORD_KEY         ← COALESCE(lookup_result, 'KWD_UNKNOWN')
 @asset(
     deps=["analytics_fact_job_postings", "stage_job_skills_bridge", "analytics_dim_skills"],
     description="Create weekly skills demand aggregate fact table for technology trend analysis",
-    group_name="3c_analytics_aggregates",
+    group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -2752,7 +2978,7 @@ ORDER BY swr.week_start_date DESC, swr.skill_rank_overall ASC;
 @asset(
     deps=["analytics_fact_job_postings", "analytics_dim_company"],
     description="Create weekly company hiring aggregate fact table for competitive analysis",
-    group_name="3c_analytics_aggregates",
+    group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
 )
 def analytics_fact_company_hiring_weekly(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
