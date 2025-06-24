@@ -61,6 +61,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 
             # Step 2: Build fact table with dimension lookups and business rules
             context.log.info("Building fact table with dimension lookups and data quality filters")
+            context.log.info("BUGFIX: Enhanced job family dimension join to prevent duplicate records by matching all key fields")
 
             build_sql = f"""
             INSERT INTO {table_name} (
@@ -126,6 +127,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                     lle.JOB_FAMILY,
                     lle.JOB_SUB_FAMILY,
                     lle.SENIORITY_LEVEL,
+                    lle.ROLE_TYPE,
                     lle.WORK_TYPE,
                     lle.REMOTE_FLEXIBILITY,
                     lle.EQUITY_MENTIONED,
@@ -161,10 +163,50 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                     -- Platform dimension lookup
                     COALESCE(dp.PLATFORM_KEY, 'PLT_' || UPPER(jd.PLATFORM)) as platform_key,
 
-                    -- Experience dimension lookup
+                    -- Experience dimension lookup (fixed: use correct column names)
                     COALESCE(de.EXPERIENCE_KEY, 'EXP_UNKNOWN') as experience_key,
 
-                                -- Keyword dimension lookup (primary keyword from array)
+                    -- Keyword dimension lookup (primary keyword from array)
+                    COALESCE(dk.KEYWORD_KEY, 'KWD_UNKNOWN') as keyword_key,
+
+                    -- Salary dimension lookup (via bridge table)
+                    COALESCE(ds.SALARY_KEY, 'SAL_UNKNOWN') as salary_key,
+
+                    -- Salary measures (denormalized from DIM_SALARY for performance)
+                    ds.SALARY_MIN_ANNUAL_USD,
+                    ds.SALARY_MAX_ANNUAL_USD,
+                    ds.SALARY_MIDPOINT_ANNUAL_USD,
+
+                    -- Salary bridge confidence (for salary_confidence field)
+                    jsb.OVERALL_CONFIDENCE as salary_bridge_confidence
+
+                FROM job_data_prep jd
+
+                -- Company dimension lookup
+                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_COMPANY dc
+                    ON jd.COMPANY_ID = dc.COMPANY_ID AND dc.IS_CURRENT = TRUE
+
+                -- Location dimension lookup (fixed: use correct column name)
+                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_LOCATION dl
+                    ON jd.LOCATION_STANDARDIZED = dl.LOCATION_NAME
+
+                -- Job family dimension lookup (complete match to prevent duplicates)
+                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_JOB_FAMILY djf
+                    ON jd.JOB_FAMILY = djf.JOB_FAMILY
+                    AND COALESCE(jd.JOB_SUB_FAMILY, 'General') = djf.JOB_SUB_FAMILY
+                    AND COALESCE(jd.SENIORITY_LEVEL, 'Not Specified') = djf.SENIORITY_LEVEL
+                    AND COALESCE(jd.ROLE_TYPE, 'Not Specified') = djf.ROLE_TYPE
+
+                -- Platform dimension lookup
+                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_PLATFORM dp
+                    ON jd.PLATFORM = dp.PLATFORM_NAME
+
+                -- Experience dimension lookup (fixed: use correct column names)
+                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_EXPERIENCE de
+                    ON jd.MIN_YEARS_EXPERIENCE = de.MIN_YEARS_REQUIRED
+                    AND jd.MAX_YEARS_EXPERIENCE = de.MAX_YEARS_REQUIRED
+
+                -- Keyword dimension lookup (primary keyword from array)
                 LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_KEYWORDS dk
                     ON dk.KEYWORD_TEXT = TRIM(GET(jd.PRIMARY_KEYWORDS, 0)::STRING, '"')
                     AND jd.PRIMARY_KEYWORDS IS NOT NULL
@@ -246,6 +288,21 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 
             # Step 3: Validate data quality and gather statistics
             context.log.info("Validating fact table data quality and gathering statistics")
+
+            # BUGFIX: Check for duplicate job records to detect cardinality issues early
+            cursor.execute(f"""
+                SELECT
+                    COUNT(*) as total_records,
+                    COUNT(DISTINCT job_uid) as unique_jobs,
+                    COUNT(*) - COUNT(DISTINCT job_uid) as duplicate_jobs
+                FROM {table_name}
+            """)
+            duplicate_check = cursor.fetchone()
+            if duplicate_check[2] > 0:
+                context.log.error(f"CRITICAL: Found {duplicate_check[2]} duplicate job records! "
+                                f"Total: {duplicate_check[0]}, Unique: {duplicate_check[1]}")
+            else:
+                context.log.info(f"Duplicate check passed: {duplicate_check[1]} unique jobs from {duplicate_check[0]} records")
 
             validation_sql = f"""
             SELECT
@@ -1930,19 +1987,24 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
             context.log.info(f"Skills trend analysis validation: {total_skill_weeks} skill-week records, "
                            f"{unique_skills} unique skills, {weeks_covered} weeks covered")
 
-            context.log.info(f"Skills intelligence: avg demand {validation_result[5]:.1f} jobs/skill, "
-                           f"avg penetration {validation_result[6]:.1f}%, avg salary ${validation_result[7]:,.0f}")
+            # Handle null values from aggregate functions when no data exists
+            avg_demand = validation_result[5] if validation_result[5] is not None else 0.0
+            avg_penetration = validation_result[6] if validation_result[6] is not None else 0.0
+            avg_salary = validation_result[7] if validation_result[7] is not None else 0.0
+
+            context.log.info(f"Skills intelligence: avg demand {avg_demand:.1f} jobs/skill, "
+                           f"avg penetration {avg_penetration:.1f}%, avg salary ${avg_salary:,.0f}")
 
             context.log.info(f"Trend analysis: {validation_result[11]} high-growth skills, "
                            f"{validation_result[12]} declining skills")
 
-            # Add metadata for Dagster UI
+            # Add metadata for Dagster UI - with null safety for all values
             context.add_output_metadata({
                 "total_skill_weeks": MetadataValue.int(int(total_skill_weeks)),
                 "unique_skills": MetadataValue.int(int(unique_skills)),
                 "weeks_covered": MetadataValue.int(int(weeks_covered)),
-                "earliest_week": MetadataValue.text(str(validation_result[3])),
-                "latest_week": MetadataValue.text(str(validation_result[4])),
+                "earliest_week": MetadataValue.text(str(validation_result[3]) if validation_result[3] is not None else "N/A"),
+                "latest_week": MetadataValue.text(str(validation_result[4]) if validation_result[4] is not None else "N/A"),
                 "avg_skill_demand": MetadataValue.float(float(validation_result[5]) if validation_result[5] is not None else 0.0),
                 "avg_penetration_rate": MetadataValue.float(float(validation_result[6]) if validation_result[6] is not None else 0.0),
                 "avg_skill_salary": MetadataValue.float(float(validation_result[7]) if validation_result[7] is not None else 0.0),
@@ -1950,11 +2012,11 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
                 "avg_data_quality": MetadataValue.float(float(validation_result[9]) if validation_result[9] is not None else 0.0),
                 "avg_weekly_growth": MetadataValue.float(float(validation_result[10]) if validation_result[10] is not None else 0.0),
                 "avg_monthly_growth": MetadataValue.float(float(validation_result[11]) if validation_result[11] is not None else 0.0),
-                "high_growth_skills": MetadataValue.int(int(validation_result[12])),
-                "declining_skills": MetadataValue.int(int(validation_result[13])),
-                "records_below_threshold": MetadataValue.int(int(validation_result[17])),
-                "records_missing_salary": MetadataValue.int(int(validation_result[18])),
-                "records_extreme_growth": MetadataValue.int(int(validation_result[19]))
+                "high_growth_skills": MetadataValue.int(int(validation_result[12] if validation_result[12] is not None else 0)),
+                "declining_skills": MetadataValue.int(int(validation_result[13] if validation_result[13] is not None else 0)),
+                "records_below_threshold": MetadataValue.int(int(validation_result[17] if validation_result[17] is not None else 0)),
+                "records_missing_salary": MetadataValue.int(int(validation_result[18] if validation_result[18] is not None else 0)),
+                "records_extreme_growth": MetadataValue.int(int(validation_result[19] if validation_result[19] is not None else 0))
             })
 
             return {
@@ -1973,8 +2035,8 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
                 "trend_analysis": {
                     "avg_weekly_growth": float(validation_result[10]) if validation_result[10] is not None else 0.0,
                     "avg_monthly_growth": float(validation_result[11]) if validation_result[11] is not None else 0.0,
-                    "high_growth_skills": validation_result[12],
-                    "declining_skills": validation_result[13]
+                    "high_growth_skills": validation_result[12] if validation_result[12] is not None else 0,
+                    "declining_skills": validation_result[13] if validation_result[13] is not None else 0
                 },
                 "seniority_distribution": {
                     "avg_entry_demand": float(validation_result[14]) if validation_result[14] is not None else 0.0,
@@ -1982,14 +2044,14 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
                     "avg_senior_demand": float(validation_result[16]) if validation_result[16] is not None else 0.0
                 },
                 "quality_metrics": {
-                    "records_below_threshold": validation_result[17],
-                    "records_missing_salary": validation_result[18],
-                    "records_extreme_growth": validation_result[19],
+                    "records_below_threshold": validation_result[17] if validation_result[17] is not None else 0,
+                    "records_missing_salary": validation_result[18] if validation_result[18] is not None else 0,
+                    "records_extreme_growth": validation_result[19] if validation_result[19] is not None else 0,
                     "avg_data_quality": float(validation_result[9]) if validation_result[9] is not None else 0.0
                 },
                 "temporal_coverage": {
-                    "earliest_week": str(validation_result[3]),
-                    "latest_week": str(validation_result[4]),
+                    "earliest_week": str(validation_result[3]) if validation_result[3] is not None else "N/A",
+                    "latest_week": str(validation_result[4]) if validation_result[4] is not None else "N/A",
                     "weeks_covered": weeks_covered
                 }
             }

@@ -2110,6 +2110,100 @@ Screenshot shows same `JOB_POSTING_KEY` (JP_bc5aa293e7c13eddce2e0fef7acbaf30) ap
 
 ---
 
+## BUG-018: [ANALYTICS] Duplicate Job Posting Records in FACT_JOB_POSTINGS
+
+**Issue ID**: BUG-018
+**Status**: OPEN
+**Priority**: CRITICAL
+**Module**: `analytics_fact_job_postings`
+**Created**: 2024-06-24
+**Resolved**: 2024-06-24
+
+### Problem Description
+The `ANALYTICS.FACT_JOB_POSTINGS` table contains duplicate records for the same job posting, with identical data except for different `JOB_FAMILY_KEY` values. This causes data quality issues and inflated metrics in analytics queries.
+
+### Root Cause Analysis
+The issue appears to be in the `analytics_dim_job_family` dimension creation and its join logic back to the fact table. The problem stems possibly from:
+
+1. **Dimension Creation Logic**: A single job from `STAGE.JOBS_LLM_ENRICHED` can create multiple records in `DIM_JOB_FAMILY` if it has the same `JOB_FAMILY` and `SENIORITY_LEVEL` but different `JOB_SUB_FAMILY` values.
+
+2. **Incomplete Join Logic**: The original join in `analytics_fact_job_postings` only matched on `JOB_FAMILY` and `SENIORITY_LEVEL`, but not `JOB_SUB_FAMILY`:
+   ```sql
+   LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_JOB_FAMILY djf
+       ON jd.JOB_FAMILY = djf.JOB_FAMILY
+       AND jd.SENIORITY_LEVEL = djf.SENIORITY_LEVEL
+   ```
+
+3. **Cartesian Product Effect**: When one job matches multiple dimension records, it creates multiple fact table records for the same job posting.
+
+### Reproduction Steps
+1. Run `analytics_dim_job_family` asset
+2. Run `analytics_fact_job_postings` asset
+3. Query for duplicate job postings:
+   ```sql
+   SELECT JOB_UID, COUNT(*) as duplicate_count
+   FROM ANALYTICS.FACT_JOB_POSTINGS
+   GROUP BY JOB_UID
+   HAVING COUNT(*) > 1
+   ```
+4. Observe identical records with different `JOB_FAMILY_KEY` values
+
+### Expected vs Actual
+**Expected**: One record per unique job posting (`JOB_UID`)
+**Actual**: Multiple records per job posting when job has multiple sub-family classifications
+
+### Evidence
+Screenshot shows same `JOB_POSTING_KEY` (JP_bc5aa293e7c13eddce2e0fef7acbaf30) appearing twice with different `JOB_FAMILY_KEY` values but otherwise identical data.
+
+### Impact
+- **Data Quality**: Inflated job counts in analytics
+- **Business Metrics**: Incorrect hiring velocity and market intelligence
+- **Dashboard Accuracy**: All downstream analytics affected
+
+### Resolution Steps Taken
+1. **Enhanced Join Logic**: Updated the job family dimension join to include all fields used in the dimension key generation:
+   ```sql
+   -- Job family dimension lookup (complete match to prevent duplicates)
+   LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_JOB_FAMILY djf
+       ON jd.JOB_FAMILY = djf.JOB_FAMILY
+       AND COALESCE(jd.JOB_SUB_FAMILY, 'General') = djf.JOB_SUB_FAMILY
+       AND COALESCE(jd.SENIORITY_LEVEL, 'Not Specified') = djf.SENIORITY_LEVEL
+       AND COALESCE(jd.ROLE_TYPE, 'Not Specified') = djf.ROLE_TYPE
+   ```
+
+2. **Added ROLE_TYPE Field**: Ensured `ROLE_TYPE` field is included from LLM enriched data in the fact table preparation.
+
+3. **Enhanced Validation**: Added duplicate detection logic to identify cardinality issues early:
+   ```sql
+   SELECT
+       COUNT(*) as total_records,
+       COUNT(DISTINCT job_uid) as unique_jobs,
+       COUNT(*) - COUNT(DISTINCT job_uid) as duplicate_jobs
+   FROM ANALYTICS.FACT_JOB_POSTINGS
+   ```
+
+4. **Updated Dependencies**: Fixed `analytics_dim_job_family` dependency to use correct source table.
+
+### Testing Instructions
+1. Run `analytics_dim_job_family` asset
+2. Run `analytics_fact_job_postings` asset
+3. Verify logs show "Duplicate check passed" message
+4. Query to confirm 1:1 ratio:
+   ```sql
+   SELECT
+       COUNT(*) as total_records,
+       COUNT(DISTINCT job_uid) as unique_jobs
+   FROM ANALYTICS.FACT_JOB_POSTINGS;
+   ```
+5. Should show equal counts with no duplicates
+
+### Prevention Measures
+- Enhanced logging to detect cardinality issues early
+- Complete join logic that matches dimension grain exactly
+- Validation queries in the asset to catch future issues
+
+---
+
 ## Template for New Bugs
 
 **Status**: [Open/In Progress/Resolved]

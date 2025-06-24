@@ -521,7 +521,7 @@ def analytics_dim_location(context: AssetExecutionContext, snowflake: SnowflakeR
 
 
 @asset(
-    deps=["stage_jobs_unified"],
+    deps=["stage_jobs_llm_enriched_unified"],
     description="Create job classification dimension with hierarchical role taxonomy from LLM-enriched job data",
     group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
