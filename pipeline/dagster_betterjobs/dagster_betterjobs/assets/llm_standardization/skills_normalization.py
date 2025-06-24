@@ -25,6 +25,12 @@ from dagster import (
 )
 
 from dagster_betterjobs.resources import SnowflakeResource
+from dagster_betterjobs.utils.skill_consolidation import (
+    SkillData,
+    ConsolidationConfig,
+    consolidate_skill_variants,
+    get_consolidation_summary
+)
 
 
 @asset(
@@ -430,25 +436,11 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         # Clear existing data for fresh normalization
         cursor.execute("DELETE FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED")
 
-        # Normalize and populate skills
-        normalization_sql = """
-        INSERT INTO BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED (
-            SKILL_ID,
-            SKILL_NAME,
-            SKILL_NAME_CLEAN,
-            SKILL_NAME_ORIGINAL,
-            SKILL_CATEGORY,
-            SKILL_SUBCATEGORY,
-            SKILL_FAMILY,
-            SKILL_TYPE,
-            ORIGINAL_VARIANTS,
-            FREQUENCY_COUNT,
-            FIRST_SEEN_DATE,
-            LAST_SEEN_DATE,
-            CONFIDENCE_SCORE,
-            MANUAL_REVIEW_FLAG,
-            CANONICAL_FORM
-        )
+        # ENHANCEMENT-023: Intelligent Skills Variant Consolidation
+        context.log.info("🔄 Starting skills consolidation process...")
+
+        # Step 1: Get skills data for consolidation
+        pre_consolidation_sql = """
         WITH skill_aggregation AS (
             SELECT
                 COALESCE(sr.STANDARDIZED_NAME, sre.SKILL_NAME_ORIGINAL) as skill_name,
@@ -476,26 +468,158 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             GROUP BY 1, 2, 3, 4, 5
             HAVING COUNT(*) >= 2  -- Only include skills appearing at least twice
         )
-        SELECT
-            CONCAT('skill_', ROW_NUMBER() OVER (ORDER BY frequency_count DESC)) as skill_id,
-            skill_name,
-            LOWER(TRIM(skill_name)) as skill_name_clean,
-            original_variants[0]::STRING as skill_name_original,
-            skill_category,
-            skill_subcategory,
-            skill_family,
-            skill_type,
-            original_variants,
-            frequency_count,
-            first_seen_date,
-            last_seen_date,
-            confidence_score,
-            CASE WHEN confidence_score < 0.6 THEN TRUE ELSE FALSE END as manual_review_flag,
-            skill_name as canonical_form
-        FROM skill_aggregation
+        SELECT * FROM skill_aggregation
+        ORDER BY frequency_count DESC
         """
 
-        cursor.execute(normalization_sql)
+        cursor.execute(pre_consolidation_sql)
+        pre_consolidation_results = cursor.fetchall()
+
+        # Convert to SkillData objects for consolidation
+        original_skills = {}
+        for row in pre_consolidation_results:
+            skill_name = row[0]
+            skill_data = SkillData(
+                skill_name=skill_name,
+                skill_category=row[1],
+                skill_subcategory=row[2],
+                frequency_count=row[6],  # Fixed: frequency_count is at index 6
+                confidence_score=float(row[9]),  # Fixed: confidence_score is at index 9
+                original_variants=json.loads(row[5]) if isinstance(row[5], str) else row[5],  # Fixed: original_variants is at index 5
+                first_seen_date=str(row[7]) if row[7] else None,  # Fixed: first_seen_date is at index 7
+                last_seen_date=str(row[8]) if row[8] else None   # Fixed: last_seen_date is at index 8
+            )
+            original_skills[skill_name] = skill_data
+
+        context.log.info(f"📊 Pre-consolidation: {len(original_skills)} unique skills")
+
+        # Step 2: Apply consolidation
+        consolidation_config = ConsolidationConfig(
+            enabled=True,
+            preferred_form="singular",
+            min_frequency_threshold=2
+        )
+
+        consolidated_skills = consolidate_skill_variants(original_skills, consolidation_config)
+
+        # Step 3: Generate consolidation summary
+        consolidation_summary = get_consolidation_summary(original_skills, consolidated_skills)
+
+        context.log.info(f"""
+        ✅ Skills Consolidation Complete:
+        • Original Skills: {consolidation_summary['original_skill_count']:,}
+        • Consolidated Skills: {consolidation_summary['consolidated_skill_count']:,}
+        • Skills Merged: {consolidation_summary['skills_merged']:,}
+        • Consolidation Ratio: {consolidation_summary['consolidation_ratio']:.2%}
+        """)
+
+                        # Step 4: Bulk insert consolidated skills using staging approach
+        context.log.info("🔄 Starting bulk insert of consolidated skills...")
+
+        # Create temporary staging table
+        cursor.execute("""
+        CREATE OR REPLACE TEMPORARY TABLE SKILLS_STAGING (
+            SKILL_ID STRING,
+            SKILL_NAME STRING,
+            SKILL_NAME_CLEAN STRING,
+            SKILL_NAME_ORIGINAL STRING,
+            SKILL_CATEGORY STRING,
+            SKILL_SUBCATEGORY STRING,
+            SKILL_FAMILY STRING,
+            SKILL_TYPE STRING,
+            ORIGINAL_VARIANTS_JSON STRING,
+            FREQUENCY_COUNT INTEGER,
+            FIRST_SEEN_DATE DATE,
+            LAST_SEEN_DATE DATE,
+            CONFIDENCE_SCORE FLOAT,
+            MANUAL_REVIEW_FLAG BOOLEAN,
+            CANONICAL_FORM STRING
+        )
+        """)
+
+        # Prepare all data for bulk insert
+        staging_data = []
+        for skill_name, skill_data in consolidated_skills.items():
+            skill_id = f"skill_{hash(skill_name) % 100000:05d}"
+
+            staging_record = (
+                skill_id,
+                skill_name,
+                skill_name.lower().strip(),
+                skill_data.original_variants[0] if skill_data.original_variants else skill_name,
+                skill_data.skill_category,
+                skill_data.skill_subcategory,
+                'general',
+                'technical' if skill_data.skill_category not in ['soft', 'keyword'] else
+                'soft' if skill_data.skill_category == 'soft' else 'business',
+                json.dumps(skill_data.original_variants),  # Store as JSON string temporarily
+                skill_data.frequency_count,
+                skill_data.first_seen_date,
+                skill_data.last_seen_date,
+                skill_data.confidence_score,
+                skill_data.confidence_score < 0.6,
+                skill_name
+            )
+            staging_data.append(staging_record)
+
+        # Bulk insert into staging table
+        staging_insert_sql = """
+        INSERT INTO SKILLS_STAGING VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+
+        cursor.executemany(staging_insert_sql, staging_data)
+        context.log.info(f"✅ Bulk inserted {len(staging_data)} records into staging table")
+
+        # Insert into final table with VARIANT conversion
+        final_insert_sql = """
+        INSERT INTO BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED (
+            SKILL_ID,
+            SKILL_NAME,
+            SKILL_NAME_CLEAN,
+            SKILL_NAME_ORIGINAL,
+            SKILL_CATEGORY,
+            SKILL_SUBCATEGORY,
+            SKILL_FAMILY,
+            SKILL_TYPE,
+            ORIGINAL_VARIANTS,
+            FREQUENCY_COUNT,
+            FIRST_SEEN_DATE,
+            LAST_SEEN_DATE,
+            CONFIDENCE_SCORE,
+            MANUAL_REVIEW_FLAG,
+            CANONICAL_FORM
+        )
+        SELECT
+            SKILL_ID,
+            SKILL_NAME,
+            SKILL_NAME_CLEAN,
+            SKILL_NAME_ORIGINAL,
+            SKILL_CATEGORY,
+            SKILL_SUBCATEGORY,
+            SKILL_FAMILY,
+            SKILL_TYPE,
+            PARSE_JSON(ORIGINAL_VARIANTS_JSON) as ORIGINAL_VARIANTS,
+            FREQUENCY_COUNT,
+            FIRST_SEEN_DATE,
+            LAST_SEEN_DATE,
+            CONFIDENCE_SCORE,
+            MANUAL_REVIEW_FLAG,
+            CANONICAL_FORM
+        FROM SKILLS_STAGING
+        """
+
+        cursor.execute(final_insert_sql)
+        context.log.info("✅ Bulk inserted all skills into final table with VARIANT conversion")
+
+        # Update stats to include consolidation metrics
+        stats.update({
+            "consolidation_enabled": True,
+            "original_skill_count": consolidation_summary['original_skill_count'],
+            "consolidated_skill_count": consolidation_summary['consolidated_skill_count'],
+            "skills_merged": consolidation_summary['skills_merged'],
+            "consolidation_ratio": consolidation_summary['consolidation_ratio'],
+            "merge_examples": consolidation_summary['merge_examples']
+        })
 
         # Get normalization statistics
         cursor.execute("""
@@ -538,17 +662,32 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         • Low Confidence: {stats['low_confidence_skills']:,}
         • Unique Categories: {stats['unique_skill_categories']}
         • Average Confidence: {stats['avg_confidence_score']:.3f}
+        • Consolidation Ratio: {stats.get('consolidation_ratio', 0):.2%}
+        • Skills Merged: {stats.get('skills_merged', 0):,}
         """)
 
-        # Add metadata
-        context.add_output_metadata({
+        # Add metadata including consolidation metrics
+        metadata = {
             "skills_normalized": MetadataValue.int(stats["skills_normalized"]),
             "high_confidence_skills": MetadataValue.int(stats["high_confidence_skills"]),
             "low_confidence_skills": MetadataValue.int(stats["low_confidence_skills"]),
             "unique_skill_categories": MetadataValue.int(stats["unique_skill_categories"]),
             "avg_confidence_score": MetadataValue.float(stats["avg_confidence_score"]),
             "category_breakdown": MetadataValue.json(stats.get("category_breakdown", []))
-        })
+        }
+
+        # Add consolidation metrics if available
+        if stats.get("consolidation_enabled"):
+            metadata.update({
+                "consolidation_enabled": MetadataValue.bool(True),
+                "original_skill_count": MetadataValue.int(stats.get("original_skill_count", 0)),
+                "consolidated_skill_count": MetadataValue.int(stats.get("consolidated_skill_count", 0)),
+                "skills_merged": MetadataValue.int(stats.get("skills_merged", 0)),
+                "consolidation_ratio": MetadataValue.float(stats.get("consolidation_ratio", 0)),
+                "merge_examples": MetadataValue.json(stats.get("merge_examples", []))
+            })
+
+        context.add_output_metadata(metadata)
 
         return stats
 

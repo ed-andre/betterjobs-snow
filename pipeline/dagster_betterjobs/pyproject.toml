@@ -7,11 +7,12 @@ requires-python = ">=3.9,<3.13"
 dependencies = [
     "dagster",
     "dagster-cloud",
+    "inflect",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "dagster-webserver", 
+    "dagster-webserver",
     "pytest",
 ]
 

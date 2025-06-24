@@ -26,11 +26,12 @@ setup(
         "tqdm>=4.65.0",
         "tabulate>=0.9.0",  # For markdown tables
         "langdetect>=1.0.9",  # For language detection
-        "pytest>=7.0.0", 
+        "pytest>=7.0.0",
         # Snowflake requirements
         "snowflake-connector-python>=3.0.0",
         "boto3>=1.26.0",
         "pyarrow>=10.0.0",  # Required for pandas integration with Snowflake
+        "inflect>=7.0.0",
     ],
     extras_require={"dev": ["dagster-webserver", "pytest"]},
     entry_points={
