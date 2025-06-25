@@ -105,6 +105,9 @@ from dagster_betterjobs.assets.analytics_facts import (
     analytics_skills_trend_analysis
 )
 
+# ENHANCEMENT-024: Job Experience Bridge
+from dagster_betterjobs.assets.analytics_bridges import analytics_job_experience_bridge
+
 # Infrastructure Setup Assets
 from dagster_betterjobs.assets.snowflake_setup import (
     database_schema_setup,
@@ -192,6 +195,8 @@ __all__ = [
     "analytics_fact_company_hiring_weekly",
     "analytics_market_weekly_summary",
     "analytics_skills_trend_analysis",
+    # ENHANCEMENT-024: Job Experience Bridge
+    "analytics_job_experience_bridge",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",

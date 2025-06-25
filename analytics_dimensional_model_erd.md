@@ -160,19 +160,14 @@ erDiagram
         string location_key FK
         string job_family_key FK
         string platform_key FK
-        string experience_key FK
         string keyword_key FK
         string salary_key FK
         string job_uid "Degenerate Dimension"
         string job_title "Degenerate Dimension"
         string posting_url "Degenerate Dimension"
-        number salary_min
-        number salary_max
-        string salary_currency
-        string salary_period
-        number experience_min_years
-        number experience_max_years
-        string experience_level
+        number salary_min_annual_usd "Normalized"
+        number salary_max_annual_usd "Normalized"
+        number salary_midpoint_annual_usd "Normalized"
         float salary_confidence
         float llm_overall_confidence
         float data_quality_score
@@ -190,6 +185,20 @@ erDiagram
         timestamp created_timestamp
         timestamp updated_timestamp
         date partition_date "Partitioning Column"
+    }
+
+    %% === BRIDGE TABLES ===
+
+    JOB_EXPERIENCE_BRIDGE {
+        string experience_bridge_key PK
+        string job_posting_key FK
+        string experience_key FK
+        float experience_weight
+        boolean is_primary_requirement
+        float extraction_confidence
+        string technology_context
+        string processing_method
+        timestamp created_timestamp
     }
 
     %% === SPECIALIZED FACT TABLES ===
@@ -311,9 +320,12 @@ erDiagram
     FACT_JOB_POSTINGS ||--o{ DIM_LOCATION : "located_in"
     FACT_JOB_POSTINGS ||--o{ DIM_JOB_FAMILY : "categorized_as"
     FACT_JOB_POSTINGS ||--o{ DIM_PLATFORM : "sourced_from"
-    FACT_JOB_POSTINGS ||--o{ DIM_EXPERIENCE : "requires_experience"
     FACT_JOB_POSTINGS ||--o{ DIM_KEYWORDS : "tagged_with_primary_keyword"
     FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_range"
+
+    %% Bridge table relationships
+    FACT_JOB_POSTINGS ||--o{ JOB_EXPERIENCE_BRIDGE : "has_experience_requirements"
+    JOB_EXPERIENCE_BRIDGE }o--|| DIM_EXPERIENCE : "maps_to_experience"
 
     %% Skills Fact Table Relationships
     FACT_SKILLS_DEMAND_WEEKLY ||--o{ DIM_SKILLS : "analyzes_skill"
@@ -335,9 +347,6 @@ erDiagram
 
     %% Salary Bridge Relationship (Many-to-Many through STAGE layer)
     FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_via_bridge"
-
-    %% Experience Bridge Relationship (Many-to-Many through STAGE layer)
-    FACT_JOB_POSTINGS ||--o{ DIM_EXPERIENCE : "requires_experience_via_bridge"
 
     %% Keywords Bridge Relationship (Many-to-Many through STAGE layer)
     FACT_JOB_POSTINGS ||--o{ DIM_KEYWORDS : "tagged_with_keywords_via_bridge"

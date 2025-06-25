@@ -15,7 +15,7 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
 @asset(
     deps=["analytics_dim_date", "analytics_dim_company", "analytics_dim_location",
           "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills",
-          "analytics_dim_salary", "analytics_dim_experience", "analytics_dim_keywords",
+          "analytics_dim_salary", "analytics_dim_keywords",
           "stage_jobs_unified", "stage_jobs_llm_enriched_unified", "stage_job_salary_bridge"],
     description="Create primary fact table for job posting analytics",
     group_name="3b_analytics_facts_aggregates_analysis",
@@ -71,7 +71,6 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 location_key,
                 job_family_key,
                 platform_key,
-                experience_key,
                 keyword_key,
                 salary_key,
                 job_uid,
@@ -80,9 +79,6 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 salary_min_annual_usd,
                 salary_max_annual_usd,
                 salary_midpoint_annual_usd,
-                experience_min_years,
-                experience_max_years,
-                experience_level,
                 salary_confidence,
                 llm_overall_confidence,
                 data_quality_score,
@@ -163,9 +159,6 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                     -- Platform dimension lookup
                     COALESCE(dp.PLATFORM_KEY, 'PLT_' || UPPER(jd.PLATFORM)) as platform_key,
 
-                    -- Experience dimension lookup (fixed: use correct column names)
-                    COALESCE(de.EXPERIENCE_KEY, 'EXP_UNKNOWN') as experience_key,
-
                     -- Keyword dimension lookup (primary keyword from array)
                     COALESCE(dk.KEYWORD_KEY, 'KWD_UNKNOWN') as keyword_key,
 
@@ -201,11 +194,6 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_PLATFORM dp
                     ON jd.PLATFORM = dp.PLATFORM_NAME
 
-                -- Experience dimension lookup (fixed: use correct column names)
-                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_EXPERIENCE de
-                    ON jd.MIN_YEARS_EXPERIENCE = de.MIN_YEARS_REQUIRED
-                    AND jd.MAX_YEARS_EXPERIENCE = de.MAX_YEARS_REQUIRED
-
                 -- Keyword dimension lookup (primary keyword from array)
                 LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_KEYWORDS dk
                     ON dk.KEYWORD_TEXT = TRIM(GET(jd.PRIMARY_KEYWORDS, 0)::STRING, '"')
@@ -227,7 +215,6 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 location_key,
                 job_family_key,
                 platform_key,
-                experience_key,
                 keyword_key,
                 salary_key,
 
@@ -240,11 +227,6 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 SALARY_MIN_ANNUAL_USD as salary_min_annual_usd,
                 SALARY_MAX_ANNUAL_USD as salary_max_annual_usd,
                 SALARY_MIDPOINT_ANNUAL_USD as salary_midpoint_annual_usd,
-
-                -- Experience measures
-                MIN_YEARS_EXPERIENCE as experience_min_years,
-                MAX_YEARS_EXPERIENCE as experience_max_years,
-                EXPERIENCE_LEVEL as experience_level,
 
                 -- Quality and confidence measures
                 COALESCE(salary_bridge_confidence, 0.0) as salary_confidence,
@@ -317,13 +299,11 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 COUNT(CASE WHEN company_key != 'COMP_UNKNOWN' THEN 1 END) as successful_company_lookups,
                 COUNT(CASE WHEN location_key != 'LOC_UNKNOWN' THEN 1 END) as successful_location_lookups,
                 COUNT(CASE WHEN job_family_key != 'JF_UNKNOWN' THEN 1 END) as successful_job_family_lookups,
-                COUNT(CASE WHEN experience_key != 'EXP_UNKNOWN' THEN 1 END) as successful_experience_lookups,
                 COUNT(CASE WHEN keyword_key != 'KWD_UNKNOWN' THEN 1 END) as successful_keyword_lookups,
                 COUNT(CASE WHEN salary_key != 'SAL_UNKNOWN' THEN 1 END) as successful_salary_lookups,
 
                 -- Data completeness metrics
                 COUNT(CASE WHEN salary_min_annual_usd IS NOT NULL AND salary_max_annual_usd IS NOT NULL THEN 1 END) as jobs_with_salary,
-                COUNT(CASE WHEN experience_min_years IS NOT NULL OR experience_max_years IS NOT NULL THEN 1 END) as jobs_with_experience,
                 COUNT(CASE WHEN work_type IS NOT NULL THEN 1 END) as jobs_with_work_type,
                 COUNT(CASE WHEN llm_overall_confidence >= 0.5 THEN 1 END) as jobs_with_good_llm_confidence,
 
@@ -352,9 +332,8 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
             company_success_rate = (validation_result[6] / total_jobs * 100) if total_jobs > 0 else 0
             location_success_rate = (validation_result[7] / total_jobs * 100) if total_jobs > 0 else 0
             job_family_success_rate = (validation_result[8] / total_jobs * 100) if total_jobs > 0 else 0
-            experience_success_rate = (validation_result[9] / total_jobs * 100) if total_jobs > 0 else 0
-            keyword_success_rate = (validation_result[10] / total_jobs * 100) if total_jobs > 0 else 0
-            salary_success_rate = (validation_result[11] / total_jobs * 100) if total_jobs > 0 else 0
+            keyword_success_rate = (validation_result[9] / total_jobs * 100) if total_jobs > 0 else 0
+            salary_success_rate = (validation_result[10] / total_jobs * 100) if total_jobs > 0 else 0
 
             # Step 5: Platform distribution analysis
             cursor.execute(f"""
@@ -416,16 +395,6 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
             if invalid_salary_ranges > 0:
                 quality_issues.append(f"{invalid_salary_ranges} jobs with invalid salary ranges (min > max)")
 
-            # Check for jobs with invalid experience ranges
-            cursor.execute(f"""
-                SELECT COUNT(*) FROM {table_name}
-                WHERE experience_min_years IS NOT NULL AND experience_max_years IS NOT NULL
-                AND experience_min_years > experience_max_years
-            """)
-            invalid_experience_ranges = cursor.fetchone()[0]
-            if invalid_experience_ranges > 0:
-                quality_issues.append(f"{invalid_experience_ranges} jobs with invalid experience ranges")
-
             # Check for jobs with unrealistic salaries
             cursor.execute(f"""
                 SELECT COUNT(*) FROM {table_name}
@@ -447,22 +416,22 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 context.log.warning(f"Data quality issues detected: {', '.join(quality_issues)}")
 
             # Step 8: Calculate completeness percentages
-            salary_completeness = (validation_result[12] / total_jobs * 100) if total_jobs > 0 else 0
-            experience_completeness = (validation_result[13] / total_jobs * 100) if total_jobs > 0 else 0
-            work_type_completeness = (validation_result[14] / total_jobs * 100) if total_jobs > 0 else 0
-            good_llm_completeness = (validation_result[15] / total_jobs * 100) if total_jobs > 0 else 0
+            salary_completeness = (validation_result[11] / total_jobs * 100) if total_jobs > 0 else 0
+            work_type_completeness = (validation_result[12] / total_jobs * 100) if total_jobs > 0 else 0
+            good_llm_completeness = (validation_result[13] / total_jobs * 100) if total_jobs > 0 else 0
 
             context.log.info(f"Fact table validation: {total_jobs} total job postings, "
                            f"{validation_result[1]} unique jobs, {validation_result[2]} unique companies")
 
             context.log.info(f"Dimension lookup success rates: Company {company_success_rate:.1f}%, "
-                           f"Location {location_success_rate:.1f}%, Job Family {job_family_success_rate:.1f}%, Salary {salary_success_rate:.1f}%")
+                           f"Location {location_success_rate:.1f}%, Job Family {job_family_success_rate:.1f}%, "
+                           f"Keyword {keyword_success_rate:.1f}%, Salary {salary_success_rate:.1f}%")
 
             context.log.info(f"Data completeness: Salary {salary_completeness:.1f}%, "
-                           f"Experience {experience_completeness:.1f}%, Work Type {work_type_completeness:.1f}%")
+                           f"Work Type {work_type_completeness:.1f}%")
 
-            context.log.info(f"Quality metrics: Avg data quality {validation_result[16]:.3f}, "
-                           f"Avg LLM confidence {validation_result[17]:.3f}")
+            context.log.info(f"Quality metrics: Avg data quality {validation_result[14]:.3f}, "
+                           f"Avg LLM confidence {validation_result[15]:.3f}")
 
             # Add metadata for Dagster UI
             context.add_output_metadata({
@@ -475,23 +444,21 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 "company_lookup_success_rate": MetadataValue.float(company_success_rate),
                 "location_lookup_success_rate": MetadataValue.float(location_success_rate),
                 "job_family_lookup_success_rate": MetadataValue.float(job_family_success_rate),
-                "experience_lookup_success_rate": MetadataValue.float(experience_success_rate),
                 "keyword_lookup_success_rate": MetadataValue.float(keyword_success_rate),
                 "salary_lookup_success_rate": MetadataValue.float(salary_success_rate),
                 "salary_completeness": MetadataValue.float(salary_completeness),
-                "experience_completeness": MetadataValue.float(experience_completeness),
                 "work_type_completeness": MetadataValue.float(work_type_completeness),
                 "good_llm_confidence_percentage": MetadataValue.float(good_llm_completeness),
-                "avg_data_quality_score": MetadataValue.float(float(validation_result[16]) if validation_result[16] is not None else 0.0),
-                "avg_llm_confidence": MetadataValue.float(float(validation_result[17]) if validation_result[17] is not None else 0.0),
+                "avg_data_quality_score": MetadataValue.float(float(validation_result[14]) if validation_result[14] is not None else 0.0),
+                "avg_llm_confidence": MetadataValue.float(float(validation_result[15]) if validation_result[15] is not None else 0.0),
                 "platform_distribution": MetadataValue.json(platform_stats[:10]),  # Top 10 platforms
                 "monthly_distribution": MetadataValue.json(monthly_stats),  # Last 12 months
                 "quality_issues_count": MetadataValue.int(len(quality_issues)),
-                "earliest_job_date": MetadataValue.text(str(validation_result[19])),
-                "latest_job_date": MetadataValue.text(str(validation_result[20])),
-                "jobs_with_equity": MetadataValue.int(validation_result[21]),
-                "jobs_with_bonus": MetadataValue.int(validation_result[22]),
-                "jobs_needing_review": MetadataValue.int(validation_result[23])
+                "earliest_job_date": MetadataValue.text(str(validation_result[17])),
+                "latest_job_date": MetadataValue.text(str(validation_result[18])),
+                "jobs_with_equity": MetadataValue.int(validation_result[19]),
+                "jobs_with_bonus": MetadataValue.int(validation_result[20]),
+                "jobs_needing_review": MetadataValue.int(validation_result[21])
             })
 
             return {
@@ -510,31 +477,29 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                     "company_success_rate": company_success_rate,
                     "location_success_rate": location_success_rate,
                     "job_family_success_rate": job_family_success_rate,
-                    "experience_success_rate": experience_success_rate,
                     "keyword_success_rate": keyword_success_rate,
                     "salary_success_rate": salary_success_rate
                 },
                 "data_completeness": {
                     "salary_completeness": salary_completeness,
-                    "experience_completeness": experience_completeness,
                     "work_type_completeness": work_type_completeness,
                     "good_llm_confidence_percentage": good_llm_completeness
                 },
                 "quality_metrics": {
-                    "avg_data_quality_score": float(validation_result[16]) if validation_result[16] is not None else 0.0,
-                    "avg_llm_confidence": float(validation_result[17]) if validation_result[17] is not None else 0.0,
-                    "avg_salary_confidence": float(validation_result[18]) if validation_result[18] is not None else 0.0,
+                    "avg_data_quality_score": float(validation_result[14]) if validation_result[14] is not None else 0.0,
+                    "avg_llm_confidence": float(validation_result[15]) if validation_result[15] is not None else 0.0,
+                    "avg_salary_confidence": float(validation_result[16]) if validation_result[16] is not None else 0.0,
                     "quality_issues": quality_issues
                 },
                 "temporal_coverage": {
-                    "earliest_job_date": str(validation_result[19]),
-                    "latest_job_date": str(validation_result[20]),
+                    "earliest_job_date": str(validation_result[17]),
+                    "latest_job_date": str(validation_result[18]),
                     "monthly_distribution": monthly_stats
                 },
                 "business_features": {
-                    "jobs_with_equity": validation_result[21],
-                    "jobs_with_bonus": validation_result[22],
-                    "jobs_needing_review": validation_result[23]
+                    "jobs_with_equity": validation_result[19],
+                    "jobs_with_bonus": validation_result[20],
+                    "jobs_needing_review": validation_result[21]
                 },
                 "platform_analysis": platform_stats
             }
