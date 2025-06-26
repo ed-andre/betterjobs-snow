@@ -20,6 +20,7 @@ This document tracks known bugs and issues in the BetterJobs Snowflake project.
 - **OPEN**
   - BUG-017: Analytics Fact Job Postings Duplicate Records
   - BUG-018: [ANALYTICS] Duplicate Job Posting Records in FACT_JOB_POSTINGS
+  - BUG-020: All FACT_JOB_POSTINGS Records Show LOCATION_KEY as LOC_UNKNOWN
 - **IN PROGRESS**
   - **RESOLVED**
     - BUG-011: Greenhouse Scraper Character Encoding Corruption - Unicode Escape Processing
@@ -1647,6 +1648,130 @@ else:
 ✅ Setup process works reliably on fresh databases
 ✅ Fallback mechanism works when configuration unavailable
 ✅ Comprehensive logging shows which ordering method is being used
+
+---
+
+## BUG-020: All FACT_JOB_POSTINGS Records Show LOCATION_KEY as LOC_UNKNOWN
+
+**Status:** OPEN 🔴
+**Severity:** High
+**Component:** Analytics Layer - Location Dimension Lookup
+**Date Reported:** 2025-06-26
+
+### Description
+All records in the `ANALYTICS.FACT_JOB_POSTINGS` table have `LOCATION_KEY` set to "LOC_UNKNOWN" instead of proper location dimension keys. This causes complete failure of location-based analytics across multiple views and assets that depend on location data for market intelligence.
+
+### Root Cause Analysis
+The issue appears to be in the location dimension lookup logic during fact table population. The `analytics_fact_job_postings` asset is failing to properly match job location data with the `DIM_LOCATION` dimension table, resulting in all records defaulting to the unknown location key.
+
+**Potential Root Causes**:
+1. **Location Standardization**: Job location data in `STAGE.JOBS_LLM_ENRICHED` may not be properly standardized to match `DIM_LOCATION` entries
+2. **Join Logic Issues**: The location dimension join in fact table creation may have incorrect join conditions
+3. **Data Quality**: Location data quality issues preventing successful lookups
+4. **Dimension Population**: `DIM_LOCATION` may not be properly populated or missing expected location entries
+5. **NULL Handling**: Location fields may be NULL or empty, causing all records to fall back to unknown
+
+**Suspected Location in Code**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_facts.py` - Fact table location lookup logic
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_dimensions.py` - Location dimension creation
+- Location standardization process in LLM enrichment pipeline
+
+### Evidence of Issue
+**Database Query Evidence**:
+```sql
+-- All records show LOC_UNKNOWN
+SELECT LOCATION_KEY, COUNT(*)
+FROM ANALYTICS.FACT_JOB_POSTINGS
+GROUP BY LOCATION_KEY;
+-- Result: LOC_UNKNOWN | 50000+ (all records)
+
+-- Expected: Multiple distinct location keys like LOC_SF_CA_USA, LOC_NYC_NY_USA, etc.
+```
+
+**Analytics Impact**:
+- `analytics_salary_intelligence.sql` - JOIN with DIM_LOCATION returns no meaningful metro area or country data
+- `analytics_fact_skills_demand_weekly.sql` - Location-based skills demand analysis completely broken
+- All location-based market intelligence queries return aggregated data as if all jobs are in "unknown" location
+
+### Impact
+- **Critical Analytics Failure**: All location-based business intelligence is broken
+- **Salary Intelligence**: Cannot analyze salary variations by metro area, state, or country
+- **Skills Demand Analysis**: Cannot determine geographic skills demand patterns
+- **Market Intelligence**: Unable to provide location-specific hiring insights
+- **Dashboard Accuracy**: All location-based dashboards show incorrect aggregated data
+- **Business Decisions**: Location-based strategic decisions based on incomplete data
+
+### Reproduction Steps
+1. Query `ANALYTICS.FACT_JOB_POSTINGS`: `SELECT DISTINCT LOCATION_KEY FROM ANALYTICS.FACT_JOB_POSTINGS`
+2. Observe all records return "LOC_UNKNOWN"
+3. Run `analytics_salary_intelligence.sql` view - all metro areas show as NULL or generic
+4. Check `analytics_fact_skills_demand_weekly` asset - location-based metrics missing
+5. Verify `DIM_LOCATION` table has proper location entries
+
+### Expected vs Actual
+**Expected**:
+- `LOCATION_KEY` should contain diverse values like "LOC_SF_CA_USA", "LOC_NYC_NY_USA", "LOC_LONDON_UK", etc.
+- Location-based analytics should show geographic distribution of jobs and salaries
+- Different metro areas should have distinct salary and skills demand profiles
+
+**Actual**:
+- All `LOCATION_KEY` values are "LOC_UNKNOWN"
+- Location-based analytics are completely flat/aggregated
+- No geographic differentiation in any analytics outputs
+
+### Files Affected
+**Primary Analytics Files**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_facts.py` - Fact table location lookup
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_dimensions.py` - Location dimension creation
+- `pipeline/sql/objects/views/analytics_salary_intelligence.sql` - Broken location-based salary analysis
+- `pipeline/sql/objects/tables/analytics_fact_skills_demand_weekly.sql` - Broken location-based skills analysis
+
+**Related Pipeline Files**:
+- Location standardization in LLM enrichment assets
+- Location normalization in stage layer
+- Location bridge tables and lookup logic
+
+### Investigation Required
+1. **Dimension Analysis**: Verify `DIM_LOCATION` table is properly populated with expected location entries
+2. **Source Data Review**: Check location data quality in `STAGE.JOBS_LLM_ENRICHED` and earlier pipeline stages
+3. **Join Logic Audit**: Review location dimension join conditions in fact table creation
+4. **Standardization Check**: Ensure location standardization produces values that match dimension keys
+5. **Default Logic Review**: Identify why all records fall back to "LOC_UNKNOWN" instead of finding matches
+
+### Proposed Investigation Queries
+```sql
+-- Check dimension population
+SELECT COUNT(*), MIN(LOCATION_KEY), MAX(LOCATION_KEY)
+FROM ANALYTICS.DIM_LOCATION;
+
+-- Check source location data distribution
+SELECT CITY, STATE_PROVINCE, COUNTRY, COUNT(*)
+FROM STAGE.JOBS_LLM_ENRICHED
+WHERE CITY IS NOT NULL
+GROUP BY CITY, STATE_PROVINCE, COUNTRY
+ORDER BY COUNT(*) DESC LIMIT 20;
+
+-- Check location standardization results
+SELECT STANDARDIZED_LOCATION, COUNT(*)
+FROM STAGE.LOCATIONS_NORMALIZED
+GROUP BY STANDARDIZED_LOCATION
+ORDER BY COUNT(*) DESC LIMIT 20;
+```
+
+### Priority Justification
+**High** priority because:
+- Breaks fundamental location-based analytics across multiple systems
+- Affects critical business intelligence for hiring market analysis
+- Impacts salary intelligence and competitive analysis
+- Prevents geographic expansion and market strategy decisions
+- Multiple downstream assets and views completely broken
+- Data quality issue that undermines confidence in entire analytics platform
+
+### Related Issues
+- Potential connection to location standardization pipeline
+- May relate to LLM location extraction quality
+- Could indicate broader dimension lookup issues in fact table creation
+- Might affect other geographic features in analytics layer
 
 ---
 
