@@ -2398,7 +2398,7 @@ SCHEMA_DRIFT_CONFIG = {
 
 ### Implementation Summary
 
-**✅ COMPLETED SUCCESSFULLY - 2025-01-20**
+**✅ COMPLETED SUCCESSFULLY - 2025-06-26**
 
 **Components Implemented**:
 - ✅ **Core Asset**: `schema_drift_validation` in `dagster_betterjobs/assets/schema_validation.py`
@@ -2436,5 +2436,515 @@ SCHEMA_DRIFT_CONFIG = {
 - ✅ **Graceful Failure**: Asset failures don't affect other pipeline components
 - ✅ **Alert Quality**: Structured categorization prevents noise and alert fatigue
 - ✅ **Monitoring Excellence**: Complete execution history and failure analysis in Dagster UI
+
+---
+
+## ENHANCEMENT-029: Hash-Based View Update Management - Schema-as-Code Evolution
+
+**Status:** 📋 **Planned**
+**Priority:** Medium
+**Component:** Schema-as-Code Infrastructure - View Management
+**Date Planned:** 2025-06-26 (Post-Schema Validation completion)
+**Estimated Effort:** 1.5 days
+**Business Impact:** Medium - Improves development efficiency and deployment reliability
+
+### Problem Statement
+The current schema-as-code view creation process uses `CREATE VIEW IF NOT EXISTS` pattern, which means view definition changes during development are never applied to the database. Once a view exists, modifications to the SQL file won't be reflected in the database schema, requiring manual `DROP VIEW` operations or `CREATE OR REPLACE` commands.
+
+**Current Issues**:
+- View logic changes in development don't automatically apply to database
+- Developers must manually track which views need updating
+- Risk of database schema diverging from code definitions
+- No change tracking or audit trail for view modifications
+- Inconsistent view states between development and production environments
+
+### Description
+Implement intelligent hash-based change detection for database views that automatically applies updates when view definitions change while maintaining production safety and providing complete change audit trails. The system will track content hashes of view SQL files and only update views when the actual definition has changed.
+
+### Business Justification
+- **Development Efficiency**: Automatic view updates eliminate manual schema management
+- **Code-Database Consistency**: Ensures database always reflects current code state
+- **Change Tracking**: Complete audit trail of view modifications and timing
+- **Production Safety**: Controlled updates prevent accidental overwrites
+- **Deployment Reliability**: Consistent deployment behavior across environments
+- **Developer Experience**: Seamless development workflow without manual intervention
+
+### Technical Approach
+
+**Hash-Based Change Detection Strategy**:
+1. **Content Hashing**: Calculate MD5 hash of view SQL file content
+2. **Metadata Tracking**: Store hash and modification metadata in tracking table
+3. **Change Detection**: Compare current file hash with stored hash
+4. **Conditional Updates**: Only execute `CREATE OR REPLACE` when hash differs
+5. **Audit Trail**: Record all changes with timestamps and context
+
+**Core Architecture Components**:
+```python
+def should_update_view(view_file_path, view_name, snowflake, context):
+    # Calculate hash of current SQL file content
+    current_hash = hashlib.md5(sql_content.encode()).hexdigest()
+
+    # Check stored hash in metadata table
+    stored_hash = get_stored_view_hash(view_name, snowflake)
+
+    return current_hash != stored_hash
+
+def process_view_with_change_detection(view_file, objects_dir, snowflake, context):
+    # Read SQL content and calculate hash
+    with open(objects_dir / view_file, 'r') as f:
+        sql_content = f.read()
+
+    content_hash = hashlib.md5(sql_content.encode()).hexdigest()
+    view_name = extract_view_name_from_file(view_file)
+
+    # Check if update needed
+    if view_needs_update(view_name, content_hash, snowflake):
+        context.log.info(f"📝 View changed, updating: {view_name}")
+        execute_sql(f"CREATE OR REPLACE VIEW {view_name} AS {sql_content}")
+        update_view_hash(view_name, content_hash, view_file, snowflake)
+    else:
+        context.log.info(f"✅ View unchanged, skipping: {view_name}")
+```
+
+### Implementation Plan
+
+**Phase 1: Metadata Infrastructure (Day 1)**
+
+1. **Create View Version Tracking Table**:
+```sql
+-- File: pipeline/sql/objects/tables/stage_view_version_tracking.sql
+CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.VIEW_VERSION_TRACKING (
+    VIEW_NAME STRING PRIMARY KEY,
+    CONTENT_HASH STRING NOT NULL,
+    LAST_UPDATED TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    FILE_PATH STRING,
+    VIEW_SCHEMA STRING,
+    UPDATED_BY STRING DEFAULT 'dagster_pipeline',
+    PREVIOUS_HASH STRING,
+    UPDATE_REASON STRING DEFAULT 'content_changed',
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+) CLUSTER BY (VIEW_SCHEMA, VIEW_NAME);
+```
+
+2. **Implement Hash Utilities**:
+```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/utils/view_version_utils.py
+
+import hashlib
+from pathlib import Path
+from typing import Optional, Dict, Any
+from dagster import AssetExecutionContext
+from dagster_snowflake import SnowflakeResource
+
+def calculate_view_content_hash(sql_content: str) -> str:
+    """Calculate MD5 hash of view SQL content"""
+    # Normalize content: remove comments, extra whitespace
+    cleaned_content = normalize_sql_content(sql_content)
+    return hashlib.md5(cleaned_content.encode()).hexdigest()
+
+def normalize_sql_content(sql_content: str) -> str:
+    """Normalize SQL content for consistent hashing"""
+    lines = []
+    for line in sql_content.split('\n'):
+        line = line.strip()
+        # Skip empty lines and comments
+        if line and not line.startswith('--'):
+            lines.append(line)
+    return '\n'.join(lines)
+
+def get_stored_view_hash(view_name: str, snowflake: SnowflakeResource) -> Optional[str]:
+    """Retrieve stored hash for view from tracking table"""
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT CONTENT_HASH FROM BETTERJOBS_DB.STAGE.VIEW_VERSION_TRACKING WHERE VIEW_NAME = %s",
+                (view_name,)
+            )
+            result = cursor.fetchone()
+            return result[0] if result else None
+        finally:
+            cursor.close()
+
+def update_view_hash(view_name: str, content_hash: str, file_path: str,
+                    view_schema: str, snowflake: SnowflakeResource, context: AssetExecutionContext):
+    """Update stored hash for view in tracking table"""
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            # Get previous hash for audit trail
+            previous_hash = get_stored_view_hash(view_name, snowflake)
+
+            cursor.execute("""
+                MERGE INTO BETTERJOBS_DB.STAGE.VIEW_VERSION_TRACKING t
+                USING (SELECT %s as view_name, %s as content_hash, %s as file_path,
+                              %s as view_schema, %s as previous_hash) s
+                ON t.VIEW_NAME = s.view_name
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        CONTENT_HASH = s.content_hash,
+                        LAST_UPDATED = CURRENT_TIMESTAMP,
+                        FILE_PATH = s.file_path,
+                        PREVIOUS_HASH = s.previous_hash,
+                        UPDATE_REASON = 'content_changed'
+                WHEN NOT MATCHED THEN
+                    INSERT (VIEW_NAME, CONTENT_HASH, FILE_PATH, VIEW_SCHEMA, PREVIOUS_HASH, UPDATE_REASON)
+                    VALUES (s.view_name, s.content_hash, s.file_path, s.view_schema, s.previous_hash, 'initial_creation')
+            """, (view_name, content_hash, file_path, view_schema, previous_hash))
+
+            context.log.info(f"📊 Updated hash tracking for {view_name}: {content_hash[:8]}...")
+        finally:
+            cursor.close()
+
+def view_needs_update(view_name: str, current_hash: str, snowflake: SnowflakeResource) -> bool:
+    """Check if view needs updating based on hash comparison"""
+    stored_hash = get_stored_view_hash(view_name, snowflake)
+    return stored_hash != current_hash
+
+def extract_view_name_from_file(view_file: str) -> str:
+    """Extract view name from SQL file"""
+    # Remove .sql extension and convert to schema.view format
+    base_name = Path(view_file).stem
+
+    # Determine schema based on prefix
+    if base_name.startswith('analytics_'):
+        schema = 'ANALYTICS'
+        view_name = base_name.replace('analytics_', '').upper()
+    elif base_name.startswith('stage_'):
+        schema = 'STAGE'
+        view_name = base_name.replace('stage_', '').upper()
+    elif base_name.startswith('raw_'):
+        schema = 'RAW'
+        view_name = base_name.replace('raw_', '').upper()
+    else:
+        schema = 'ANALYTICS'  # Default
+        view_name = base_name.upper()
+
+    return f"{schema}.{view_name}"
+```
+
+**Phase 2: Enhanced View Processing (Day 1)**
+
+1. **Update views_setup Asset**:
+```python
+# Modify: pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py
+
+from ..utils.view_version_utils import (
+    calculate_view_content_hash, view_needs_update, update_view_hash,
+    extract_view_name_from_file
+)
+
+def process_view_files_with_change_detection(snowflake: SnowflakeResource, objects_dir: Path,
+                                           view_files: List[str], context: AssetExecutionContext) -> Dict[str, Any]:
+    """
+    Process view files with hash-based change detection
+    """
+    results = []
+    successful_views = 0
+    failed_views = 0
+    updated_views = 0
+    skipped_views = 0
+
+    with snowflake.get_connection() as conn:
+        for view_file in view_files:
+            view_path = objects_dir / view_file
+            view_name = extract_view_name_from_file(view_file)
+
+            context.log.info(f"📋 Processing view file: {view_file} -> {view_name}")
+
+            try:
+                # Read SQL content
+                with open(view_path, 'r') as f:
+                    sql_content = f.read()
+
+                # Calculate content hash
+                content_hash = calculate_view_content_hash(sql_content)
+
+                # Check if update needed
+                if view_needs_update(view_name, content_hash, snowflake):
+                    context.log.info(f"📝 View definition changed, updating: {view_name}")
+
+                    # Execute CREATE OR REPLACE VIEW
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(sql_content)
+                        context.log.info(f"✅ Successfully updated view: {view_name}")
+
+                        # Update hash tracking
+                        schema_name = view_name.split('.')[0]
+                        update_view_hash(view_name, content_hash, str(view_path),
+                                       schema_name, snowflake, context)
+
+                        updated_views += 1
+                        successful_views += 1
+                    finally:
+                        cursor.close()
+                else:
+                    context.log.info(f"✅ View unchanged, skipping: {view_name}")
+                    skipped_views += 1
+                    successful_views += 1
+
+                results.append({
+                    "view_file": view_file,
+                    "view_name": view_name,
+                    "status": "updated" if view_needs_update(view_name, content_hash, snowflake) else "skipped",
+                    "content_hash": content_hash[:8] + "..."
+                })
+
+            except Exception as e:
+                context.log.error(f"❌ Error processing {view_file}: {str(e)}")
+                failed_views += 1
+                results.append({
+                    "view_file": view_file,
+                    "view_name": view_name,
+                    "status": "error",
+                    "error": str(e)
+                })
+
+    return {
+        "status": "success" if failed_views == 0 else "partial_success",
+        "total_views": len(view_files),
+        "successful_views": successful_views,
+        "failed_views": failed_views,
+        "updated_views": updated_views,
+        "skipped_views": skipped_views,
+        "results": results
+    }
+
+@asset(
+    description="Initialize all view objects using hash-based change detection",
+    group_name="0_infrastructure_setup",
+    kinds={"snowflake", "SQL", "python"},
+    deps=[tables_setup]
+)
+def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Execute all view object files with intelligent change detection
+    """
+
+    # Ensure tracking table exists
+    ensure_object_exists("tables/stage_view_version_tracking.sql", snowflake, context)
+
+    # Get view files and process with change detection
+    objects_dir = get_objects_directory() / "views"
+    view_files = [f.name for f in objects_dir.glob("*.sql") if f.is_file()]
+    view_files.sort()  # Consistent processing order
+
+    context.log.info(f"🔧 Processing {len(view_files)} view objects with hash-based change detection")
+
+    # Process views with change detection
+    result = process_view_files_with_change_detection(snowflake, objects_dir, view_files, context)
+
+    context.log.info(f"Views setup completed: {result['updated_views']} updated, {result['skipped_views']} skipped, {result['failed_views']} failures")
+
+    return result
+```
+
+**Phase 3: Environment-Based Configuration (Day 2)**
+
+1. **Environment Strategy Implementation**:
+```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/config/view_update_config.py
+
+import os
+from typing import Optional
+
+class ViewUpdateConfig:
+    def __init__(self):
+        self.environment = os.environ.get('DAGSTER_ENVIRONMENT', 'development')
+        self.force_update_in_dev = os.environ.get('FORCE_VIEW_UPDATES_DEV', 'true').lower() == 'true'
+        self.hash_tracking_enabled = os.environ.get('VIEW_HASH_TRACKING', 'true').lower() == 'true'
+        self.backup_views_before_update = os.environ.get('BACKUP_VIEWS', 'false').lower() == 'true'
+
+    def should_use_hash_detection(self) -> bool:
+        """Determine if hash-based detection should be used"""
+        if self.environment == 'development' and self.force_update_in_dev:
+            return False  # Always update in dev if configured
+        return self.hash_tracking_enabled
+
+    def get_update_strategy(self) -> str:
+        """Get the update strategy for current environment"""
+        if not self.hash_tracking_enabled:
+            return 'create_if_not_exists'
+        elif self.environment == 'development' and self.force_update_in_dev:
+            return 'always_replace'
+        else:
+            return 'hash_based'
+
+def get_view_update_strategy(environment: Optional[str] = None) -> str:
+    """Get view update strategy based on environment"""
+    config = ViewUpdateConfig()
+
+    if environment:
+        config.environment = environment
+
+    return config.get_update_strategy()
+```
+
+2. **Strategy Implementation in Asset**:
+```python
+def execute_view_update(view_name: str, sql_content: str, strategy: str,
+                       snowflake: SnowflakeResource, context: AssetExecutionContext):
+    """Execute view update based on strategy"""
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            if strategy == 'always_replace':
+                # Development: Always replace
+                cursor.execute(f"CREATE OR REPLACE VIEW {view_name} AS {sql_content}")
+                context.log.info(f"🔄 Force updated view (dev mode): {view_name}")
+
+            elif strategy == 'hash_based':
+                # Production: Hash-based detection
+                content_hash = calculate_view_content_hash(sql_content)
+                if view_needs_update(view_name, content_hash, snowflake):
+                    cursor.execute(f"CREATE OR REPLACE VIEW {view_name} AS {sql_content}")
+                    update_view_hash(view_name, content_hash, "path", "schema", snowflake, context)
+                    context.log.info(f"📝 Hash-based update: {view_name}")
+                else:
+                    context.log.info(f"✅ View unchanged: {view_name}")
+
+            else:  # 'create_if_not_exists'
+                # Legacy: Only create if not exists
+                cursor.execute(f"CREATE VIEW IF NOT EXISTS {view_name} AS {sql_content}")
+                context.log.info(f"➕ Created view if not exists: {view_name}")
+
+        finally:
+            cursor.close()
+```
+
+**Phase 4: Testing and Validation (Day 2)**
+
+1. **Unit Tests**:
+```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/utils/test_view_version_utils.py
+
+import pytest
+from ..view_version_utils import calculate_view_content_hash, normalize_sql_content
+
+def test_content_hash_consistency():
+    """Test that identical content produces identical hashes"""
+    sql1 = "CREATE VIEW test AS SELECT * FROM table"
+    sql2 = "CREATE VIEW test AS SELECT * FROM table"
+
+    assert calculate_view_content_hash(sql1) == calculate_view_content_hash(sql2)
+
+def test_content_normalization():
+    """Test SQL content normalization removes comments and whitespace"""
+    sql_with_comments = """
+    -- This is a comment
+    CREATE VIEW test AS
+    SELECT * FROM table
+    -- Another comment
+    """
+
+    sql_clean = "CREATE VIEW test AS\nSELECT * FROM table"
+
+    assert normalize_sql_content(sql_with_comments) == normalize_sql_content(sql_clean)
+
+def test_hash_change_detection():
+    """Test that content changes produce different hashes"""
+    sql1 = "CREATE VIEW test AS SELECT col1 FROM table"
+    sql2 = "CREATE VIEW test AS SELECT col1, col2 FROM table"
+
+    assert calculate_view_content_hash(sql1) != calculate_view_content_hash(sql2)
+```
+
+2. **Integration Testing**:
+```python
+def test_view_update_workflow():
+    """Test complete view update workflow"""
+    # Test view creation
+    # Test hash storage
+    # Test change detection
+    # Test view update
+    # Test hash update
+```
+
+### Files to be Modified/Created
+
+**New Files**:
+- `pipeline/sql/objects/tables/stage_view_version_tracking.sql` - Hash tracking table
+- `pipeline/dagster_betterjobs/dagster_betterjobs/utils/view_version_utils.py` - Hash utilities
+- `pipeline/dagster_betterjobs/dagster_betterjobs/config/view_update_config.py` - Environment configuration
+- `pipeline/dagster_betterjobs/dagster_betterjobs/utils/test_view_version_utils.py` - Unit tests
+
+**Modified Files**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - Enhanced views_setup asset
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/__init__.py` - Import new utilities
+
+### Success Criteria
+
+- **Automatic Updates**: View changes in SQL files automatically applied to database
+- **Change Detection**: Only modified views are updated, unchanged views skipped
+- **Performance**: Hash-based detection adds <20% to view processing time
+- **Audit Trail**: Complete change history stored in tracking table
+- **Environment Safety**: Different behavior in development vs. production
+- **Developer Experience**: Seamless workflow without manual intervention
+- **Zero Data Loss**: All view updates preserve existing data and dependencies
+
+### Configuration Options
+
+```python
+# Environment variables for view update behavior
+DAGSTER_ENVIRONMENT=development|production
+FORCE_VIEW_UPDATES_DEV=true|false         # Always update in dev
+VIEW_HASH_TRACKING=true|false              # Enable hash-based detection
+BACKUP_VIEWS=true|false                    # Backup before updates
+VIEW_UPDATE_STRATEGY=hash_based|always_replace|create_if_not_exists
+```
+
+### Benefits
+
+**Development Efficiency**:
+- ✅ **Automatic Sync**: Database views always match code definitions
+- ✅ **No Manual Steps**: Eliminate need for manual view management
+- ✅ **Fast Iteration**: Immediate feedback on view changes
+- ✅ **Consistent State**: Code and database stay synchronized
+
+**Production Safety**:
+- ✅ **Controlled Updates**: Only apply changes when content actually differs
+- ✅ **Change Tracking**: Complete audit trail of modifications
+- ✅ **Environment Aware**: Different behavior for development vs. production
+- ✅ **Rollback Capability**: Hash history enables change reversal
+
+**Operational Excellence**:
+- ✅ **Performance Optimized**: Skip unnecessary view recreations
+- ✅ **Monitoring Ready**: Rich metadata for tracking and alerting
+- ✅ **Scalable**: Efficient processing of large numbers of views
+- ✅ **Maintainable**: Clear separation of concerns and configuration
+
+### Risk Mitigation
+
+**Performance Impact**:
+- **Lightweight Hashing**: MD5 calculation on normalized content is fast
+- **Skip Unchanged**: Avoid expensive view recreation when not needed
+- **Batch Processing**: Process multiple views efficiently
+
+**Data Safety**:
+- **CREATE OR REPLACE**: Atomic view updates preserve dependencies
+- **Error Handling**: Failed updates don't affect other views
+- **Backup Options**: Optional view backup before updates
+
+**Development Workflow**:
+- **Environment Isolation**: Different strategies for dev/prod
+- **Clear Logging**: Detailed logs show what changes were applied
+- **Configuration**: Adjustable behavior via environment variables
+
+### Dependencies
+
+- **Schema-as-Code Infrastructure**: ENHANCEMENT-020 (prerequisite)
+- **View Object Files**: All views must be in SQL object files
+- **Database Permissions**: CREATE/REPLACE VIEW permissions required
+- **Python Libraries**: `hashlib` (built-in), `pathlib` (built-in)
+
+### Future Enhancements
+
+- **Dependency Analysis**: Detect view dependencies before updates
+- **Rollback Automation**: One-click rollback to previous view versions
+- **Change Notifications**: Alert stakeholders of view modifications
+- **Performance Monitoring**: Track view update performance over time
+- **Schema Migration**: Integration with broader schema migration tools
 
 ---

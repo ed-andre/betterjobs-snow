@@ -11,9 +11,10 @@ SELECT
     platform,
     COUNT(*) as total_jobs,
     COUNT(CASE WHEN is_english = TRUE THEN 1 END) as english_jobs,
-    COUNT(CASE WHEN salary_min IS NOT NULL THEN 1 END) as jobs_with_salary,
+    COUNT(CASE WHEN JLE.SALARY_MIN IS NOT NULL THEN 1 END) as jobs_with_salary,
     AVG(data_quality_score) as avg_quality_score,
     MIN(date_posted) as earliest_job,
     MAX(date_posted) as latest_job
-FROM jobs_unified
+FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED JU
+INNER JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED JLE ON JU.JOB_UID = JLE.JOB_UID
 GROUP BY platform;

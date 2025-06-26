@@ -345,3 +345,215 @@ The current data pipeline lacks a comprehensive email alerting system to notify 
 - Connection to data governance and quality standards
 
 ---
+
+## TECH-DEBT-003: Implement Safe Table Schema Change Management for Production Data
+
+**Status:** 🔍 **Planned**
+**Priority:** Medium
+**Component:** Schema-as-Code Infrastructure - Table Evolution
+**Date Identified:** 2025-06-26
+**Estimated Effort:** 5-7 days (across 3 phases)
+**Business Impact:** High - Prevents data loss and downtime during schema evolution
+
+### Problem Statement
+The current schema-as-code system handles view updates well but lacks a safe mechanism for table schema changes. Table modifications (column additions, removals, renames, type changes) require careful handling to prevent data loss, minimize downtime, and avoid costly full ETL reruns.
+
+**Specific Issues Identified:**
+1. **Dangerous Recreation Pattern**: Current approach would use `DROP TABLE` and recreate, causing immediate data loss
+2. **No Migration Framework**: No systematic way to handle schema evolution while preserving data
+3. **Downtime Risk**: Schema changes could require pipeline downtime and full data reprocessing
+4. **Version Control Gap**: No tracking of table schema versions or change history
+5. **Rollback Complexity**: No clean way to revert problematic schema changes
+
+### Business Impact
+- **Data Loss Risk**: Accidental table recreation could destroy historical data
+- **Operational Downtime**: Schema changes requiring full ETL reruns (hours/days)
+- **Development Friction**: Developers avoiding necessary schema improvements due to complexity
+- **Production Instability**: Unsafe schema changes causing pipeline failures
+- **Recovery Costs**: Expensive data recovery and pipeline rebuilding after schema issues
+
+### Root Cause Analysis Areas
+
+**1. Current View vs. Table Handling**
+- Views: Safe `CREATE OR REPLACE` pattern or Hash-Based View Update Management (ENHANCEMENT-029) works perfectly
+- Tables: No equivalent safe pattern - `DROP TABLE` causes data loss
+- Impact: Asymmetric handling creates operational risks
+
+**2. Schema Evolution Patterns**
+- Issue: No framework for common schema changes (add/drop/rename columns)
+- Current State: Manual schema changes outside of automated pipeline
+- Impact: Schema drift between code and database
+
+**3. Data Preservation Requirements**
+- Issue: Production tables contain valuable historical data
+- Current State: No automated data preservation during schema changes
+- Impact: Risk of losing months/years of collected data
+
+### Proposed 3-Phase Solution Strategy
+
+**Phase 1: Immediate - Column Addition/Modification Strategy (1-2 days)**
+*Handle safe, non-breaking schema changes*
+
+**Scope**: Column additions, column constraint modifications, index changes
+**Approach**: Direct ALTER statements for safe operations
+**Risk Level**: Low - No data loss potential
+
+**Implementation**:
+1. **Safe Operation Detection**:
+   - Identify schema changes that can be safely applied via ALTER statements
+   - Column additions (new columns with DEFAULT values)
+   - Column constraint relaxation (removing NOT NULL, increasing length)
+   - Index additions/removals
+   - Comment modifications
+
+2. **Enhanced Hash-Based Detection**:
+   - Extend view hash system to detect table schema changes
+   - Parse SQL table definitions to identify safe vs. unsafe changes
+   - Generate appropriate ALTER statements for safe changes
+
+3. **Change Validation**:
+   - Pre-flight checks to ensure ALTER operations won't break existing data
+   - Dependency analysis to prevent breaking downstream views/tables
+   - Rollback planning for each change type
+
+**Phase 2: Medium-term - Migration-Based Approach (2-3 days)**
+*Handle complex schema changes with data preservation*
+
+**Scope**: Column renames, type changes, complex restructuring
+**Approach**: Staged migration with temporary tables and data copying
+**Risk Level**: Medium - Requires careful data migration
+
+**Implementation**:
+1. **Migration Framework**:
+   - Create table migration tracking system (`STAGE.TABLE_MIGRATIONS`)
+   - Migration script generation based on schema differences
+   - Automated data copying with transformation support
+
+2. **Staged Migration Process**:
+   ```sql
+   -- Step 1: Create new table with updated schema
+   CREATE TABLE ANALYTICS.FACT_JOB_POSTINGS_V2 AS SELECT ... FROM ANALYTICS.FACT_JOB_POSTINGS;
+
+   -- Step 2: Data validation and testing
+   -- Step 3: Atomic swap (rename operations)
+   ALTER TABLE ANALYTICS.FACT_JOB_POSTINGS RENAME TO ANALYTICS.FACT_JOB_POSTINGS_OLD;
+   ALTER TABLE ANALYTICS.FACT_JOB_POSTINGS_V2 RENAME TO ANALYTICS.FACT_JOB_POSTINGS;
+
+   -- Step 4: Drop old table after validation period
+   ```
+
+3. **Data Validation Pipeline**:
+   - Automated row count validation
+   - Data integrity checks during migration
+   - Rollback triggers if validation fails
+
+**Phase 3: Long-term - Blue-Green Deployment (2-3 days)**
+*Zero-downtime schema changes for production*
+
+**Scope**: Production-grade schema changes with zero downtime
+**Approach**: Parallel schema deployment with traffic switching
+**Risk Level**: High complexity, Low operational risk
+
+**Implementation**:
+1. **Blue-Green Infrastructure**:
+   - Dual schema deployment (ANALYTICS_BLUE, ANALYTICS_GREEN)
+   - Traffic routing configuration
+   - Automated schema synchronization
+
+2. **Deployment Process**:
+   ```
+   Current State: ANALYTICS → ANALYTICS_BLUE (active)
+   Deployment: Deploy changes to ANALYTICS_GREEN (inactive)
+   Testing: Validate ANALYTICS_GREEN with production data
+   Switch: Route traffic from BLUE to GREEN
+   Cleanup: ANALYTICS_BLUE becomes inactive, ready for next deployment
+   ```
+
+3. **Automated Rollback**:
+   - Instant traffic switching back to previous schema
+   - Health checks and automatic rollback triggers
+   - Zero-downtime rollback capability
+
+### Files to Investigate and Modify
+
+**Phase 1 Files:**
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - Extend table creation logic
+- `pipeline/dagster_betterjobs/dagster_betterjobs/utils/schema_utils.py` - Add schema change detection
+- `pipeline/sql/schema_setup/` - Add table migration tracking
+
+**Phase 2 Files:**
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/table_migrations.py` - New migration asset
+- `pipeline/dagster_betterjobs/dagster_betterjobs/transformations/migration_utilities.py` - Migration logic
+- `pipeline/sql/migrations/` - New directory for migration scripts
+
+**Phase 3 Files:**
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/blue_green_deployment.py` - Deployment asset
+- `pipeline/dagster_betterjobs/dagster_betterjobs/resources.py` - Blue-green resource configuration
+- `pipeline/sql/blue_green/` - Blue-green deployment SQL templates
+
+### Success Criteria
+
+**Phase 1 Success Criteria:**
+- ✅ Safe column additions applied automatically without data loss
+- ✅ Schema change detection works reliably for table modifications
+- ✅ Rollback capability for safe schema changes
+- ✅ Zero false positives in safe vs. unsafe change detection
+
+**Phase 2 Success Criteria:**
+- ✅ Complex schema changes (renames, type changes) handled safely with data preservation
+- ✅ Migration validation prevents data corruption
+- ✅ Rollback capability for complex migrations
+- ✅ <30 minute downtime for complex schema changes
+
+**Phase 3 Success Criteria:**
+- ✅ Zero-downtime schema deployments in production
+- ✅ Instant rollback capability (<1 minute)
+- ✅ Automated health checks and rollback triggers
+- ✅ Production-grade reliability and monitoring
+
+### Risks and Mitigation
+
+**Risk: Data Loss During Migration**
+- Mitigation: Comprehensive data validation at each step
+- Backup: Automated backups before any schema change
+- Testing: Extensive testing on non-production data
+
+**Risk: Migration Complexity**
+- Mitigation: Start with simple cases, gradually handle complex scenarios
+- Validation: Thorough testing of migration logic
+- Rollback: Always maintain rollback capability
+
+**Risk: Downtime During Transition**
+- Mitigation: Phase 3 blue-green deployment eliminates downtime
+- Monitoring: Real-time health checks during migrations
+- Automation: Automated rollback on failure detection
+
+**Risk: Dependency Breakage**
+- Mitigation: Comprehensive dependency analysis before changes
+- Testing: Validate downstream views and assets after changes
+- Communication: Clear notification of breaking changes
+
+### Implementation Timeline
+
+**Phase 1 (Immediate): 1-2 days**
+- Day 1: Safe schema change detection and ALTER statement generation
+- Day 2: Testing and validation of safe schema changes
+
+**Phase 2 (Medium-term): 2-3 days**
+- Day 1: Migration framework and temporary table strategy
+- Day 2: Data validation and staged migration process
+- Day 3: Testing complex schema changes and rollback procedures
+
+**Phase 3 (Long-term): 2-3 days**
+- Day 1: Blue-green infrastructure setup
+- Day 2: Traffic routing and automated deployment process
+- Day 3: Health checks, monitoring, and rollback automation
+
+### Related Issues
+- Integration with existing schema-as-code system (ENHANCEMENT-029)
+- Coordination with data governance and change management processes
+- Alignment with CI/CD pipeline and deployment procedures
+- Future integration with database versioning and audit trails
+- Connection to disaster recovery and backup strategies
+
+---
