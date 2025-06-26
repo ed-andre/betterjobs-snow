@@ -1759,6 +1759,347 @@ HAVING COUNT(CASE WHEN is_primary_skill THEN 1 END) != 1;  -- Should return 0 ro
 
 ---
 
+## ENHANCEMENT-028: Schema Drift Detection Sensor - Automated View Validation
+
+**Status:** 📋 **Planned**
+**Priority:** Medium
+**Component:** Data Quality & Pipeline Monitoring
+**Date Planned:** 2025-07-01 (Post-Core Analytics completion)
+**Estimated Effort:** 1 day
+**Business Impact:** Medium - Proactive detection of pipeline development errors
+
+### Problem Statement
+Schema drift within the data pipeline occurs in two primary scenarios:
+1. **Source System Changes**: External data sources modify their schema (columns added/removed/renamed)
+2. **Development Errors**: Internal pipeline changes break view definitions due to missing columns or tables
+
+The first scenario requires complex solutions involving schema evolution and source system monitoring. The second scenario represents actionable development errors that can be detected and resolved quickly through automated validation.
+
+### Description
+Implement a Dagster sensor that periodically validates all database views by attempting to execute them and detecting schema-related failures. The sensor will focus on detecting development-induced schema drift (missing columns, renamed tables, incorrect joins) rather than complex source system schema evolution.
+
+### Business Justification
+- **Early Detection**: Catch view schema issues before they impact downstream analytics and reporting
+- **Development Quality**: Prevent schema drift errors from reaching production
+- **Operational Efficiency**: Automated detection reduces manual debugging and troubleshooting
+- **Data Reliability**: Ensure views remain functional as pipeline evolves
+- **Developer Experience**: Clear alerts help developers identify and fix schema issues quickly
+- **Cost Avoidance**: Prevent cascade failures in analytics and reporting systems
+
+### Technical Approach
+
+**Focus Areas** (Development Error Detection):
+- ✅ **View Validation**: Test all views can execute without column/table errors
+- ✅ **Missing Column Detection**: Catch renamed or removed column references
+- ✅ **Table Dependency Validation**: Detect missing or renamed table dependencies
+- ✅ **Join Relationship Validation**: Identify broken foreign key relationships
+- ✅ **Data Type Compatibility**: Detect incompatible column type changes
+
+**Excluded Scope** (Source System Changes):
+- ❌ **External Schema Evolution**: Source system column additions/removals
+- ❌ **Complex Schema Migration**: Automated schema adaptation logic
+- ❌ **Source System Monitoring**: Real-time monitoring of external data sources
+- ❌ **Data Content Validation**: Focus on structure, not data quality
+
+### Reasoning Behind Approach
+
+**Why Focus on Development Errors Only:**
+
+1. **Actionable vs. Complex**:
+   - **Development errors**: Simple to detect and fix (missing column → update view definition)
+   - **Source changes**: Complex to handle (requires business logic, data mapping, migration strategies)
+
+2. **Cost-Benefit Analysis**:
+   - **Development detection**: High impact, low complexity, immediate ROI
+   - **Source system handling**: Low frequency, high complexity, requires significant infrastructure
+
+3. **Existing Pipeline Patterns**:
+   - Current pipeline already has sensor infrastructure (`adhoc_company_urls_sensor`)
+   - View definitions follow schema-as-code pattern with predictable failure modes
+   - Development workflow benefits from quick feedback loops
+
+4. **Risk Management**:
+   - **Development errors**: High frequency, low detection complexity, immediate business impact
+   - **Source changes**: Low frequency, requires business decision-making, often planned
+
+**Why Sensor Pattern is Appropriate:**
+- **Consistent with Architecture**: Matches existing `adhoc_company_urls_sensor` pattern
+- **Non-blocking**: Runs independently without impacting pipeline execution
+- **Configurable Frequency**: Can adjust monitoring intervals based on development activity
+- **Alert Integration**: Natural integration with existing logging and alerting systems
+
+### Implementation Plan
+
+**Phase 1: Core Schema Validation Sensor**
+
+1. **Create `schema_drift_detection_sensor.py`**:
+```python
+from dagster import sensor, DefaultSensorStatus, SensorResult, SkipReason, get_dagster_logger
+from dagster_snowflake import SnowflakeResource
+from typing import Dict, List, Any
+from datetime import datetime
+
+@sensor(
+    name="schema_drift_detection",
+    minimum_interval_seconds=3600,  # Run every hour
+    default_status=DefaultSensorStatus.RUNNING,
+    description="Detect schema drift in database views caused by development changes"
+)
+def schema_drift_detection_sensor(context, snowflake: SnowflakeResource):
+    """
+    Validate all database views for schema drift issues.
+
+    Detection Strategy:
+    1. Get list of all views from information_schema
+    2. Execute SELECT * FROM view LIMIT 1 for each view
+    3. Catch and categorize schema-related exceptions
+    4. Generate alerts for detected issues
+    5. Log detailed error information for debugging
+    """
+
+    logger = get_dagster_logger()
+
+    try:
+        drift_issues = validate_all_views(snowflake, logger)
+
+        if drift_issues:
+            # Generate alert for detected schema drift
+            alert_message = format_drift_alert(drift_issues)
+            logger.error(f"Schema drift detected: {alert_message}")
+
+            return SensorResult(
+                run_requests=[],  # Don't trigger runs, just alert
+                cursor=datetime.now().isoformat()
+            )
+        else:
+            logger.info("Schema validation completed - no drift detected")
+            return SensorResult(
+                run_requests=[],
+                cursor=datetime.now().isoformat()
+            )
+
+    except Exception as e:
+        logger.error(f"Schema drift sensor failed: {str(e)}")
+        return SkipReason(f"Sensor execution failed: {str(e)}")
+
+def validate_all_views(snowflake: SnowflakeResource, logger) -> List[Dict[str, Any]]:
+    """Validate all views and return list of drift issues"""
+
+    drift_issues = []
+
+    with snowflake.get_connection() as conn:
+        # Get all views in our schemas
+        views_query = """
+        SELECT
+            table_schema,
+            table_name,
+            table_schema || '.' || table_name as full_view_name
+        FROM information_schema.views
+        WHERE table_schema IN ('RAW', 'STAGE', 'ANALYTICS')
+        ORDER BY table_schema, table_name
+        """
+
+        views = conn.execute(views_query).fetchall()
+        logger.info(f"Validating {len(views)} views for schema drift")
+
+        for view in views:
+            schema_name = view[0]
+            view_name = view[1]
+            full_name = view[2]
+
+            try:
+                # Simple validation query
+                validation_query = f"SELECT * FROM {full_name} LIMIT 1"
+                conn.execute(validation_query)
+
+            except Exception as e:
+                error_message = str(e).lower()
+
+                # Categorize schema drift types
+                drift_type = categorize_schema_error(error_message, full_name)
+
+                if drift_type:  # Only report actual schema drift, not data issues
+                    drift_issues.append({
+                        'view_name': full_name,
+                        'schema': schema_name,
+                        'drift_type': drift_type,
+                        'error_message': str(e),
+                        'detected_at': datetime.now().isoformat()
+                    })
+
+                    logger.warning(f"Schema drift detected in {full_name}: {drift_type}")
+
+    return drift_issues
+
+def categorize_schema_error(error_message: str, view_name: str) -> str:
+    """Categorize error type to identify schema drift vs. other issues"""
+
+    # Schema drift indicators (development errors)
+    if any(keyword in error_message for keyword in [
+        'invalid identifier', 'column does not exist', 'unknown column',
+        'table or view does not exist', 'object does not exist',
+        'ambiguous column', 'cannot resolve', 'missing column'
+    ]):
+        if 'column' in error_message:
+            return 'missing_column'
+        elif 'table' in error_message or 'view' in error_message:
+            return 'missing_table'
+        else:
+            return 'schema_reference_error'
+
+    # Join/relationship issues
+    elif any(keyword in error_message for keyword in [
+        'join', 'foreign key', 'reference', 'constraint'
+    ]):
+        return 'relationship_error'
+
+    # Data type compatibility issues
+    elif any(keyword in error_message for keyword in [
+        'data type', 'cannot convert', 'type mismatch', 'cast'
+    ]):
+        return 'data_type_error'
+
+    # Not a schema drift issue (data quality, permissions, etc.)
+    else:
+        return None  # Don't report non-schema issues
+
+def format_drift_alert(drift_issues: List[Dict[str, Any]]) -> str:
+    """Format schema drift issues into alert message"""
+
+    summary = {}
+    for issue in drift_issues:
+        drift_type = issue['drift_type']
+        summary[drift_type] = summary.get(drift_type, 0) + 1
+
+    alert_parts = [f"Schema drift detected in {len(drift_issues)} views:"]
+
+    for drift_type, count in summary.items():
+        alert_parts.append(f"  - {drift_type}: {count} views")
+
+    # Add specific view details
+    alert_parts.append("\nAffected views:")
+    for issue in drift_issues[:10]:  # Limit to first 10 for readability
+        alert_parts.append(f"  - {issue['view_name']}: {issue['drift_type']}")
+
+    if len(drift_issues) > 10:
+        alert_parts.append(f"  ... and {len(drift_issues) - 10} more")
+
+    return "\n".join(alert_parts)
+```
+
+2. **Integration with Existing Sensor Patterns**:
+```python
+# Add to dagster_betterjobs/sensors.py
+from .sensors.schema_drift_detection_sensor import schema_drift_detection_sensor
+
+# Include in sensor definitions alongside existing sensors
+```
+
+**Phase 2: Alert Integration and Monitoring**
+
+1. **Enhanced Logging and Alerting**:
+```python
+# Integration with existing logging patterns
+def log_schema_drift_metrics(context, drift_issues: List[Dict]):
+    """Log structured metrics for monitoring integration"""
+
+    context.log_event(
+        AssetMaterialization(
+            asset_key="schema_drift_validation",
+            metadata={
+                "total_views_validated": len(all_views),
+                "drift_issues_detected": len(drift_issues),
+                "drift_types": list(set(issue['drift_type'] for issue in drift_issues)),
+                "affected_schemas": list(set(issue['schema'] for issue in drift_issues))
+            }
+        )
+    )
+```
+
+2. **Configuration Options**:
+```python
+SCHEMA_DRIFT_CONFIG = {
+    "enabled": True,
+    "validation_interval_seconds": 3600,  # 1 hour
+    "schemas_to_monitor": ["RAW", "STAGE", "ANALYTICS"],
+    "alert_on_drift": True,
+    "max_views_per_alert": 10,
+    "exclude_views": [],  # Views to skip (temporary development views)
+}
+```
+
+**Phase 3: Documentation and Monitoring**
+
+1. **Add Monitoring Dashboard Integration**:
+   - Schema drift detection metrics
+   - Alert frequency and resolution tracking
+   - View validation coverage statistics
+   - Historical drift pattern analysis
+
+2. **Developer Workflow Integration**:
+   - Clear error messages with fix suggestions
+   - Integration with development deployment pipeline
+   - Automated issue creation for persistent drift
+
+### Success Criteria
+
+- **Detection Coverage**: Validate 100% of RAW, STAGE, and ANALYTICS views
+- **Alert Accuracy**: >90% of alerts represent actual schema drift (not false positives)
+- **Response Time**: Schema drift detected within 1 hour of occurrence
+- **Fix Guidance**: Clear error categorization helps developers identify root cause
+- **Performance**: Sensor execution completes within 5 minutes for 100+ views
+- **Integration**: Seamless operation alongside existing pipeline sensors
+
+### Benefits
+
+**Development Quality**:
+- ✅ **Early Detection**: Catch schema issues before they impact production
+- ✅ **Clear Feedback**: Categorized errors help developers understand root cause
+- ✅ **Automated Monitoring**: No manual schema validation required
+
+**Operational Reliability**:
+- ✅ **Proactive Alerting**: Issues detected before user impact
+- ✅ **Consistent Monitoring**: Regular validation ensures ongoing reliability
+- ✅ **Low Overhead**: Lightweight sensor doesn't impact pipeline performance
+
+**Cost Effectiveness**:
+- ✅ **Focused Scope**: Addresses actionable issues, avoids over-engineering
+- ✅ **Reuses Infrastructure**: Leverages existing Dagster sensor patterns
+- ✅ **Quick Implementation**: Simple validation logic, immediate value
+
+### Risk Mitigation
+
+**False Positives**:
+- **Categorization Logic**: Only alert on actual schema drift, not data quality issues
+- **Error Pattern Matching**: Specific error message patterns for schema issues
+- **Exclusion Lists**: Ability to exclude temporary development views
+
+**Performance Impact**:
+- **Lightweight Queries**: Simple SELECT LIMIT 1 validation
+- **Reasonable Intervals**: Hourly execution balances detection speed with resource usage
+- **Error Handling**: Sensor failures don't impact pipeline execution
+
+**Alert Fatigue**:
+- **Issue Grouping**: Summarized alerts for multiple related issues
+- **Severity Levels**: Distinguish between critical and minor schema drift
+- **Resolution Tracking**: Avoid repeated alerts for same unresolved issues
+
+### Dependencies
+
+- **Existing Infrastructure**: Dagster sensor framework and Snowflake connectivity
+- **Schema-as-Code Pattern**: View definitions in SQL object files (ENHANCEMENT-020)
+- **Database Permissions**: Sensor requires READ access to information_schema and all monitored views
+
+### Future Enhancements
+
+- **Fix Suggestions**: Automated suggestions for common schema drift patterns
+- **Integration Testing**: Validate views against development/staging data
+- **Trend Analysis**: Track schema drift patterns over time
+- **Automated Resolution**: Simple fixes applied automatically (with approval)
+- **Source System Monitoring**: Extension to handle external schema changes (future consideration)
+
+---
+
 ## ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
 
 **Status:** 📋 **Planned**
