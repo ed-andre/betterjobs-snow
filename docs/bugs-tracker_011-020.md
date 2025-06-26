@@ -30,6 +30,8 @@ This document tracks known bugs and issues in the BetterJobs Snowflake project.
     - BUG-019: Table Creation Order Failures Due to Foreign Key Dependencies
 - **NO ACTION REQUIRED**
 
+---
+
 ## BUG-011: Greenhouse Scraper Character Encoding Corruption - Unicode Escape Processing
 
 **Status:** RESOLVED ✅

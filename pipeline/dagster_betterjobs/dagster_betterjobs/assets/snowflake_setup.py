@@ -537,26 +537,36 @@ def setup_validation(context: AssetExecutionContext, snowflake: SnowflakeResourc
     - Permissions and grants
     """
 
-    validation_queries = [
-        "SHOW DATABASES LIKE 'BETTERJOBS_DB'",
-        "SHOW SCHEMAS IN DATABASE BETTERJOBS_DB",
-        "SHOW ROLES LIKE 'BETTERJOBS_ROLE'",
-        "SHOW TABLES IN SCHEMA BETTERJOBS_DB.RAW",
-        "SHOW TABLES IN SCHEMA BETTERJOBS_DB.STAGE",
-        "SHOW TABLES IN SCHEMA BETTERJOBS_DB.ANALYTICS",
-        "SELECT COUNT(*) as COUNTRIES_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.COUNTRIES_MAPPING",
-        "SELECT COUNT(*) as KEYWORD_STANDARDIZATION_RULES_COUNT FROM BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES",
-        "SELECT COUNT(*) as KEYWORD_TYPE_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING",
-        "SELECT COUNT(*) as LOCATION_METRO_AREA_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_METRO_AREA_MAPPING",
-        "SELECT COUNT(*) as LOCATION_REGION_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_REGION_MAPPING",
-        "SELECT COUNT(*) as LOCATION_TECH_HUB_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_TECH_HUB_MAPPING",
-        "SELECT COUNT(*) as LOCATION_STANDARDIZATION_RULES_COUNT FROM BETTERJOBS_DB.STAGE.LOCATION_STANDARDIZATION_RULES",
-        "SELECT COUNT(*) as SKILL_FAMILY_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.SKILL_FAMILY_MAPPING",
-        "SELECT COUNT(*) as SKILL_STANDARDIZATION_RULES_COUNT FROM BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES",
-        "SELECT COUNT(*) as SKILL_CATEGORY_PATTERNS_COUNT FROM BETTERJOBS_DB.STAGE.SKILL_CATEGORY_PATTERNS",
-        "SELECT COUNT(*) as US_STATES_MAPPING_COUNT FROM BETTERJOBS_DB.STAGE.US_STATES_MAPPING",
-        "SELECT COUNT(*) as us_states_count FROM BETTERJOBS_DB.STAGE.us_states_mapping"
-    ]
+    # Load validation queries from SQL file following schema as code pattern
+    sql_file_path = Path(__file__).parent.parent.parent.parent / "sql" / "schema_setup" / "01_setup_validation_queries.sql"
+
+    try:
+        with open(sql_file_path, 'r') as file:
+            sql_content = file.read()
+    except FileNotFoundError:
+        context.log.error(f"Validation queries file not found: {sql_file_path}")
+        raise
+
+    # Parse individual queries from the SQL file
+    # Split by semicolon and filter out comments and empty lines
+    raw_queries = sql_content.split(';')
+    validation_queries = []
+
+    for query in raw_queries:
+        # Clean up the query: remove comments and whitespace
+        cleaned_query = []
+        for line in query.strip().split('\n'):
+            line = line.strip()
+            # Skip empty lines and comment lines
+            if line and not line.startswith('--'):
+                cleaned_query.append(line)
+
+        if cleaned_query:
+            final_query = ' '.join(cleaned_query).strip()
+            if final_query:
+                validation_queries.append(final_query)
+
+    context.log.info(f"Loaded {len(validation_queries)} validation queries from {sql_file_path}")
 
     validation_results = []
 

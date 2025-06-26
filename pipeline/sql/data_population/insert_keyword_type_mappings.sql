@@ -1,20 +1,20 @@
-/*
- * Keyword Type Mappings Configuration
- *
- * This file contains INSERT statements for populating the KEYWORD_TYPE_MAPPING table
- * with comprehensive keyword type and category classifications.
- *
- * Classification Categories:
- * - Industry Types: technology, healthcare, finance, retail, manufacturing
- * - Company Stage: startup, growth, enterprise, public, non_profit
- * - Role Hierarchy: individual_contributor, manager, director, executive
- * - Function Types: engineering, sales, marketing, operations, support
- * - Work Style: remote_friendly, hybrid, on_site, distributed
- *
- * Usage:
- * Execute this file after creating the KEYWORD_TYPE_MAPPING table
- * to populate it with type classification mappings.
- */
+-- =========================================================================
+ -- Keyword Type Mappings Configuration
+-- =========================================================================
+ -- This file contains INSERT statements for populating the KEYWORD_TYPE_MAPPING table
+ -- with comprehensive keyword type and category classifications.
+ --
+ -- Classification Categories:
+ -- - Industry Types: technology, healthcare, finance, retail, manufacturing
+ -- - Company Stage: startup, growth, enterprise, public, non_profit
+ -- - Role Hierarchy: individual_contributor, manager, director, executive
+ -- - Function Types: engineering, sales, marketing, operations, support
+ -- - Work Style: remote_friendly, hybrid, on_site, distributed
+ --
+ -- Usage:
+ -- Execute this file after creating the KEYWORD_TYPE_MAPPING table
+ -- to populate it with type classification mappings.
+ -- =========================================================================
 
 USE DATABASE BETTERJOBS_DB;
 USE SCHEMA STAGE;
