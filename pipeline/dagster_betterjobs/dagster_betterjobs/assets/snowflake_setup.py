@@ -249,7 +249,9 @@ def infrastructure_setup(context: AssetExecutionContext, snowflake: SnowflakeRes
 
     # Get the path to object files
     current_dir = Path(__file__).parent
-    objects_dir = current_dir.parent / "objects" / "infrastructure"
+    # Navigate to project root and then to SQL objects directory
+    project_root = current_dir.parent.parent.parent.parent
+    objects_dir = project_root / "pipeline" / "sql" / "objects" / "infrastructure"
 
     # Required infrastructure object files (order matters for dependencies)
     required_objects = [
@@ -306,9 +308,11 @@ def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -
 
     # Get the path to object files
     current_dir = Path(__file__).parent
-    objects_dir = current_dir.parent / "objects" / "tables"
+    # Navigate to project root and then to SQL objects directory
+    project_root = current_dir.parent.parent.parent.parent
+    objects_dir = project_root / "pipeline" / "sql" / "objects" / "tables"
 
-    # Get all table files (they're already organized by naming convention)
+    # Get all table files
     table_files = [f.name for f in objects_dir.glob("*.sql") if f.is_file()]
 
     if not table_files:
@@ -365,7 +369,9 @@ def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) ->
 
     # Get the path to object files
     current_dir = Path(__file__).parent
-    objects_dir = current_dir.parent / "objects" / "views"
+    # Navigate to project root and then to SQL objects directory
+    project_root = current_dir.parent.parent.parent.parent
+    objects_dir = project_root / "pipeline" / "sql" / "objects" / "views"
 
     # Get all view files
     view_files = [f.name for f in objects_dir.glob("*.sql") if f.is_file()]

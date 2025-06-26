@@ -10,13 +10,23 @@
 
 -- Use appropriate role and warehouse
 USE ROLE ACCOUNTADMIN;  -- Use BETTERJOBS_ROLE in production
+
+-- Create warehouse if it doesn't exist
+CREATE WAREHOUSE IF NOT EXISTS BETTERJOBS_WH
+WITH
+    WAREHOUSE_SIZE = 'SMALL'
+    AUTO_SUSPEND = 300
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE
+    COMMENT = 'Compute warehouse for BetterJobs data pipeline operations';
+
 USE WAREHOUSE BETTERJOBS_WH;
 
 /*********** DATABASE ***********/
 
 -- Create main database if it doesn't exist
 CREATE DATABASE IF NOT EXISTS BETTERJOBS_DB
-    COMMENT = 'Main database for BetterJobs data pipeline - Medallion Architecture (Bronze/Silver/Gold)';
+    COMMENT = 'Main database for BetterJobs data pipeline - Medallion Architecture';
 
 -- Use the database for subsequent operations
 USE DATABASE BETTERJOBS_DB;
@@ -83,23 +93,6 @@ GRANT SELECT ON FUTURE VIEWS IN SCHEMA BETTERJOBS_DB.ANALYTICS TO ROLE BETTERJOB
 GRANT CREATE STAGE ON SCHEMA BETTERJOBS_DB.RAW TO ROLE BETTERJOBS_ROLE;
 GRANT USAGE ON ALL STAGES IN SCHEMA BETTERJOBS_DB.RAW TO ROLE BETTERJOBS_ROLE;
 GRANT USAGE ON FUTURE STAGES IN SCHEMA BETTERJOBS_DB.RAW TO ROLE BETTERJOBS_ROLE;
-
-/*********** STORAGE INTEGRATION ***********/
-
--- Create storage integration for S3 (if not already exists)
--- Note: This requires ACCOUNTADMIN role and proper AWS IAM setup
--- Uncomment and configure the following if S3 integration is needed:
-
-
--- CREATE STORAGE INTEGRATION IF NOT EXISTS betterjobs_s3_integration
---    TYPE = EXTERNAL_STAGE
---    STORAGE_PROVIDER = 'S3'
---    ENABLED = TRUE
---    STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::YOUR_ACCOUNT_ID:role/snowflake-s3-role' -- TODO: Update to use env variable
---    STORAGE_ALLOWED_LOCATIONS = ('s3://betterjobs-dagster/'); -- TODO: Update to use env variable
-
--- Grant usage to the application role
--- GRANT USAGE ON INTEGRATION betterjobs_s3_integration TO ROLE BETTERJOBS_ROLE;
 
 
 /*********** VERIFICATION ***********/

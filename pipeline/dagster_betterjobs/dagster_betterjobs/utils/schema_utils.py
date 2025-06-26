@@ -162,7 +162,12 @@ def execute_sql_file(snowflake: SnowflakeResource, file_path: str, context: Asse
     Execute a SQL file with proper error handling and logging.
 
     This utility handles multi-statement SQL files, filters out comments,
-    and provides detailed execution results for debugging.
+    provides detailed execution results for debugging, and supports environment variable substitution.
+
+    Environment Variable Support:
+    - Use ${ENV_VAR_NAME} syntax in SQL files
+    - Variables are substituted from os.environ before execution
+    - Missing environment variables will cause execution to fail with helpful error message
 
     Args:
         snowflake: SnowflakeResource instance
@@ -184,6 +189,19 @@ def execute_sql_file(snowflake: SnowflakeResource, file_path: str, context: Asse
         # Read SQL file content
         with open(file_path, 'r') as f:
             sql_content = f.read()
+
+        # Substitute environment variables using ${VAR_NAME} syntax
+        import re
+        def replace_env_var(match):
+            var_name = match.group(1)
+            var_value = os.environ.get(var_name)
+            if var_value is None:
+                raise ValueError(f"Environment variable '{var_name}' not found. Required for SQL file: {file_path}")
+            context.log.debug(f"Substituting ${{{var_name}}} with environment variable value")
+            return var_value
+
+        # Replace ${VAR_NAME} patterns with environment variable values
+        sql_content = re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}', replace_env_var, sql_content)
 
         # Parse SQL into individual statements
         # Remove comments and empty lines for better parsing
