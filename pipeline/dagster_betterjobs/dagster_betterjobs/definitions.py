@@ -49,6 +49,7 @@ from dagster_betterjobs.jobs import (
 )
 from dagster_betterjobs.schedules import (
     full_jobs_discovery_and_search_schedule,
+    schema_drift_validation_schedule,
 )
 
 # Import the custom PostgresResource
@@ -161,6 +162,7 @@ defs = Definitions(
     ],
     schedules=[
         full_jobs_discovery_and_search_schedule,
+        schema_drift_validation_schedule,
     ],
     sensors=[
         adhoc_company_urls_sensor,

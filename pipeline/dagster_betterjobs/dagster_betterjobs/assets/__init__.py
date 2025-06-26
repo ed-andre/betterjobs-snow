@@ -118,6 +118,9 @@ from dagster_betterjobs.assets.snowflake_setup import (
     setup_validation
 )
 
+# ENHANCEMENT-028: Schema Drift Detection
+from dagster_betterjobs.assets.schema_validation import schema_drift_validation
+
 __all__ = [
     "adhoc_company_urls",
     "job_search_results",
@@ -203,5 +206,7 @@ __all__ = [
     "tables_setup",
     "views_setup",
     "static_data_population",
-    "setup_validation"
+    "setup_validation",
+    # ENHANCEMENT-028: Schema Drift Detection
+    "schema_drift_validation"
 ]

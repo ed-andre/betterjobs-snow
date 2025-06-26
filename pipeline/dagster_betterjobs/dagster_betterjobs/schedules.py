@@ -1,4 +1,4 @@
-from dagster import schedule, RunRequest
+from dagster import schedule, RunRequest, AssetSelection
 from .jobs import (
     full_jobs_discovery_and_search_job,
     full_jobs_discovery_except_icims_job,
@@ -91,3 +91,19 @@ def full_jobs_discovery_and_search_schedule(context):
 #             partition_key=partition_key,
 #             tags={"partition": partition_key}
 #         )
+
+
+# Schedule for schema drift validation asset
+@schedule(
+    target=AssetSelection.assets("schema_drift_validation"),
+    cron_schedule="0 * * * *",  # Run every hour
+    execution_timezone="UTC",
+)
+def schema_drift_validation_schedule(context):
+    """Schedule that runs schema drift validation every hour."""
+    run_key = f"schema_drift_validation_{context.scheduled_execution_time.strftime('%Y-%m-%d_%H')}"
+
+    return RunRequest(
+        run_key=run_key,
+        tags={"schedule": "hourly_schema_validation"}
+    )

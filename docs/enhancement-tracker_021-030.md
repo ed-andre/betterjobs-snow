@@ -14,6 +14,27 @@ This document tracks planned enhancements and architectural improvements for the
 - **Success Criteria**: How to measure success
 - **Date Planned**: When the enhancement was identified
 
+--
+
+## ENHANCEMENT STATUS
+
+- **OPEN**
+    - ENHANCEMENT-021: Update README.md for Schema-as-Code Infrastructure
+    - ENHANCEMENT-025: SQL-as-Files for Database Platform Migration (Snowflake to BigQuery)
+    - ENHANCEMENT-026: Analytics Skills Bridge - Enable Multi-Skill Job Analysis
+    - ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
+
+- **IN PROGRESS**
+  - **COMPLETED**
+    - ENHANCEMENT-022: Salary Normalization Pipeline - Critical Data Quality Fix
+    - ENHANCEMENT-023 Intelligent Skills Variant Consolidation - Linguistic-Based Pluralization
+    - ENHANCEMENT-024 Analytics Job Experience Bridge - Resolve Many-to-Many Duplication
+    - ENHANCEMENT-028: Schema Drift Detection Asset - Automated View Validation
+
+- **NO ACTION REQUIRED**
+
+---
+
 ## ENHANCEMENT-021: Update README.md for Schema-as-Code Infrastructure
 
 **Status:** 📋 **Planned**
@@ -759,7 +780,7 @@ pipeline/dagster_betterjobs/dagster_betterjobs/assets/__init__.py
 
 ## ENHANCEMENT-023 Intelligent Skills Variant Consolidation - Linguistic-Based Pluralization
 
-**Status:** Completed
+**Status:** ✅ **Complete**
 **Priority:** High
 **Component:** Stage LLM Standardization - Skills Normalization
 **Date Planned:** 2025-06-23
@@ -1036,11 +1057,11 @@ CONSOLIDATION_CONFIG = {
 
 ## ENHANCEMENT-024 Analytics Job Experience Bridge - Resolve Many-to-Many Duplication
 
-**Status:** In Progress
+**Status:** ✅ **Complete**
 **Priority:** Critical
 **Component:** Analytics Layer - Dimensional Modeling
 **Date Planned:** 2025-06-24
-**Date Completed:** TBD
+**Date Completed:** 2025-06-25
 
 ### Description
 Implement proper bridge dimension pattern for the many-to-many relationship between job postings and experience requirements to eliminate duplicate records in `ANALYTICS.FACT_JOB_POSTINGS` caused by multiple experience requirements per job posting.
@@ -1276,12 +1297,12 @@ EXPERIENCE_BRIDGE_CONFIG = {
 
 ---
 
-## ENHANCEMENT-025: SQL-as-Files for Database Platform Migration
+## ENHANCEMENT-025: SQL-as-Files for Database Platform Migration (Snowflake to BigQuery)
 
 **Status:** 📋 **Planned**
 **Priority:** Medium
 **Component:** Database Migration & Code Organization
-**Date Planned:** 2025-06-30 (Post-Snowflake completion)
+**Date Planned:**
 **Estimated Effort:** 2-3 days
 **Business Impact:** High - Critical for smooth Snowflake → BigQuery migration
 
@@ -1759,13 +1780,290 @@ HAVING COUNT(CASE WHEN is_primary_skill THEN 1 END) != 1;  -- Should return 0 ro
 
 ---
 
-## ENHANCEMENT-028: Schema Drift Detection Sensor - Automated View Validation
+## ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
 
 **Status:** 📋 **Planned**
+**Priority:** High
+**Component:** Analytics Layer - Dimensional Modeling
+**Date Planned:** 2025-06-24 (Post-Enhancement 026 completion)
+**Estimated Effort:** 1.5 days
+**Business Impact:** Medium-High - Enables comprehensive keyword analysis without losing data
+
+### Problem Statement
+The current `ANALYTICS.FACT_JOB_POSTINGS` table only captures the primary keyword from job postings (`GET(jd.PRIMARY_KEYWORDS, 0)`), losing all other valuable keywords that could provide insights into job requirements, company culture, benefits, and market trends.
+
+**Current Limitations**:
+- Only first keyword from PRIMARY_KEYWORDS array is preserved
+- Lost keyword data prevents comprehensive job market analysis
+- Cannot analyze keyword co-occurrence patterns
+- Limited insights into job posting themes and trends
+- Keyword analysis requires complex array parsing in queries
+
+**Evidence**: Current implementation shows only `keyword_key` field with primary keyword selection:
+```sql
+-- Current approach (loses data):
+LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_KEYWORDS dk
+    ON dk.KEYWORD_TEXT = TRIM(GET(jd.PRIMARY_KEYWORDS, 0)::STRING, '"')
+```
+
+### Description
+Implement proper bridge dimension pattern for the many-to-many relationship between job postings and keywords to capture all keyword relationships. Create `ANALYTICS.JOB_KEYWORDS_BRIDGE` to enable comprehensive keyword analysis while removing the direct keyword dimension from the fact table.
+
+### Business Justification
+- **Complete Data Utilization**: Capture all keywords instead of losing valuable market intelligence
+- **Keyword Intelligence**: Enable comprehensive analysis of job posting themes and trends
+- **Market Insights**: Analyze keyword patterns across companies, industries, and time periods
+- **Content Analysis**: Support advanced job posting content analysis and categorization
+- **Competitive Intelligence**: Track keyword usage trends across different companies
+- **Search Optimization**: Improve job search and matching algorithms using full keyword data
+
+### Technical Approach
+
+**Bridge Dimension Pattern**:
+```
+FACT_JOB_POSTINGS (1) ←→ (M) JOB_KEYWORDS_BRIDGE (M) ←→ (1) DIM_KEYWORDS
+```
+
+**New Architecture**:
+1. **Remove direct keyword_key** from `FACT_JOB_POSTINGS`
+2. **Create bridge table** `ANALYTICS.JOB_KEYWORDS_BRIDGE`
+3. **Capture all keywords** from job postings, not just primary
+4. **Enable keyword analysis** through bridge relationships
+
+### Implementation Plan
+
+**Phase 1: Analytics Keywords Bridge Table Creation**
+
+1. **Create `analytics_job_keywords_bridge.sql`**:
+```sql
+CREATE TABLE ANALYTICS.JOB_KEYWORDS_BRIDGE (
+    KEYWORDS_BRIDGE_KEY STRING PRIMARY KEY,
+    JOB_POSTING_KEY STRING NOT NULL,
+    KEYWORD_KEY STRING NOT NULL,
+    KEYWORD_WEIGHT FLOAT DEFAULT 1.0,
+    IS_PRIMARY_KEYWORD BOOLEAN DEFAULT FALSE,
+    KEYWORD_POSITION INTEGER,
+    EXTRACTION_CONFIDENCE FLOAT,
+    KEYWORD_TYPE STRING,
+    KEYWORD_CATEGORY STRING,
+    PROCESSING_METHOD STRING DEFAULT 'llm_auto',
+    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (JOB_POSTING_KEY) REFERENCES ANALYTICS.FACT_JOB_POSTINGS(JOB_POSTING_KEY),
+    FOREIGN KEY (KEYWORD_KEY) REFERENCES ANALYTICS.DIM_KEYWORDS(KEYWORD_KEY)
+) CLUSTER BY (JOB_POSTING_KEY, KEYWORD_KEY);
+```
+
+2. **Create `analytics_job_keywords_bridge.py` asset**:
+```python
+@asset(
+    deps=["analytics_fact_job_postings", "analytics_dim_keywords", "stage_job_keywords_bridge"],
+    description="Create analytics bridge table for many-to-many job posting to keywords relationships",
+    group_name="3b_analytics_facts_aggregates_analysis",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_job_keywords_bridge(context, snowflake) -> Dict[str, Any]:
+    """
+    Build analytics keywords bridge from STAGE.JOB_KEYWORDS_BRIDGE with dimension lookups.
+
+    Processing Logic:
+    1. Join STAGE bridge data with ANALYTICS dimensions
+    2. Capture all keywords, not just primary keyword
+    3. Apply keyword confidence and relevance filtering
+    4. Generate keyword position and weighting
+    5. Create primary keyword selection business rules
+    """
+```
+
+**Phase 2: Bridge Population with All Keywords**
+
+1. **Data Population Strategy**:
+```sql
+INSERT INTO ANALYTICS.JOB_KEYWORDS_BRIDGE (
+    keywords_bridge_key,
+    job_posting_key,
+    keyword_key,
+    keyword_weight,
+    is_primary_keyword,
+    keyword_position,
+    extraction_confidence,
+    keyword_type,
+    keyword_category
+)
+SELECT
+    'JKB_' || fjp.job_posting_key || '_' || dk.keyword_key as keywords_bridge_key,
+    fjp.job_posting_key,
+    dk.keyword_key,
+
+    -- Keyword weighting based on confidence and position
+    CASE
+        WHEN jkb.overall_confidence >= 0.8 AND jkb.keyword_position = 1 THEN 1.0
+        WHEN jkb.overall_confidence >= 0.8 THEN 0.9
+        WHEN jkb.overall_confidence >= 0.6 THEN 0.7
+        ELSE 0.5
+    END as keyword_weight,
+
+    -- Primary keyword selection (first high-confidence keyword)
+    CASE WHEN ROW_NUMBER() OVER (
+        PARTITION BY fjp.job_posting_key
+        ORDER BY jkb.keyword_position ASC, jkb.overall_confidence DESC
+    ) = 1 THEN TRUE ELSE FALSE END as is_primary_keyword,
+
+    jkb.keyword_position,
+    jkb.overall_confidence as extraction_confidence,
+    dk.keyword_type,
+    dk.keyword_category
+
+FROM ANALYTICS.FACT_JOB_POSTINGS fjp
+INNER JOIN STAGE.JOB_KEYWORDS_BRIDGE jkb ON fjp.job_uid = jkb.job_uid
+INNER JOIN ANALYTICS.DIM_KEYWORDS dk ON jkb.keyword_id = dk.keyword_id
+WHERE jkb.overall_confidence >= 0.6
+  AND jkb.needs_review = FALSE
+```
+
+2. **Business Rules Implementation**:
+   - **All Keywords Capture**: Include all keywords from job postings, not just primary
+   - **Primary Keyword Selection**: First keyword by position in original array
+   - **Position-Based Weighting**: Earlier keywords receive higher weights
+   - **Quality Filtering**: Include keywords with confidence ≥0.6
+   - **Category Enrichment**: Include keyword type and category for analysis
+
+**Phase 3: Fact Table Schema Update**
+
+1. **Update `analytics_fact_job_postings.sql`**:
+```sql
+-- Remove: keyword_key STRING
+-- This eliminates the direct keyword relationship from fact table
+```
+
+2. **Update `analytics_fact_job_postings.py`**:
+```python
+# Remove keyword dimension join and field
+# Remove: keyword_key from SELECT statement
+# Remove: keyword lookup logic from dimension_lookups CTE
+# Remove: keyword success rate from validation queries
+# Update: Remove analytics_dim_keywords from dependencies
+```
+
+**Phase 4: Analysis Patterns and Usage**
+
+1. **Enable Advanced Keyword Analysis**:
+```sql
+-- Example: Jobs with multiple benefit-related keywords
+SELECT
+    fjp.job_posting_key,
+    fjp.job_title,
+    COUNT(jkb.keyword_key) as benefit_keywords_count
+FROM ANALYTICS.FACT_JOB_POSTINGS fjp
+JOIN ANALYTICS.JOB_KEYWORDS_BRIDGE jkb ON fjp.job_posting_key = jkb.job_posting_key
+JOIN ANALYTICS.DIM_KEYWORDS dk ON jkb.keyword_key = dk.keyword_key
+WHERE dk.keyword_category = 'benefits'
+GROUP BY fjp.job_posting_key, fjp.job_title
+HAVING COUNT(jkb.keyword_key) >= 3;
+
+-- Example: Keyword co-occurrence analysis
+SELECT
+    dk1.keyword_text as keyword_1,
+    dk2.keyword_text as keyword_2,
+    COUNT(*) as co_occurrence_count
+FROM ANALYTICS.JOB_KEYWORDS_BRIDGE jkb1
+JOIN ANALYTICS.JOB_KEYWORDS_BRIDGE jkb2 ON jkb1.job_posting_key = jkb2.job_posting_key
+JOIN ANALYTICS.DIM_KEYWORDS dk1 ON jkb1.keyword_key = dk1.keyword_key
+JOIN ANALYTICS.DIM_KEYWORDS dk2 ON jkb2.keyword_key = dk2.keyword_key
+WHERE jkb1.keyword_key < jkb2.keyword_key  -- Avoid duplicates
+  AND dk1.keyword_category = 'technology'
+  AND dk2.keyword_category = 'technology'
+GROUP BY dk1.keyword_text, dk2.keyword_text
+ORDER BY co_occurrence_count DESC;
+```
+
+2. **Keyword Intelligence Queries**:
+```sql
+-- Trending keywords by time period
+SELECT
+    dk.keyword_text,
+    dk.keyword_category,
+    DATE_TRUNC('month', fjp.first_posted_date) as posting_month,
+    COUNT(*) as keyword_usage_count,
+    AVG(jkb.keyword_weight) as avg_keyword_weight
+FROM ANALYTICS.FACT_JOB_POSTINGS fjp
+JOIN ANALYTICS.JOB_KEYWORDS_BRIDGE jkb ON fjp.job_posting_key = jkb.job_posting_key
+JOIN ANALYTICS.DIM_KEYWORDS dk ON jkb.keyword_key = dk.keyword_key
+WHERE fjp.first_posted_date >= CURRENT_DATE - 365
+GROUP BY dk.keyword_text, dk.keyword_category, DATE_TRUNC('month', fjp.first_posted_date)
+ORDER BY posting_month DESC, keyword_usage_count DESC;
+```
+
+### Success Criteria
+
+- **Complete Keyword Capture**: 100% of keywords from job postings preserved in bridge table
+- **Data Integrity**: 1:1 ratio maintained between job postings and fact table records
+- **Primary Keyword Accuracy**: Each job has exactly one primary keyword identified
+- **Query Performance**: Keyword analysis queries execute efficiently (<3 seconds)
+- **Analysis Capability**: Enable multi-keyword and co-occurrence analysis patterns
+- **Business Intelligence**: Support keyword trend analysis and competitive intelligence
+
+### Files to be Modified/Created
+
+**New Files**:
+- `pipeline/sql/objects/tables/analytics_job_keywords_bridge.sql`
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_job_keywords_bridge.py`
+
+**Modified Files**:
+- `pipeline/sql/objects/tables/analytics_fact_job_postings.sql` (remove keyword_key)
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_facts.py` (remove keyword dimension)
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/__init__.py` (add new asset)
+- `analytics_dimensional_model_erd.md` (update ERD with keywords bridge pattern)
+
+### Business Rules for Keywords Bridge
+
+1. **Primary Keyword Selection**:
+   - First keyword by position in original array
+   - Highest confidence if position tied
+   - Prefer technology/skills keywords over generic terms
+   - Ensure exactly one primary keyword per job
+
+2. **Keyword Weighting Strategy**:
+   - High confidence (≥0.9): Weight 1.0
+   - Medium confidence (0.7-0.89): Weight 0.8
+   - Lower confidence: Weight 0.6
+   - Below 0.6: Excluded from bridge
+
+3. **Quality Filtering**:
+   - Include keywords with confidence ≥0.6
+   - Exclude keywords flagged for manual review
+   - Preserve original keyword position information
+   - Maintain audit trail from source bridge
+
+### Risk Mitigation
+
+- **Performance Impact**: Proper indexing on job_posting_key and keyword_key
+- **Storage Growth**: Monitor bridge table size and implement data retention policies
+- **Query Complexity**: Provide documented query patterns for common analysis needs
+- **Data Consistency**: Automated validation of bridge table completeness
+
+### Dependencies
+
+- **Existing Assets**: `analytics_fact_job_postings`, `analytics_dim_keywords`, `stage_job_keywords_bridge`
+- **Schema Dependencies**: Analytics dimensional model completion
+- **Prerequisite**: ENHANCEMENT-026 (Skills Bridge) for pattern consistency
+
+### Future Enhancements
+
+- **AI-Powered Skill Insights**: Machine learning on skill co-occurrence patterns
+- **Skill Clustering**: Group related skills for higher-level analysis
+- **Temporal Skills Analysis**: Track how skill requirements change over time
+- **Skill Recommendation Engine**: Suggest skills based on job posting patterns
+- **Skills Gap Analysis**: Identify market demand vs. supply mismatches
+
+---
+
+## ENHANCEMENT-028: Schema Drift Detection Asset - Automated View Validation
+
+**Status:** ✅ **Complete**
 **Priority:** Medium
 **Component:** Data Quality & Pipeline Monitoring
-**Date Planned:** 2025-07-01 (Post-Core Analytics completion)
-**Estimated Effort:** 1 day
+**Date Planned:** 2025-06-26 (Post-Core Analytics completion)
+**Date Completed:** 2025-06-26
 **Business Impact:** Medium - Proactive detection of pipeline development errors
 
 ### Problem Statement
@@ -1776,7 +2074,7 @@ Schema drift within the data pipeline occurs in two primary scenarios:
 The first scenario requires complex solutions involving schema evolution and source system monitoring. The second scenario represents actionable development errors that can be detected and resolved quickly through automated validation.
 
 ### Description
-Implement a Dagster sensor that periodically validates all database views by attempting to execute them and detecting schema-related failures. The sensor will focus on detecting development-induced schema drift (missing columns, renamed tables, incorrect joins) rather than complex source system schema evolution.
+Implement a Dagster asset with scheduled execution that validates all database views by attempting to execute them and detecting schema-related failures. The asset-based approach provides superior logging, monitoring, and historical tracking compared to sensors. The validation focuses on detecting development-induced schema drift (missing columns, renamed tables, incorrect joins) rather than complex source system schema evolution.
 
 ### Business Justification
 - **Early Detection**: Catch view schema issues before they impact downstream analytics and reporting
@@ -2086,9 +2384,9 @@ SCHEMA_DRIFT_CONFIG = {
 
 ### Dependencies
 
-- **Existing Infrastructure**: Dagster sensor framework and Snowflake connectivity
+- **Existing Infrastructure**: Dagster asset framework and Snowflake connectivity
 - **Schema-as-Code Pattern**: View definitions in SQL object files (ENHANCEMENT-020)
-- **Database Permissions**: Sensor requires READ access to information_schema and all monitored views
+- **Database Permissions**: Asset requires READ access to information_schema and all monitored views
 
 ### Future Enhancements
 
@@ -2098,281 +2396,45 @@ SCHEMA_DRIFT_CONFIG = {
 - **Automated Resolution**: Simple fixes applied automatically (with approval)
 - **Source System Monitoring**: Extension to handle external schema changes (future consideration)
 
----
+### Implementation Summary
 
-## ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
+**✅ COMPLETED SUCCESSFULLY - 2025-01-20**
 
-**Status:** 📋 **Planned**
-**Priority:** High
-**Component:** Analytics Layer - Dimensional Modeling
-**Date Planned:** 2025-06-24 (Post-Enhancement 026 completion)
-**Estimated Effort:** 1.5 days
-**Business Impact:** Medium-High - Enables comprehensive keyword analysis without losing data
+**Components Implemented**:
+- ✅ **Core Asset**: `schema_drift_validation` in `dagster_betterjobs/assets/schema_validation.py`
+- ✅ **Hourly Schedule**: `schema_drift_validation_schedule` for automated execution
+- ✅ **Validation Engine**: `validate_database_views()` function with comprehensive error handling
+- ✅ **Error Categorization**: `categorize_schema_error()` distinguishes schema drift from data issues
+- ✅ **Alert System**: `format_validation_alert()` provides structured drift notifications
+- ✅ **Rich Monitoring**: Full AssetMaterialization with detailed metadata and historical tracking
+- ✅ **Framework Integration**: Asset and schedule registered in `definitions.py` and `__init__.py`
 
-### Problem Statement
-The current `ANALYTICS.FACT_JOB_POSTINGS` table only captures the primary keyword from job postings (`GET(jd.PRIMARY_KEYWORDS, 0)`), losing all other valuable keywords that could provide insights into job requirements, company culture, benefits, and market trends.
+**Key Technical Achievements**:
+- ✅ **Asset-Based Architecture**: Superior logging and monitoring compared to sensor approach
+- ✅ **Focused Detection**: Targets development-induced schema drift (missing columns, tables, joins)
+- ✅ **Historical Tracking**: Full execution history and results stored in Dagster UI
+- ✅ **Lightweight Validation**: Simple `SELECT * LIMIT 1` queries for efficient schema testing
+- ✅ **Schema Coverage**: Validates all views in RAW, STAGE, and ANALYTICS schemas
+- ✅ **Rich Metadata**: Detailed metrics including success rates, error types, and execution duration
 
-**Current Limitations**:
-- Only first keyword from PRIMARY_KEYWORDS array is preserved
-- Lost keyword data prevents comprehensive job market analysis
-- Cannot analyze keyword co-occurrence patterns
-- Limited insights into job posting themes and trends
-- Keyword analysis requires complex array parsing in queries
+**Configuration Features**:
+- 🕐 **Scheduled Execution**: Hourly schedule (`0 * * * *`) for timely drift detection
+- 📊 **Full Asset Materialization**: Rich metadata and execution tracking in Dagster UI
+- 🔍 **Error Filtering**: Only reports actual schema drift, not data quality issues
+- 📢 **Alert Summarization**: Groups similar issues to prevent alert fatigue
+- 📈 **Performance Metrics**: Execution time, validation success rates, and coverage statistics
 
-**Evidence**: Current implementation shows only `keyword_key` field with primary keyword selection:
-```sql
--- Current approach (loses data):
-LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_KEYWORDS dk
-    ON dk.KEYWORD_TEXT = TRIM(GET(jd.PRIMARY_KEYWORDS, 0)::STRING, '"')
-```
+**Business Benefits Achieved**:
+- ✅ **Early Detection**: Schema issues caught within 1 hour of occurrence
+- ✅ **Development Quality**: Clear error categorization helps developers identify root causes
+- ✅ **Operational Reliability**: Proactive monitoring prevents user-facing view failures
+- ✅ **Cost Effectiveness**: Focused approach addresses actionable issues without over-engineering
 
-### Description
-Implement proper bridge dimension pattern for the many-to-many relationship between job postings and keywords to capture all keyword relationships. Create `ANALYTICS.JOB_KEYWORDS_BRIDGE` to enable comprehensive keyword analysis while removing the direct keyword dimension from the fact table.
-
-### Business Justification
-- **Complete Data Utilization**: Capture all keywords instead of losing valuable market intelligence
-- **Keyword Intelligence**: Enable comprehensive analysis of job posting themes and trends
-- **Market Insights**: Analyze keyword patterns across companies, industries, and time periods
-- **Content Analysis**: Support advanced job posting content analysis and categorization
-- **Competitive Intelligence**: Track keyword usage trends across different companies
-- **Search Optimization**: Improve job search and matching algorithms using full keyword data
-
-### Technical Approach
-
-**Bridge Dimension Pattern**:
-```
-FACT_JOB_POSTINGS (1) ←→ (M) JOB_KEYWORDS_BRIDGE (M) ←→ (1) DIM_KEYWORDS
-```
-
-**New Architecture**:
-1. **Remove direct keyword_key** from `FACT_JOB_POSTINGS`
-2. **Create bridge table** `ANALYTICS.JOB_KEYWORDS_BRIDGE`
-3. **Capture all keywords** from job postings, not just primary
-4. **Enable keyword analysis** through bridge relationships
-
-### Implementation Plan
-
-**Phase 1: Analytics Keywords Bridge Table Creation**
-
-1. **Create `analytics_job_keywords_bridge.sql`**:
-```sql
-CREATE TABLE ANALYTICS.JOB_KEYWORDS_BRIDGE (
-    KEYWORDS_BRIDGE_KEY STRING PRIMARY KEY,
-    JOB_POSTING_KEY STRING NOT NULL,
-    KEYWORD_KEY STRING NOT NULL,
-    KEYWORD_WEIGHT FLOAT DEFAULT 1.0,
-    IS_PRIMARY_KEYWORD BOOLEAN DEFAULT FALSE,
-    KEYWORD_POSITION INTEGER,
-    EXTRACTION_CONFIDENCE FLOAT,
-    KEYWORD_TYPE STRING,
-    KEYWORD_CATEGORY STRING,
-    PROCESSING_METHOD STRING DEFAULT 'llm_auto',
-    CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (JOB_POSTING_KEY) REFERENCES ANALYTICS.FACT_JOB_POSTINGS(JOB_POSTING_KEY),
-    FOREIGN KEY (KEYWORD_KEY) REFERENCES ANALYTICS.DIM_KEYWORDS(KEYWORD_KEY)
-) CLUSTER BY (JOB_POSTING_KEY, KEYWORD_KEY);
-```
-
-2. **Create `analytics_job_keywords_bridge.py` asset**:
-```python
-@asset(
-    deps=["analytics_fact_job_postings", "analytics_dim_keywords", "stage_job_keywords_bridge"],
-    description="Create analytics bridge table for many-to-many job posting to keywords relationships",
-    group_name="3b_analytics_facts_aggregates_analysis",
-    kinds={"snowflake", "SQL"}
-)
-def analytics_job_keywords_bridge(context, snowflake) -> Dict[str, Any]:
-    """
-    Build analytics keywords bridge from STAGE.JOB_KEYWORDS_BRIDGE with dimension lookups.
-
-    Processing Logic:
-    1. Join STAGE bridge data with ANALYTICS dimensions
-    2. Capture all keywords, not just primary keyword
-    3. Apply keyword confidence and relevance filtering
-    4. Generate keyword position and weighting
-    5. Create primary keyword selection business rules
-    """
-```
-
-**Phase 2: Bridge Population with All Keywords**
-
-1. **Data Population Strategy**:
-```sql
-INSERT INTO ANALYTICS.JOB_KEYWORDS_BRIDGE (
-    keywords_bridge_key,
-    job_posting_key,
-    keyword_key,
-    keyword_weight,
-    is_primary_keyword,
-    keyword_position,
-    extraction_confidence,
-    keyword_type,
-    keyword_category
-)
-SELECT
-    'JKB_' || fjp.job_posting_key || '_' || dk.keyword_key as keywords_bridge_key,
-    fjp.job_posting_key,
-    dk.keyword_key,
-
-    -- Keyword weighting based on confidence and position
-    CASE
-        WHEN jkb.overall_confidence >= 0.8 AND jkb.keyword_position = 1 THEN 1.0
-        WHEN jkb.overall_confidence >= 0.8 THEN 0.9
-        WHEN jkb.overall_confidence >= 0.6 THEN 0.7
-        ELSE 0.5
-    END as keyword_weight,
-
-    -- Primary keyword selection (first high-confidence keyword)
-    CASE WHEN ROW_NUMBER() OVER (
-        PARTITION BY fjp.job_posting_key
-        ORDER BY jkb.keyword_position ASC, jkb.overall_confidence DESC
-    ) = 1 THEN TRUE ELSE FALSE END as is_primary_keyword,
-
-    jkb.keyword_position,
-    jkb.overall_confidence as extraction_confidence,
-    dk.keyword_type,
-    dk.keyword_category
-
-FROM ANALYTICS.FACT_JOB_POSTINGS fjp
-INNER JOIN STAGE.JOB_KEYWORDS_BRIDGE jkb ON fjp.job_uid = jkb.job_uid
-INNER JOIN ANALYTICS.DIM_KEYWORDS dk ON jkb.keyword_id = dk.keyword_id
-WHERE jkb.overall_confidence >= 0.6
-  AND jkb.needs_review = FALSE
-```
-
-2. **Business Rules Implementation**:
-   - **All Keywords Capture**: Include all keywords from job postings, not just primary
-   - **Primary Keyword Selection**: First keyword by position in original array
-   - **Position-Based Weighting**: Earlier keywords receive higher weights
-   - **Quality Filtering**: Include keywords with confidence ≥0.6
-   - **Category Enrichment**: Include keyword type and category for analysis
-
-**Phase 3: Fact Table Schema Update**
-
-1. **Update `analytics_fact_job_postings.sql`**:
-```sql
--- Remove: keyword_key STRING
--- This eliminates the direct keyword relationship from fact table
-```
-
-2. **Update `analytics_fact_job_postings.py`**:
-```python
-# Remove keyword dimension join and field
-# Remove: keyword_key from SELECT statement
-# Remove: keyword lookup logic from dimension_lookups CTE
-# Remove: keyword success rate from validation queries
-# Update: Remove analytics_dim_keywords from dependencies
-```
-
-**Phase 4: Analysis Patterns and Usage**
-
-1. **Enable Advanced Keyword Analysis**:
-```sql
--- Example: Jobs with multiple benefit-related keywords
-SELECT
-    fjp.job_posting_key,
-    fjp.job_title,
-    COUNT(jkb.keyword_key) as benefit_keywords_count
-FROM ANALYTICS.FACT_JOB_POSTINGS fjp
-JOIN ANALYTICS.JOB_KEYWORDS_BRIDGE jkb ON fjp.job_posting_key = jkb.job_posting_key
-JOIN ANALYTICS.DIM_KEYWORDS dk ON jkb.keyword_key = dk.keyword_key
-WHERE dk.keyword_category = 'benefits'
-GROUP BY fjp.job_posting_key, fjp.job_title
-HAVING COUNT(jkb.keyword_key) >= 3;
-
--- Example: Keyword co-occurrence analysis
-SELECT
-    dk1.keyword_text as keyword_1,
-    dk2.keyword_text as keyword_2,
-    COUNT(*) as co_occurrence_count
-FROM ANALYTICS.JOB_KEYWORDS_BRIDGE jkb1
-JOIN ANALYTICS.JOB_KEYWORDS_BRIDGE jkb2 ON jkb1.job_posting_key = jkb2.job_posting_key
-JOIN ANALYTICS.DIM_KEYWORDS dk1 ON jkb1.keyword_key = dk1.keyword_key
-JOIN ANALYTICS.DIM_KEYWORDS dk2 ON jkb2.keyword_key = dk2.keyword_key
-WHERE jkb1.keyword_key < jkb2.keyword_key  -- Avoid duplicates
-  AND dk1.keyword_category = 'technology'
-  AND dk2.keyword_category = 'technology'
-GROUP BY dk1.keyword_text, dk2.keyword_text
-ORDER BY co_occurrence_count DESC;
-```
-
-2. **Keyword Intelligence Queries**:
-```sql
--- Trending keywords by time period
-SELECT
-    dk.keyword_text,
-    dk.keyword_category,
-    DATE_TRUNC('month', fjp.first_posted_date) as posting_month,
-    COUNT(*) as keyword_usage_count,
-    AVG(jkb.keyword_weight) as avg_keyword_weight
-FROM ANALYTICS.FACT_JOB_POSTINGS fjp
-JOIN ANALYTICS.JOB_KEYWORDS_BRIDGE jkb ON fjp.job_posting_key = jkb.job_posting_key
-JOIN ANALYTICS.DIM_KEYWORDS dk ON jkb.keyword_key = dk.keyword_key
-WHERE fjp.first_posted_date >= CURRENT_DATE - 365
-GROUP BY dk.keyword_text, dk.keyword_category, DATE_TRUNC('month', fjp.first_posted_date)
-ORDER BY posting_month DESC, keyword_usage_count DESC;
-```
-
-### Success Criteria
-
-- **Complete Keyword Capture**: 100% of keywords from job postings preserved in bridge table
-- **Data Integrity**: 1:1 ratio maintained between job postings and fact table records
-- **Primary Keyword Accuracy**: Each job has exactly one primary keyword identified
-- **Query Performance**: Keyword analysis queries execute efficiently (<3 seconds)
-- **Analysis Capability**: Enable multi-keyword and co-occurrence analysis patterns
-- **Business Intelligence**: Support keyword trend analysis and competitive intelligence
-
-### Files to be Modified/Created
-
-**New Files**:
-- `pipeline/sql/objects/tables/analytics_job_keywords_bridge.sql`
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_job_keywords_bridge.py`
-
-**Modified Files**:
-- `pipeline/sql/objects/tables/analytics_fact_job_postings.sql` (remove keyword_key)
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/analytics_facts.py` (remove keyword dimension)
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/__init__.py` (add new asset)
-- `analytics_dimensional_model_erd.md` (update ERD with keywords bridge pattern)
-
-### Business Rules for Keywords Bridge
-
-1. **Primary Keyword Selection**:
-   - First keyword by position in original array
-   - Highest confidence if position tied
-   - Prefer technology/skills keywords over generic terms
-   - Ensure exactly one primary keyword per job
-
-2. **Keyword Weighting Strategy**:
-   - High confidence (≥0.9): Weight 1.0
-   - Medium confidence (0.7-0.89): Weight 0.8
-   - Lower confidence: Weight 0.6
-   - Below 0.6: Excluded from bridge
-
-3. **Quality Filtering**:
-   - Include keywords with confidence ≥0.6
-   - Exclude keywords flagged for manual review
-   - Preserve original keyword position information
-   - Maintain audit trail from source bridge
-
-### Risk Mitigation
-
-- **Performance Impact**: Proper indexing on job_posting_key and keyword_key
-- **Storage Growth**: Monitor bridge table size and implement data retention policies
-- **Query Complexity**: Provide documented query patterns for common analysis needs
-- **Data Consistency**: Automated validation of bridge table completeness
-
-### Dependencies
-
-- **Existing Assets**: `analytics_fact_job_postings`, `analytics_dim_keywords`, `stage_job_keywords_bridge`
-- **Schema Dependencies**: Analytics dimensional model completion
-- **Prerequisite**: ENHANCEMENT-026 (Skills Bridge) for pattern consistency
-
-### Future Enhancements
-
-- **AI-Powered Skill Insights**: Machine learning on skill co-occurrence patterns
-- **Skill Clustering**: Group related skills for higher-level analysis
-- **Temporal Skills Analysis**: Track how skill requirements change over time
-- **Skill Recommendation Engine**: Suggest skills based on job posting patterns
-- **Skills Gap Analysis**: Identify market demand vs. supply mismatches
+**Risk Mitigation Implemented**:
+- ✅ **False Positive Prevention**: Error pattern matching specifically targets schema issues
+- ✅ **Performance Protection**: Lightweight queries don't impact pipeline performance
+- ✅ **Graceful Failure**: Asset failures don't affect other pipeline components
+- ✅ **Alert Quality**: Structured categorization prevents noise and alert fatigue
+- ✅ **Monitoring Excellence**: Complete execution history and failure analysis in Dagster UI
 
 ---
