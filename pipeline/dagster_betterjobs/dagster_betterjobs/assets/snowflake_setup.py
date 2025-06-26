@@ -14,8 +14,9 @@ Execution Order:
 """
 
 import os
+import yaml
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from dagster import asset, AssetExecutionContext, get_dagster_logger
 from dagster_snowflake import SnowflakeResource
 
@@ -120,6 +121,43 @@ def process_object_files(snowflake: SnowflakeResource, objects_dir: Path, object
         "failed_objects": failed_objects,
         "results": results
     }
+
+
+def load_table_creation_order(objects_dir: Path, context: AssetExecutionContext) -> Optional[List[str]]:
+    """
+    Load table creation order from YAML configuration file.
+
+    Args:
+        objects_dir: Path to the objects/tables directory
+        context: Dagster execution context for logging
+
+    Returns:
+        List of table filenames in dependency order, or None if config not found
+    """
+    config_file = objects_dir / "table_creation_order.yaml"
+
+    if not config_file.exists():
+        context.log.warning("Table creation order config not found, falling back to alphabetical ordering")
+        return None
+
+    try:
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # Combine all layers in dependency order
+        ordered_files = []
+        for layer in ['raw_layer', 'stage_layer', 'analytics_layer']:
+            if layer in config:
+                ordered_files.extend(config[layer])
+                context.log.info(f"Loaded {len(config[layer])} tables from {layer}")
+
+        context.log.info(f"Successfully loaded table creation order: {len(ordered_files)} tables total")
+        return ordered_files
+
+    except Exception as e:
+        context.log.error(f"Failed to load table creation order config: {str(e)}")
+        context.log.warning("Falling back to alphabetical ordering")
+        return None
 
 
 def execute_sql_file(snowflake: SnowflakeResource, file_path: str, context: AssetExecutionContext) -> Dict[str, Any]:
@@ -312,8 +350,44 @@ def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -
     project_root = current_dir.parent.parent.parent.parent
     objects_dir = project_root / "pipeline" / "sql" / "objects" / "tables"
 
-    # Get all table files
-    table_files = [f.name for f in objects_dir.glob("*.sql") if f.is_file()]
+    # Try to load dependency-ordered table list from configuration
+    ordered_files = load_table_creation_order(objects_dir, context)
+
+    if ordered_files:
+        # Use dependency-based ordering from configuration
+        table_files = []
+        for file_name in ordered_files:
+            file_path = objects_dir / file_name
+            if file_path.exists():
+                table_files.append(file_name)
+            else:
+                context.log.warning(f"Configured table file not found: {file_name}")
+
+        # Add any SQL files not in configuration (for safety and completeness)
+        all_sql_files = [f.name for f in objects_dir.glob("*.sql") if f.is_file()]
+        missing_files = set(all_sql_files) - set(table_files)
+        if missing_files:
+            context.log.warning(f"Files not in configuration, adding at end: {sorted(missing_files)}")
+            table_files.extend(sorted(missing_files))
+
+        context.log.info(f"🔧 Using dependency-ordered table creation: {len(table_files)} files")
+
+    else:
+        # Fallback to existing alphabetical ordering by schema layer
+        table_files = [f.name for f in objects_dir.glob("*.sql") if f.is_file()]
+
+        def sort_key(filename):
+            if filename.startswith('raw_'):
+                return (0, filename)
+            elif filename.startswith('stage_'):
+                return (1, filename)
+            elif filename.startswith('analytics_'):
+                return (2, filename)
+            else:
+                return (3, filename)
+
+        table_files.sort(key=sort_key)
+        context.log.info(f"📋 Using alphabetical table creation (fallback): {len(table_files)} files")
 
     if not table_files:
         context.log.warning("No table objects found to process")
@@ -324,19 +398,6 @@ def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -
             "failed_objects": 0,
             "results": []
         }
-
-    # Sort by schema layer (raw first, then stage, then analytics)
-    def sort_key(filename):
-        if filename.startswith('raw_'):
-            return (0, filename)
-        elif filename.startswith('stage_'):
-            return (1, filename)
-        elif filename.startswith('analytics_'):
-            return (2, filename)
-        else:
-            return (3, filename)
-
-    table_files.sort(key=sort_key)
 
     context.log.info(f"Processing {len(table_files)} table objects")
 

@@ -1,0 +1,86 @@
+# Table Creation Order Configuration
+# Tables listed in dependency order - referenced tables must be created before referencing tables
+# This prevents foreign key constraint violations during schema setup
+
+raw_layer:
+  # Raw tables - minimal dependencies, mostly independent
+  - raw_master_company_urls.sql
+  - raw_master_company_urls_processing_log.sql
+  - raw_bamboohr_jobs.sql
+  - raw_greenhouse_jobs.sql
+  - raw_smartrecruiters_jobs.sql
+  - raw_workday_jobs.sql
+
+stage_layer:
+  # Core foundation tables (no foreign key dependencies)
+  - stage_company_profiles.sql
+  - stage_transformation_logs.sql
+
+  # Core job tables (referenced by many bridge tables)
+  - stage_jobs_unified.sql
+  - stage_jobs_llm_enriched.sql
+
+  # Lookup and mapping tables (standalone reference data)
+  - stage_countries_mapping.sql
+  - stage_us_states_mapping.sql
+  - stage_location_mapping.sql
+  - stage_location_metro_area_mapping.sql
+  - stage_location_region_mapping.sql
+  - stage_location_tech_hub_mapping.sql
+  - stage_location_standardization_rules.sql
+
+  # Normalized master dimension tables (referenced by bridge tables)
+  - stage_experience_normalized.sql
+  - stage_skills_normalized.sql
+  - stage_keywords_normalized.sql
+  - stage_locations_normalized.sql
+  - stage_salary_normalized.sql
+
+  # Standardization rules tables (may reference normalized tables)
+  - stage_experience_standardization_rules.sql
+  - stage_skill_standardization_rules.sql
+  - stage_keyword_standardization_rules.sql
+  - stage_keyword_type_mapping.sql
+  - stage_skill_family_mapping.sql
+  - stage_skill_category_patterns.sql
+
+  # Bridge/junction tables (reference jobs_unified + normalized tables)
+  # These MUST come after their referenced tables
+  - stage_job_experience_bridge.sql    # References: jobs_unified + experience_normalized
+  - stage_job_skills_bridge.sql        # References: jobs_unified + skills_normalized
+  - stage_job_keywords_bridge.sql      # References: jobs_unified + keywords_normalized
+  - stage_job_locations_bridge.sql     # References: jobs_unified + locations_normalized
+  - stage_job_salary_bridge.sql        # References: jobs_unified + salary_normalized
+
+  # LLM monitoring and quality tables (independent)
+  - stage_llm_quality_metrics.sql
+  - stage_llm_confidence_monitoring.sql
+  - stage_llm_coverage_analysis.sql
+  - stage_llm_anomaly_detection_results.sql
+  - stage_llm_quality_validation_results.sql
+  - stage_llm_quality_metrics_history.sql
+  - stage_llm_manual_review_queue.sql
+
+analytics_layer:
+  # Dimension tables first (no dependencies within analytics layer)
+  - analytics_dim_date.sql
+  - analytics_dim_company.sql
+  - analytics_dim_platform.sql
+  - analytics_dim_location.sql
+  - analytics_dim_experience.sql
+  - analytics_dim_skills.sql
+  - analytics_dim_keywords.sql
+  - analytics_dim_job_family.sql
+  - analytics_dim_salary.sql
+
+  # Bridge tables in analytics (reference dimension tables)
+  - analytics_job_experience_bridge.sql
+
+  # Fact tables (reference multiple dimension tables)
+  - analytics_fact_job_postings.sql
+  - analytics_fact_company_hiring_weekly.sql
+  - analytics_fact_skills_demand_weekly.sql
+
+  # Analysis and summary tables (reference fact tables)
+  - analytics_skills_trend_analysis.sql
+  - analytics_market_weekly_summary.sql
