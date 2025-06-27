@@ -61,6 +61,9 @@ stage_layer:
   - stage_llm_quality_metrics_history.sql
   - stage_llm_manual_review_queue.sql
 
+  # View version tracking table
+  - stage_view_version_tracking.sql
+
 analytics_layer:
   # Dimension tables first (no dependencies within analytics layer)
   - analytics_dim_date.sql
@@ -84,3 +87,4 @@ analytics_layer:
   # Analysis and summary tables (reference fact tables)
   - analytics_skills_trend_analysis.sql
   - analytics_market_weekly_summary.sql
+

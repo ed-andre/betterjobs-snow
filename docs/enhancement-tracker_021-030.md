@@ -30,6 +30,7 @@ This document tracks planned enhancements and architectural improvements for the
     - ENHANCEMENT-023 Intelligent Skills Variant Consolidation - Linguistic-Based Pluralization
     - ENHANCEMENT-024 Analytics Job Experience Bridge - Resolve Many-to-Many Duplication
     - ENHANCEMENT-028: Schema Drift Detection Asset - Automated View Validation
+    - ENHANCEMENT-029: Hash-Based View Update Management - Schema-as-Code Evolution
 
 - **NO ACTION REQUIRED**
 
@@ -2441,11 +2442,11 @@ SCHEMA_DRIFT_CONFIG = {
 
 ## ENHANCEMENT-029: Hash-Based View Update Management - Schema-as-Code Evolution
 
-**Status:** 📋 **Planned**
+**Status:** ✅ **Complete**
 **Priority:** Medium
 **Component:** Schema-as-Code Infrastructure - View Management
 **Date Planned:** 2025-06-26 (Post-Schema Validation completion)
-**Estimated Effort:** 1.5 days
+**Date Completed:** 2025-06-26
 **Business Impact:** Medium - Improves development efficiency and deployment reliability
 
 ### Problem Statement
@@ -2939,6 +2940,44 @@ VIEW_UPDATE_STRATEGY=hash_based|always_replace|create_if_not_exists
 - **Database Permissions**: CREATE/REPLACE VIEW permissions required
 - **Python Libraries**: `hashlib` (built-in), `pathlib` (built-in)
 
+### Implementation Summary
+
+**✅ COMPLETED SUCCESSFULLY - 2025-06-26**
+
+**Components Implemented**:
+- ✅ **View Version Tracking Table**: `stage_view_version_tracking.sql` with hash storage and audit trail
+- ✅ **Hash Utilities**: `view_version_utils.py` with content hashing and change detection
+- ✅ **Environment Configuration**: `view_update_config.py` with strategy management
+- ✅ **Enhanced Views Setup Asset**: Hash-based change detection in `views_setup` asset
+- ✅ **SQL Processing Logic**: Proper handling of `CREATE VIEW IF NOT EXISTS` → `CREATE OR REPLACE VIEW`
+
+**Key Technical Achievements**:
+- ✅ **Automatic View Updates**: Views automatically updated when SQL file content changes
+- ✅ **Content Normalization**: MD5 hashing with comment/whitespace normalization for consistent detection
+- ✅ **Environment Strategies**: Different update behaviors for development vs. production
+- ✅ **Audit Trail**: Complete change history with timestamps and previous hash tracking
+- ✅ **Regex-Based SQL Processing**: Robust case-insensitive replacement of SQL patterns
+- ✅ **Error Handling**: Fixed duplicate `VIEW` keyword issue and improved debug logging
+
+**Configuration Features**:
+- 🔧 **Development Mode**: `always_replace` strategy for seamless development workflow
+- 📊 **Hash Tracking**: Content-based change detection with MERGE operations
+- 🔍 **Debug Logging**: Detailed logging for SQL replacement operations
+- 📈 **Performance Optimized**: Only processes views when content actually changes
+
+**Business Benefits Achieved**:
+- ✅ **Development Efficiency**: Eliminated manual view update procedures
+- ✅ **Code-Database Consistency**: Database views always reflect current code state
+- ✅ **Change Tracking**: Complete audit trail of all view modifications
+- ✅ **Production Safety**: Controlled updates prevent accidental overwrites
+- ✅ **Deployment Reliability**: Consistent behavior across environments
+
+**Risk Mitigation Implemented**:
+- ✅ **SQL Syntax Handling**: Proper replacement of incompatible CREATE VIEW patterns
+- ✅ **Error Prevention**: Fixed malformed SQL files and added validation
+- ✅ **Environment Isolation**: Different strategies for dev/prod environments
+- ✅ **Performance Protection**: Lightweight hashing doesn't impact pipeline performance
+
 ### Future Enhancements
 
 - **Dependency Analysis**: Detect view dependencies before updates
@@ -2946,5 +2985,184 @@ VIEW_UPDATE_STRATEGY=hash_based|always_replace|create_if_not_exists
 - **Change Notifications**: Alert stakeholders of view modifications
 - **Performance Monitoring**: Track view update performance over time
 - **Schema Migration**: Integration with broader schema migration tools
+
+---
+
+## ENHANCEMENT-030: Infrastructure Setup Assets - Proper Error Handling and Failure Propagation
+
+**Status:** 📋 **Planned**
+**Priority:** High
+**Component:** Infrastructure Setup & Asset Reliability
+**Date Planned:** 2025-06-26
+**Estimated Effort:** 0.5 days
+**Business Impact:** High - Critical for proper monitoring and alerting of setup failures
+
+### Problem Statement
+Current infrastructure setup assets (`database_schema_setup`, `infrastructure_setup`, `tables_setup`, `views_setup`, `static_data_population`) show as successfully materialized even when there are processing errors, because they return status information rather than failing outright. This masks actual failures and prevents proper alerting, since there's no monitoring system to detect partial failures from the returned metadata.
+
+**Current Issues**:
+- Assets return `{"status": "partial_success"}` instead of raising exceptions on failures
+- Dagster considers these as successful materializations
+- No alerting or visibility into setup failures without manual log inspection
+- Silent failures can cause downstream pipeline issues
+- Difficult to detect infrastructure problems in production deployments
+
+### Description
+Modify all infrastructure setup assets to properly fail (raise exceptions) when encountering processing errors, while maintaining detailed error reporting and partial success information in logs. This ensures Dagster's built-in failure detection and alerting mechanisms work correctly for infrastructure issues.
+
+### Business Justification
+- **Operational Reliability**: Immediate visibility into infrastructure setup failures
+- **Alerting Integration**: Proper failure propagation enables automated alerting
+- **Production Safety**: Prevent silent failures that could cause downstream issues
+- **Developer Experience**: Clear failure notifications during development
+- **Monitoring Compliance**: Align with standard Dagster failure handling patterns
+- **Risk Mitigation**: Early detection of infrastructure problems before they impact data pipeline
+
+### Technical Approach
+
+**Error Handling Strategy**:
+1. **Process All Objects**: Continue processing all objects to collect complete error information
+2. **Detailed Logging**: Log individual successes and failures with full context
+3. **Final Validation**: After processing, check if any failures occurred
+4. **Exception on Failure**: Raise descriptive exception if any objects failed
+5. **Success Information**: Return detailed success metadata only when no failures
+
+**Implementation Pattern**:
+```python
+@asset(...)
+def enhanced_setup_asset(context, snowflake) -> Dict[str, Any]:
+    """Setup asset with proper error handling"""
+
+    # Process all objects and collect results
+    results = process_all_objects(...)
+
+    # Log detailed results
+    context.log.info(f"Processing completed: {results['successful_objects']} success, {results['failed_objects']} failures")
+
+    # Fail asset if any objects failed
+    if results['failed_objects'] > 0:
+        error_summary = format_error_summary(results['results'])
+        context.log.error(f"Setup failed: {error_summary}")
+        raise RuntimeError(f"Asset failed: {results['failed_objects']} objects failed processing. Check logs for details.")
+
+    # Return success metadata only when completely successful
+    return results
+```
+
+### Implementation Plan
+
+**Phase 1: Update Asset Error Handling (0.5 day)**
+
+1. **Modify `database_schema_setup` Asset**:
+```python
+# Add failure check at end of asset
+if any(result.get("status") == "error" for result in results):
+    failed_schemas = [r["schema"] for r in results if r.get("status") == "error"]
+    raise RuntimeError(f"Database schema setup failed for: {failed_schemas}")
+```
+
+2. **Modify `infrastructure_setup` Asset**:
+```python
+# Add failure check for infrastructure objects
+if result["failed_objects"] > 0:
+    failed_objects = [r["object_name"] for r in result["results"] if r["status"] == "error"]
+    raise RuntimeError(f"Infrastructure setup failed for {result['failed_objects']} objects: {failed_objects}")
+```
+
+3. **Modify `tables_setup` Asset**:
+```python
+# Add failure check for table creation
+if result["failed_objects"] > 0:
+    failed_tables = [r["object_name"] for r in result["results"] if r["status"] == "error"]
+    raise RuntimeError(f"Table setup failed for {result['failed_objects']} tables: {failed_tables}")
+```
+
+4. **Modify `views_setup` Asset**:
+```python
+# Add failure check for view creation
+if result["failed_views"] > 0:
+    failed_views = [r["view_name"] for r in result["results"] if r["status"] == "error"]
+    raise RuntimeError(f"Views setup failed for {result['failed_views']} views: {failed_views}")
+```
+
+5. **Modify `static_data_population` Asset**:
+```python
+# Add failure check for data population
+if total_failures > 0:
+    failed_files = [r["file_path"] for r in results if r["status"] == "error"]
+    raise RuntimeError(f"Static data population failed: {total_failures} failures in files: {failed_files}")
+```
+
+### Error Message Format
+
+**Structured Error Messages** for easy debugging:
+```python
+def format_setup_error(asset_name: str, failed_count: int, failed_objects: List[str], total_count: int) -> str:
+    """Format descriptive error message for setup asset failure"""
+    return (
+        f"{asset_name} failed: {failed_count}/{total_count} objects failed processing. "
+        f"Failed objects: {', '.join(failed_objects[:5])}"
+        f"{'...' if len(failed_objects) > 5 else ''}. "
+        f"Check asset logs for detailed error information."
+    )
+```
+
+### Success Criteria
+
+- **Proper Failure Propagation**: Assets fail when any object processing fails
+- **Detailed Error Reporting**: Clear error messages identify which objects failed
+- **Complete Processing**: All objects processed before determining final status
+- **Logging Preservation**: Detailed success/failure logs maintained
+- **Alerting Integration**: Failed assets trigger Dagster's built-in alerting
+- **No Silent Failures**: All infrastructure issues visible in Dagster UI
+
+### Benefits
+
+**Operational Excellence**:
+- ✅ **Immediate Failure Visibility**: Failed infrastructure setup immediately visible in Dagster UI
+- ✅ **Proper Alerting**: Integration with existing monitoring and alerting systems
+- ✅ **Clear Error Messages**: Developers can quickly identify and fix infrastructure issues
+- ✅ **Production Safety**: Prevent silent failures from causing downstream pipeline problems
+
+**Development Experience**:
+- ✅ **Fast Feedback**: Immediate notification of setup failures during development
+- ✅ **Detailed Context**: Clear error messages help identify root causes
+- ✅ **Consistent Behavior**: All setup assets follow same error handling pattern
+
+### Risk Mitigation
+
+**Avoid Breaking Changes**:
+- **Preserve Logging**: All existing log information maintained
+- **Gradual Rollout**: Can be implemented incrementally per asset
+- **Error Context**: Rich error messages provide debugging information
+
+**Testing Strategy**:
+- **Error Simulation**: Test assets with intentionally broken object files
+- **Success Validation**: Ensure assets still succeed when all objects process correctly
+- **Message Verification**: Validate error message clarity and usefulness
+
+### Dependencies
+
+- **Existing Setup Assets**: All infrastructure setup assets must be modified
+- **Error Handling Patterns**: Consistent error message formatting
+- **Logging Framework**: Preserve existing logging functionality
+
+### Future Enhancements
+
+- **Retry Logic**: Automatic retry of failed objects before failing asset
+- **Partial Recovery**: Option to mark non-critical failures as warnings
+- **Failure Analytics**: Track common failure patterns for improvement
+- **Advanced Alerting**: Custom alert channels for different failure types
+
+### Files to be Modified
+
+**Modified Files**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - All setup assets
+- Error handling logic in each asset function
+- Consistent error message formatting
+
+**Testing Files** (optional):
+- Unit tests for error handling behavior
+- Integration tests with broken object files
 
 ---

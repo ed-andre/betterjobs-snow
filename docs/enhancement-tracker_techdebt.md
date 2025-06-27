@@ -557,3 +557,198 @@ The current schema-as-code system handles view updates well but lacks a safe mec
 - Connection to disaster recovery and backup strategies
 
 ---
+
+## TECH-DEBT-004: Database-Level View Versioning for Operational Diagnostics
+
+**Status:** 🔍 **Planned**
+**Priority:** Low
+**Component:** Schema-as-Code Infrastructure - View Management Enhancement
+**Date Identified:** 2025-06-26
+**Estimated Effort:** 1.5 days
+**Business Impact:** Low-Medium - Operational convenience without impacting core functionality
+
+### Problem Statement
+While ENHANCEMENT-029 implements hash-based view update management with git serving as the primary version control system, there's potential operational value in maintaining lightweight database-level versioning for deployed view definitions. This would complement git by providing immediate operational visibility into what's actually deployed and enabling quick runtime diagnostics.
+
+**Current State:**
+- Hash-based change detection works well for determining when to update views
+- Git provides comprehensive source control and development history
+- No database-level visibility into view deployment history or quick rollback capability
+
+**Potential Operational Gaps:**
+1. **Deployment Tracking**: Can't easily see what view version is deployed without git access
+2. **Runtime Diagnostics**: When a view breaks, can't immediately see the previous working definition
+3. **Cross-Environment Visibility**: No easy way to compare view versions across dev/staging/prod
+4. **Operational Rollback**: No database-level rollback capability for quick fixes during incidents
+
+### Business Justification
+- **Operational Convenience**: Quick access to deployment history without requiring git knowledge
+- **Incident Response**: Faster diagnostics during view-related production issues
+- **Environment Management**: Better visibility into what's deployed where
+- **Compliance**: Some environments may require database-level audit trails
+- **Future Capabilities**: Foundation for automated rollback features
+
+**Note**: This is a nice-to-have enhancement that complements rather than replaces git versioning. The core hash-based update management in ENHANCEMENT-029 provides the essential functionality.
+
+### Technical Approach
+
+**Lightweight Versioning Strategy**:
+- Extend existing `VIEW_VERSION_TRACKING` table to store 2-3 previous versions
+- Store minimal operational metadata, not full version history
+- Focus on deployment tracking and quick diagnostics
+- Configurable retention (can be disabled if not needed)
+
+**Enhanced Tracking Table**:
+```sql
+-- Enhanced version of stage_view_version_tracking.sql
+CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.VIEW_VERSION_TRACKING (
+    VIEW_NAME STRING,
+    VERSION_NUMBER INTEGER,
+    CONTENT_HASH STRING NOT NULL,
+
+    -- Deployment tracking
+    DEPLOYED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+    ENVIRONMENT STRING DEFAULT 'development',
+    DEPLOYED_BY STRING DEFAULT 'dagster_pipeline',
+
+    -- Git integration (optional)
+    GIT_COMMIT_HASH STRING,
+    GIT_BRANCH STRING,
+
+    -- Lightweight versioning (new addition)
+    VIEW_DEFINITION TEXT,  -- Store actual SQL for quick access
+    IS_CURRENT_VERSION BOOLEAN DEFAULT TRUE,
+    ROLLBACK_REASON STRING,
+
+    -- Metadata
+    FILE_PATH STRING,
+    UPDATE_REASON STRING DEFAULT 'content_changed',
+
+    PRIMARY KEY (VIEW_NAME, VERSION_NUMBER)
+) CLUSTER BY (VIEW_NAME, DEPLOYED_TIMESTAMP);
+```
+
+**Configuration Options**:
+```python
+VIEW_VERSIONING_CONFIG = {
+    "enabled": False,  # Disabled by default
+    "max_versions_per_view": 3,
+    "store_view_definition": True,
+    "include_git_metadata": True,
+    "auto_cleanup_old_versions": True,
+    "enable_runtime_queries": True  # Operational query utilities
+}
+```
+
+### Implementation Plan
+
+**Phase 1: Enhanced Tracking Infrastructure (0.5 days)**
+1. **Extend Existing Table**:
+   - Add versioning columns to current tracking table
+   - Implement version number sequence generation
+   - Add configurable view definition storage
+
+2. **Configuration System**:
+   - Make versioning optional and configurable
+   - Environment-based configuration (disabled in dev, optional in prod)
+   - Storage optimization settings
+
+**Phase 2: Integration with Hash-Based System (0.5 days)**
+1. **Extend View Update Logic**:
+   - Integrate versioning into existing hash-based update process
+   - Version creation only when hash changes (leverage existing logic)
+   - Automatic cleanup of old versions based on retention policy
+
+2. **Operational Utilities**:
+   - Helper functions for quick version queries
+   - View history and comparison utilities
+   - Environment deployment status queries
+
+**Phase 3: Operational Features (0.5 days)**
+1. **Diagnostic Queries**:
+   - Quick view deployment status queries
+   - Cross-environment version comparison
+   - Recent changes and deployment history
+
+2. **Documentation and Testing**:
+   - Operational runbook for using versioning features
+   - Testing versioning with mock view updates
+   - Performance validation for version storage
+
+### Files to be Modified/Created
+
+**New Files**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/utils/view_versioning_utils.py` - Optional versioning utilities
+- `pipeline/dagster_betterjobs/dagster_betterjobs/config/view_versioning_config.py` - Configuration management
+
+**Modified Files**:
+- `pipeline/sql/objects/tables/stage_view_version_tracking.sql` - Enhanced table schema
+- `pipeline/dagster_betterjobs/dagster_betterjobs/utils/view_version_utils.py` - Add optional versioning
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - Integrate with views_setup
+
+### Success Criteria
+
+**Functional Goals**:
+- ✅ Configurable versioning that doesn't impact core functionality when disabled
+- ✅ Minimal storage overhead (2-3 versions per view maximum)
+- ✅ Quick operational queries for deployment status and history
+- ✅ Seamless integration with existing hash-based update system
+
+**Operational Goals**:
+- ✅ <10 second response time for deployment status queries
+- ✅ Clear operational visibility into what's deployed across environments
+- ✅ Foundation for future rollback capabilities (if needed)
+- ✅ Zero impact on development workflow when disabled
+
+### Benefits
+
+**Operational Advantages**:
+- ✅ **Quick Diagnostics**: Immediate access to previous working view definitions
+- ✅ **Deployment Tracking**: Clear visibility into what's deployed where
+- ✅ **Incident Response**: Faster troubleshooting during view-related issues
+- ✅ **Environment Management**: Easy comparison of versions across environments
+
+**Implementation Advantages**:
+- ✅ **Optional**: Can be completely disabled without affecting core functionality
+- ✅ **Lightweight**: Minimal storage and performance impact
+- ✅ **Complementary**: Works with git, doesn't replace it
+- ✅ **Future-Ready**: Foundation for enhanced operational features
+
+### Risks and Mitigation
+
+**Risk: Storage Overhead**
+- Mitigation: Configurable retention limits (2-3 versions maximum)
+- Monitoring: Track storage usage and cleanup effectiveness
+- Configuration: Can be disabled entirely if not needed
+
+**Risk: Development Complexity**
+- Mitigation: Keep versioning completely optional and separate from core logic
+- Implementation: Simple extension of existing hash-based system
+- Testing: Comprehensive testing with versioning both enabled and disabled
+
+**Risk: Feature Creep**
+- Mitigation: Clear scope limitation (operational diagnostics only)
+- Focus: Complement git, don't compete with it
+- Implementation: Simple configuration to enable/disable entire feature
+
+### Implementation Priority
+
+**Low Priority Justification**:
+- Not critical for core pipeline functionality
+- Git already provides comprehensive version control
+- Operational benefit is convenience, not necessity
+- Can be implemented after higher-priority work is complete
+
+**When to Implement**:
+- After ENHANCEMENT-029 is complete and stable
+- When better deployment visibility is needed
+- During production hardening phase
+- As part of broader operational excellence initiatives
+
+### Related Issues
+- Builds on ENHANCEMENT-029 hash-based view update management
+- Complements existing git-based version control
+- Future integration with automated rollback capabilities
+- Potential integration with broader deployment tracking systems
+
+---

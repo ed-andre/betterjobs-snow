@@ -14,6 +14,7 @@ Execution Order:
 """
 
 import os
+import re
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -412,27 +413,163 @@ def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -
     return result
 
 
+def process_view_files_with_change_detection(snowflake: SnowflakeResource, objects_dir: Path,
+                                           view_files: List[str], context: AssetExecutionContext,
+                                           update_strategy: str) -> Dict[str, Any]:
+    """
+    Process view files with hash-based change detection
+
+    Args:
+        snowflake: Snowflake resource connection
+        objects_dir: Path to views directory
+        view_files: List of view SQL files
+        context: Dagster execution context
+        update_strategy: Update strategy ('hash_based', 'always_replace', 'create_if_not_exists')
+
+    Returns:
+        Dictionary with processing results
+    """
+    from ..utils.view_version_utils import (
+        calculate_view_content_hash, view_needs_update, update_view_hash,
+        extract_view_name_from_file
+    )
+
+    results = []
+    successful_views = 0
+    failed_views = 0
+    updated_views = 0
+    skipped_views = 0
+
+    with snowflake.get_connection() as conn:
+        for view_file in view_files:
+            view_path = objects_dir / view_file
+            view_name = extract_view_name_from_file(view_file)
+
+            context.log.info(f"📋 Processing view file: {view_file} -> {view_name}")
+
+            try:
+                # Read SQL content
+                with open(view_path, 'r') as f:
+                    sql_content = f.read()
+
+                # Calculate content hash
+                content_hash = calculate_view_content_hash(sql_content)
+
+                # Determine if update is needed based on strategy
+                should_update = False
+                if update_strategy == 'always_replace':
+                    should_update = True
+                    context.log.info(f"🔄 Force updating view (always_replace): {view_name}")
+                elif update_strategy == 'hash_based':
+                    should_update = view_needs_update(view_name, content_hash, snowflake)
+                    if should_update:
+                        context.log.info(f"📝 View definition changed, updating: {view_name}")
+                    else:
+                        context.log.info(f"✅ View unchanged, skipping: {view_name}")
+                else:  # create_if_not_exists
+                    should_update = True  # Let database handle CREATE VIEW IF NOT EXISTS
+                    context.log.info(f"➕ Creating view if not exists: {view_name}")
+
+                if should_update:
+                    # Execute view creation/update
+                    cursor = conn.cursor()
+                    try:
+                        if update_strategy == 'create_if_not_exists':
+                            # Use existing CREATE VIEW IF NOT EXISTS pattern
+                            cursor.execute(sql_content)
+                        else:
+                            # Use CREATE OR REPLACE VIEW pattern
+                            # Handle both CREATE VIEW IF NOT EXISTS and CREATE VIEW patterns
+                            if 'CREATE VIEW IF NOT EXISTS' in sql_content.upper():
+                                # Replace CREATE VIEW IF NOT EXISTS with CREATE OR REPLACE VIEW (case-insensitive)
+                                updated_sql = re.sub(r'CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS', 'CREATE OR REPLACE VIEW', sql_content, count=1, flags=re.IGNORECASE)
+                                context.log.debug(f"🔄 Replaced CREATE VIEW IF NOT EXISTS with CREATE OR REPLACE VIEW for {view_name}")
+                                cursor.execute(updated_sql)
+                            elif 'CREATE VIEW' in sql_content.upper() and 'CREATE OR REPLACE VIEW' not in sql_content.upper():
+                                # Replace CREATE VIEW with CREATE OR REPLACE VIEW (case-insensitive)
+                                updated_sql = re.sub(r'CREATE\s+VIEW', 'CREATE OR REPLACE VIEW', sql_content, count=1, flags=re.IGNORECASE)
+                                context.log.debug(f"🔄 Replaced CREATE VIEW with CREATE OR REPLACE VIEW for {view_name}")
+                                cursor.execute(updated_sql)
+                            else:
+                                # If it's already CREATE OR REPLACE VIEW, use as is
+                                context.log.debug(f"🔄 Using existing CREATE OR REPLACE VIEW for {view_name}")
+                                cursor.execute(sql_content)
+
+                        context.log.info(f"✅ Successfully processed view: {view_name}")
+
+                        # Update hash tracking for hash-based strategy
+                        if update_strategy == 'hash_based':
+                            schema_name = view_name.split('.')[0]
+                            update_view_hash(view_name, content_hash, str(view_path),
+                                           schema_name, snowflake, context)
+
+                        updated_views += 1
+                        successful_views += 1
+                    finally:
+                        cursor.close()
+                else:
+                    skipped_views += 1
+                    successful_views += 1
+
+                results.append({
+                    "view_file": view_file,
+                    "view_name": view_name,
+                    "status": "updated" if should_update else "skipped",
+                    "content_hash": content_hash[:8] + "...",
+                    "strategy": update_strategy
+                })
+
+            except Exception as e:
+                context.log.error(f"❌ Error processing {view_file}: {str(e)}")
+                failed_views += 1
+                results.append({
+                    "view_file": view_file,
+                    "view_name": view_name,
+                    "status": "error",
+                    "error": str(e),
+                    "strategy": update_strategy
+                })
+
+    return {
+        "status": "success" if failed_views == 0 else "partial_success",
+        "total_views": len(view_files),
+        "successful_views": successful_views,
+        "failed_views": failed_views,
+        "updated_views": updated_views,
+        "skipped_views": skipped_views,
+        "update_strategy": update_strategy,
+        "results": results
+    }
+
+
 @asset(
-    description="Initialize all view objects using object files",
+    description="Initialize all view objects using hash-based change detection",
     group_name="0_infrastructure_setup",
     kinds={"snowflake", "SQL", "python"},
     deps=[tables_setup]
 )
 def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Execute all view object files to create database views
+    Execute all view object files with intelligent change detection
 
-    Creates:
+    Creates/Updates:
     - STAGE schema views for data transformation
     - ANALYTICS schema views for business insights
     - Lookup and summary views
+
+    Uses hash-based change detection to only update views when definitions change.
     """
+    from ..utils.view_version_utils import (
+        calculate_view_content_hash, view_needs_update, update_view_hash,
+        extract_view_name_from_file, get_objects_directory, ensure_tracking_table_exists
+    )
+    from ..config.view_update_config import get_view_update_strategy
+
+    # Ensure tracking table exists
+    ensure_tracking_table_exists(snowflake, context)
 
     # Get the path to object files
-    current_dir = Path(__file__).parent
-    # Navigate to project root and then to SQL objects directory
-    project_root = current_dir.parent.parent.parent.parent
-    objects_dir = project_root / "pipeline" / "sql" / "objects" / "views"
+    objects_dir = get_objects_directory() / "views"
 
     # Get all view files
     view_files = [f.name for f in objects_dir.glob("*.sql") if f.is_file()]
@@ -444,21 +581,22 @@ def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) ->
             "total_objects": 0,
             "successful_objects": 0,
             "failed_objects": 0,
+            "updated_views": 0,
+            "skipped_views": 0,
             "results": []
         }
 
     # Sort alphabetically for consistent processing
     view_files.sort()
 
-    context.log.info(f"Processing {len(view_files)} view objects")
+    # Get update strategy
+    update_strategy = get_view_update_strategy()
+    context.log.info(f"🔧 Processing {len(view_files)} view objects with strategy: {update_strategy}")
 
-    # Process view object files
-    result = process_object_files(snowflake, objects_dir, view_files, context)
+    # Process views with change detection
+    result = process_view_files_with_change_detection(snowflake, objects_dir, view_files, context, update_strategy)
 
-    context.log.info(f"Views setup completed: {result['successful_objects']} objects processed, {result['failed_objects']} failures")
-
-    if result["failed_objects"] > 0:
-        context.log.warning(f"Some view objects failed: {result['failed_objects']} failures")
+    context.log.info(f"Views setup completed: {result['updated_views']} updated, {result['skipped_views']} skipped, {result['failed_views']} failures")
 
     return result
 
