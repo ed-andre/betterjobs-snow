@@ -31,6 +31,7 @@ This document tracks planned enhancements and architectural improvements for the
     - ENHANCEMENT-024 Analytics Job Experience Bridge - Resolve Many-to-Many Duplication
     - ENHANCEMENT-028: Schema Drift Detection Asset - Automated View Validation
     - ENHANCEMENT-029: Hash-Based View Update Management - Schema-as-Code Evolution
+    - ENHANCEMENT-030: Infrastructure Setup Assets - Proper Error Handling and Failure Propagation
 
 - **NO ACTION REQUIRED**
 
@@ -2990,11 +2991,12 @@ VIEW_UPDATE_STRATEGY=hash_based|always_replace|create_if_not_exists
 
 ## ENHANCEMENT-030: Infrastructure Setup Assets - Proper Error Handling and Failure Propagation
 
-**Status:** 📋 **Planned**
+**Status:** ✅ **Complete**
 **Priority:** High
 **Component:** Infrastructure Setup & Asset Reliability
 **Date Planned:** 2025-06-26
-**Estimated Effort:** 0.5 days
+**Date Completed:** 2025-06-26
+**Actual Effort:** 0.5 days
 **Business Impact:** High - Critical for proper monitoring and alerting of setup failures
 
 ### Problem Statement
@@ -3154,15 +3156,60 @@ def format_setup_error(asset_name: str, failed_count: int, failed_objects: List[
 - **Failure Analytics**: Track common failure patterns for improvement
 - **Advanced Alerting**: Custom alert channels for different failure types
 
-### Files to be Modified
+### Implementation Summary
+
+**✅ COMPLETED SUCCESSFULLY - 2025-01-20**
+
+**Assets Enhanced with Proper Error Handling**:
+- ✅ **`database_schema_setup`**: Fails when SQL statements fail execution
+- ✅ **`infrastructure_setup`**: Fails when any infrastructure objects fail processing
+- ✅ **`tables_setup`**: Fails when any table objects fail creation
+- ✅ **`views_setup`**: Fails when any view objects fail processing
+- ✅ **`static_data_population`**: Fails when any data population files fail
+- ✅ **`setup_validation`**: Fails when any validation checks fail (bonus improvement)
+
+**Key Technical Achievements**:
+- ✅ **Complete Processing**: All objects processed before determining final status
+- ✅ **Descriptive Error Messages**: Clear identification of which objects failed
+- ✅ **Structured Error Reporting**: Consistent error message format across all assets
+- ✅ **Rich Context**: Error messages include counts and failed object names
+- ✅ **Proper Exception Types**: Use `RuntimeError` for infrastructure failures
+- ✅ **Success Logging**: Clear success indicators when all processing completes
+
+**Error Handling Pattern Implemented**:
+```python
+# Process all objects and collect results
+results = process_all_objects(...)
+
+# Check for failures and fail asset if any occurred
+if results["failed_objects"] > 0:
+    failed_objects = [r["object_name"] for r in results["results"] if r["status"] == "error"]
+    context.log.error(f"Setup failed for {results['failed_objects']} objects: {failed_objects}")
+    raise RuntimeError(f"Asset failed: {results['failed_objects']}/{results['total_objects']} objects failed processing. Failed objects: {', '.join(failed_objects[:5])}. Check logs for details.")
+
+# Return success metadata only when completely successful
+context.log.info(f"✅ Setup completed successfully: {results['successful_objects']} objects processed")
+return results
+```
+
+**Business Benefits Achieved**:
+- ✅ **Immediate Failure Visibility**: Failed infrastructure setup immediately visible in Dagster UI
+- ✅ **Proper Alerting**: Failed assets trigger Dagster's built-in failure detection and alerting
+- ✅ **Clear Error Context**: Developers can quickly identify which objects failed and why
+- ✅ **Production Safety**: Silent failures eliminated - all infrastructure issues are visible
+- ✅ **Monitoring Integration**: Proper failure propagation enables automated monitoring and alerting
+
+**Risk Mitigation Implemented**:
+- ✅ **Detailed Logging**: All existing log information preserved with enhanced error context
+- ✅ **Complete Processing**: All objects attempted before failing to provide full error context
+- ✅ **Structured Messages**: Consistent error message format for easy debugging
+- ✅ **No Breaking Changes**: Return value structure preserved for successful executions
+
+### Files Modified
 
 **Modified Files**:
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - All setup assets
-- Error handling logic in each asset function
-- Consistent error message formatting
-
-**Testing Files** (optional):
-- Unit tests for error handling behavior
-- Integration tests with broken object files
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - All setup assets enhanced
+- Error handling logic added to each infrastructure asset function
+- Consistent error message formatting implemented
 
 ---

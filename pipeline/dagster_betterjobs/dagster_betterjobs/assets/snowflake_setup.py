@@ -261,12 +261,14 @@ def database_schema_setup(context: AssetExecutionContext, snowflake: SnowflakeRe
 
     if result["status"] == "error":
         context.log.error(f"Failed to create database and schemas: {result['error']}")
-        raise Exception(f"Database setup failed: {result['error']}")
+        raise RuntimeError(f"Database schema setup failed: {result['error']}")
 
-    context.log.info(f"Successfully created database and schemas: {result['statements_executed']} statements executed")
+    # Check for any failed statements
     if result["statements_failed"] > 0:
-        context.log.warning(f"Some statements failed: {result['statements_failed']} failures")
+        context.log.error(f"Database schema setup failed: {result['statements_failed']} statements failed")
+        raise RuntimeError(f"Database schema setup failed: {result['statements_failed']}/{result['statements_executed']} statements failed. Check logs for details.")
 
+    context.log.info(f"✅ Successfully created database and schemas: {result['statements_executed']} statements executed")
     return result
 
 
@@ -323,9 +325,13 @@ def infrastructure_setup(context: AssetExecutionContext, snowflake: SnowflakeRes
 
     context.log.info(f"Infrastructure setup completed: {result['successful_objects']} objects processed, {result['failed_objects']} failures")
 
+    # Fail asset if any objects failed
     if result["failed_objects"] > 0:
-        context.log.warning(f"Some infrastructure objects failed: {result['failed_objects']} failures")
+        failed_objects = [r["object_name"] for r in result["results"] if r["status"] == "error"]
+        context.log.error(f"Infrastructure setup failed for {result['failed_objects']} objects: {failed_objects}")
+        raise RuntimeError(f"Infrastructure setup failed: {result['failed_objects']}/{result['total_objects']} objects failed processing. Failed objects: {', '.join(failed_objects[:5])}{'...' if len(failed_objects) > 5 else ''}. Check logs for details.")
 
+    context.log.info(f"✅ Infrastructure setup completed successfully: {result['successful_objects']} objects processed")
     return result
 
 
@@ -407,9 +413,13 @@ def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -
 
     context.log.info(f"Tables setup completed: {result['successful_objects']} objects processed, {result['failed_objects']} failures")
 
+    # Fail asset if any objects failed
     if result["failed_objects"] > 0:
-        context.log.warning(f"Some table objects failed: {result['failed_objects']} failures")
+        failed_tables = [r["object_name"] for r in result["results"] if r["status"] == "error"]
+        context.log.error(f"Tables setup failed for {result['failed_objects']} tables: {failed_tables}")
+        raise RuntimeError(f"Tables setup failed: {result['failed_objects']}/{result['total_objects']} tables failed processing. Failed tables: {', '.join(failed_tables[:5])}{'...' if len(failed_tables) > 5 else ''}. Check logs for details.")
 
+    context.log.info(f"✅ Tables setup completed successfully: {result['successful_objects']} tables processed")
     return result
 
 
@@ -598,6 +608,13 @@ def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) ->
 
     context.log.info(f"Views setup completed: {result['updated_views']} updated, {result['skipped_views']} skipped, {result['failed_views']} failures")
 
+    # Fail asset if any views failed
+    if result["failed_views"] > 0:
+        failed_views = [r["view_name"] for r in result["results"] if r["status"] == "error"]
+        context.log.error(f"Views setup failed for {result['failed_views']} views: {failed_views}")
+        raise RuntimeError(f"Views setup failed: {result['failed_views']}/{result['total_views']} views failed processing. Failed views: {', '.join(failed_views[:5])}{'...' if len(failed_views) > 5 else ''}. Check logs for details.")
+
+    context.log.info(f"✅ Views setup completed successfully: {result['updated_views']} updated, {result['skipped_views']} skipped")
     return result
 
 
@@ -649,6 +666,18 @@ def static_data_population(context: AssetExecutionContext, snowflake: SnowflakeR
 
     context.log.info(f"Static data population completed: {total_statements} statements executed, {total_failures} failures")
 
+    # Fail asset if any files failed completely or had statement failures
+    failed_files = [r["file_path"] if "file_path" in r else "unknown" for r in results if r["status"] == "error"]
+
+    if failed_files or total_failures > 0:
+        if failed_files:
+            context.log.error(f"Static data population failed for files: {failed_files}")
+            raise RuntimeError(f"Static data population failed: {len(failed_files)} files failed completely. Failed files: {', '.join(failed_files[:5])}{'...' if len(failed_files) > 5 else ''}. Check logs for details.")
+        else:
+            context.log.error(f"Static data population failed: {total_failures} statement failures")
+            raise RuntimeError(f"Static data population failed: {total_failures} statements failed across {len(data_population_files)} files. Check logs for details.")
+
+    context.log.info(f"✅ Static data population completed successfully: {total_statements} statements executed across {len(data_population_files)} files")
     return {
         "status": "success",
         "total_files": len(data_population_files),
@@ -736,9 +765,13 @@ def setup_validation(context: AssetExecutionContext, snowflake: SnowflakeResourc
 
     context.log.info(f"Setup validation completed: {successful_validations} successful, {failed_validations} failed")
 
+    # Fail asset if any validation checks failed
     if failed_validations > 0:
-        context.log.warning("Some validation checks failed - review setup completeness")
+        failed_queries = [r["query"][:50] + "..." for r in validation_results if r["status"] == "error"]
+        context.log.error(f"Setup validation failed: {failed_validations} validation checks failed")
+        raise RuntimeError(f"Setup validation failed: {failed_validations}/{len(validation_queries)} validation checks failed. This indicates incomplete or incorrect setup. Check logs for details.")
 
+    context.log.info(f"✅ Setup validation completed successfully: {successful_validations} validation checks passed")
     return {
         "status": "success",
         "total_validations": len(validation_queries),
