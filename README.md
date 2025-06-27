@@ -145,85 +145,73 @@ The planned GOLD layer will provide business-ready analytics and reporting:
 
 ## Getting Started
 
-### Prerequisites
+Follow these steps to get the BetterJobs project running locally:
 
-- Python (v3.10+)
-- Docker (optional, for containerized deployment)
-- Dagster
-- Access to the following external services:
-  - Snowflake
-  - AWS S3
-  - Google AI Gemini API
+### Step 1: Prerequisites
 
+Ensure you have the following installed:
+- **Python 3.10+**
+- **Git**
+- **AWS Account** (for S3 integration)
+- **Snowflake Account** (with ACCOUNTADMIN privileges for initial setup)
+- **Google AI Studio Account** (for LLM features)
 
-### External Service Setup
+### Step 2: Clone and Install
 
-#### 1. Snowflake
-- Create a Snowflake account and warehouse
-- Create a database (e.g., `BETTERJOBS_DB`)
-- Create schemas for raw data (`RAW`) and processed data (`PROCESSED`)
-- Create a user with appropriate permissions
-- Note your account identifier, warehouse, and database details
-
-**For detailed Snowflake setup instructions, see: [SNOWFLAKE_SETUP.md](pipeline/docs/setup/SNOWFLAKE_SETUP.md)**
-
-**For S3-Snowflake integration setup, see: [S3_SNOWFLAKE_SETUP.md](pipeline/docs/setup/S3_SNOWFLAKE_SETUP.md)**
-
-#### 2. Gemini API
-- Set up Google AI Studio account
-- Generate an API key for Gemini
-
-### Environment Configuration
-
-Create a `.env` file in the project root with the following variables:
-
-```
-# Snowflake
-SNOWFLAKE_ACCOUNT=your_account_identifier
-SNOWFLAKE_USER=your_username
-SNOWFLAKE_PASSWORD=your_password
-SNOWFLAKE_DATABASE=BETTERJOBS_DB
-SNOWFLAKE_RAW_SCHEMA=RAW
-SNOWFLAKE_PROCESSED_SCHEMA=PROCESSED
-SNOWFLAKE_WAREHOUSE=your_warehouse
-SNOWFLAKE_ROLE=your_role
-
-# AI APIs
-GEMINI_API_KEY=your_gemini_api_key
-OPENAI_API_KEY=your_openai_api_key
-```
-
-### Installation
-
-1. Clone the repository
+1. **Clone the repository**:
 ```bash
 git clone [repository URL]
-cd betterjobs
+cd betterjobs-snow
 ```
 
-2. Set up the Dagster pipeline
+2. **Install the Dagster pipeline**:
 ```bash
 cd pipeline/dagster_betterjobs
 pip install -e .
 ```
 
-The `setup.py` file includes all necessary dependencies including:
-- Dagster and related packages
-- Snowflake connector
-- Web discovery tools (BeautifulSoup, lxml)
-- Gemini AI integration
+### Step 3: Environment Configuration
 
-### Running the Pipeline
+1. **Rename the environment template .env.exampleunder `pipeline/dagster_betterjobs` to .env**:
 
-Start the Dagster pipeline:
+
+2. **Edit the .env file** with your credentials:
+   - **Snowflake**: Account, username, password, and warehouse details
+   - **AWS S3**: Access key, secret key, region, and bucket information
+   - **LLM APIs**: Gemini API key (and OpenAI if using)
+   - **Database settings**: Keep the default database and schema names
+
+### Step 4: Set Up External Services
+
+#### AWS S3 Setup
+Create your S3 bucket and IAM role before setting up Snowflake:
+- Create an S3 bucket (e.g., `betterjobs-dagster`)
+- Set up IAM role with S3 access permissions
+- **For detailed instructions, see: [S3_SNOWFLAKE_SETUP.md](pipeline/docs/setup/S3_SNOWFLAKE_SETUP.md)**
+
+### Step 5: Start the Pipeline
+
 ```bash
 cd pipeline/dagster_betterjobs
 dagster dev
 ```
 
-The Dagster UI will be available at `http://localhost:3000` where you can run jobs, materialize assets, and monitor the pipeline.
+#### Step 6: Snowflake Infrastructure Setup
+Set up your complete Snowflake infrastructure using automated assets:
+- **For complete setup instructions, see: [SNOWFLAKE_SETUP.md](pipeline/docs/setup/SNOWFLAKE_SETUP.md)**
 
-## Pipeline Jobs
+
+
+The Dagster UI will be available at `http://localhost:3000`.
+
+
+### Step 7: Verify Setup
+
+Run the `setup_validation` asset to verify your infrastructure is properly configured.
+
+🎉 **Your BetterJobs pipeline is now ready!** You can start materializing data assets and running job discovery workflows.
+
+## Pipeline Jobs (OUTDATED - WILL BE UPDATED SOON)
 
 The following Dagster jobs are available to run:
 
@@ -250,7 +238,7 @@ See the Dagster UI for the complete list of available jobs and their description
 
 ## Usage Workflow
 
-### Adding Company Data Sources
+### Adding Company Data Sources (OUTDATED - WILL BE UPDATED SOON)
 
 1. For each supported ATS platform, create or update a CSV file named `[ats-name]_companies.csv` under the `pipeline/dagster_betterjobs/dagster_betterjobs/data_load/datasource` directory with the following headers:
 
@@ -276,7 +264,7 @@ Supported platforms include:
 
 
 
-### Asset Materialization Workflows
+### Asset Materialization Workflows (OUTDATED - WILL BE UPDATED SOON)
 
 There are two main approaches to running the pipeline:
 
@@ -309,7 +297,7 @@ Acme Corp,Technology,workday,https://acme.wd1.myworkdayjobs.com/acme_careers/,ht
 
 3. The adhoc_company_urls_sensor will automatically detect changes to this file and trigger the relevant job discovery pipelines.
 
-### Scheduling Jobs
+### Scheduling Jobs (OUTDATED - WILL BE UPDATED SOON)
 
 For automated use, you should configure appropriate schedules:
 
@@ -343,56 +331,16 @@ def jobs_every_four_hours_schedule():
 
 3. When running Dagster, your schedule will appear in the UI where you can turn it on.
 
-### Best Practices for Resource Usage
+### Best Practices for Resource Usage (OUTDATED - WILL BE UPDATED SOON)
 
 - Snowflake master company urls job should be run when you update the CSV files with new companies on S3 or locally
-- Job discovery jobs should be run more frequently (daily or multiple times daily)
+- Job discovery jobs should be run daily
 - Some ATS platforms have rate limits - avoid running jobs too frequently
+- The rest of the pipeline is intended to be run weekly for market analysis and reporting but can be run daily as needed
 
-## Data Analytics & Reporting
+## Data Analytics & Reporting (OUTDATED - WILL BE UPDATED SOON)
 
-### Snowflake Tables
 
-The pipeline creates and maintains several key tables in Snowflake:
-
-- **master_company_urls**: Company information and career site URLs
-- **workday_jobs**: Job listings from Workday platforms
-- **greenhouse_jobs**: Job listings from Greenhouse platforms
-- **bamboohr_jobs**: Job listings from BambooHR platforms
-- **smartrecruiters_jobs**: Job listings from SmartRecruiters platforms
-
-### Sample Analytics Queries
-
-**Job Posting Trends by Platform:**
-```sql
-SELECT
-    platform,
-    DATE_TRUNC('week', date_posted) as week,
-    COUNT(*) as jobs_posted
-FROM (
-    SELECT 'workday' as platform, date_posted FROM workday_jobs WHERE is_active = TRUE
-    UNION ALL
-    SELECT 'greenhouse' as platform, date_posted FROM greenhouse_jobs WHERE is_active = TRUE
-    UNION ALL
-    SELECT 'bamboohr' as platform, date_posted FROM bamboohr_jobs WHERE is_active = TRUE
-)
-GROUP BY platform, week
-ORDER BY week DESC;
-```
-
-**Top Companies by Job Volume:**
-```sql
-SELECT
-    c.company_name,
-    c.company_industry,
-    COUNT(*) as total_jobs
-FROM master_company_urls c
-JOIN workday_jobs j ON c.company_id = j.company_id
-WHERE j.is_active = TRUE
-GROUP BY c.company_name, c.company_industry
-ORDER BY total_jobs DESC
-LIMIT 20;
-```
 
 ### Business Intelligence Integration
 
@@ -414,12 +362,8 @@ The Snowflake data warehouse can be connected to various BI tools:
 
 ## Migration Notes
 
-This project has been migrated from BigQuery to Snowflake to provide:
-- Better performance for analytics workloads
-- More cost-effective data storage and compute
-- Enhanced support for semi-structured data
-- Improved integration with modern BI tools
-- Better separation of compute and storage
+This project has been migrated from BigQuery to Snowflake as a personal experiment to compare the performance and capabilities of the two platforms. It will be migrated again to BigQuery with the hope of making it compatible with both platforms with minimal feature disparity.
+
 
 ## Contributing
 

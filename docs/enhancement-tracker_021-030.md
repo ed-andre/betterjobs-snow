@@ -19,19 +19,24 @@ This document tracks planned enhancements and architectural improvements for the
 ## ENHANCEMENT STATUS
 
 - **OPEN**
-    - ENHANCEMENT-021: Update README.md for Schema-as-Code Infrastructure
+
     - ENHANCEMENT-025: SQL-as-Files for Database Platform Migration (Snowflake to BigQuery)
     - ENHANCEMENT-026: Analytics Skills Bridge - Enable Multi-Skill Job Analysis
     - ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
 
 - **IN PROGRESS**
+
+    -
+
   - **COMPLETED**
+
     - ENHANCEMENT-022: Salary Normalization Pipeline - Critical Data Quality Fix
     - ENHANCEMENT-023 Intelligent Skills Variant Consolidation - Linguistic-Based Pluralization
     - ENHANCEMENT-024 Analytics Job Experience Bridge - Resolve Many-to-Many Duplication
     - ENHANCEMENT-028: Schema Drift Detection Asset - Automated View Validation
     - ENHANCEMENT-029: Hash-Based View Update Management - Schema-as-Code Evolution
     - ENHANCEMENT-030: Infrastructure Setup Assets - Proper Error Handling and Failure Propagation
+    - ENHANCEMENT-021: Update README.md for Schema-as-Code Infrastructure
 
 - **NO ACTION REQUIRED**
 
@@ -39,188 +44,198 @@ This document tracks planned enhancements and architectural improvements for the
 
 ## ENHANCEMENT-021: Update README.md for Schema-as-Code Infrastructure
 
-**Status:** 📋 **Planned**
+**Status:** ✅ **Complete**
 **Priority:** Medium
 **Component:** Documentation & Developer Experience
-**Date Planned:** 2025-01-20 (Post-Enhancement 20 completion)
-**Estimated Effort:** 1 day
+**Date Planned:** 2025-06-15 (Post-Enhancement 20 completion)
+**Date Completed:** 2025-06-26
 **Business Impact:** Medium - Improves developer onboarding and reduces setup friction
 
 ### Problem Statement
-The current README.md describes the project setup and infrastructure based on the legacy asset structure (raw_schema_setup, stage_schema_setup, analytics_schema_setup). With Enhancement 20's completion, the infrastructure has been refactored to use a schema-as-code approach with object files and new asset names (infrastructure_setup, tables_setup, views_setup), making the documentation outdated and potentially confusing for new developers.
+The README.md contained outdated setup procedures, embedded environment variable configurations, and mixed responsibilities between comprehensive setup guidance and project overview. The documentation needed restructuring to support the modern schema-as-code infrastructure while creating focused, user-friendly setup documentation.
 
 ### Description
-Update the README.md documentation to accurately reflect the new schema-as-code infrastructure system, including the object file organization, updated asset structure, and revised setup procedures. Ensure new developers can easily understand and set up the project with the modernized infrastructure layer.
+Completely restructure the README.md Getting Started section to create a cohesive, step-by-step setup process that integrates with dedicated setup documentation. Implement separation of concerns between overview documentation and detailed setup procedures while ensuring consistent use of the `.env.example` template approach.
 
 ### Business Justification
-- **Developer Onboarding**: Accurate documentation reduces setup time and confusion
-- **Project Maintenance**: Up-to-date README prevents outdated setup procedures
-- **Professional Standards**: Maintains high-quality documentation standards
-- **Adoption Support**: Clear documentation encourages project usage and contribution
-- **Knowledge Transfer**: Enables effective handoff and collaboration
+- **Developer Onboarding**: Clear, sequential setup process reduces time to first successful run
+- **Documentation Maintenance**: Focused responsibilities prevent documentation drift
+- **Professional Standards**: Clean separation between overview and detailed setup procedures
+- **User Experience**: Step-by-step approach eliminates setup confusion
+- **Knowledge Transfer**: Comprehensive yet focused documentation enables effective collaboration
 
 ### Technical Approach
 
-**Documentation Updates Required:**
+**Documentation Restructuring Strategy:**
 
-1. **Infrastructure Architecture Section**:
-   - Update asset flow diagrams to show new infrastructure layer structure
-   - Document object file organization (`tables/`, `views/`, `infrastructure/`)
-   - Explain schema-as-code benefits and self-healing capabilities
-   - Update dependency flow: `database_schema_setup` → `infrastructure_setup` → `tables_setup` → `views_setup`
+1. **Separation of Concerns**:
+   - README.md: High-level overview and streamlined Getting Started process
+   - SNOWFLAKE_SETUP.md: Detailed Snowflake infrastructure setup procedures
+   - S3_SNOWFLAKE_SETUP.md: Focused S3 integration configuration
+   - Environment configuration: Consistent `.env.example` template usage
 
-2. **Getting Started Section**:
-   - Update Snowflake setup instructions to reference object files
-   - Document new infrastructure asset execution order
-   - Add object file validation and completeness checks
-   - Update environment variables and configuration requirements
+2. **Step-by-Step Getting Started**:
+   - Sequential 7-step process from prerequisites to verification
+   - Clear integration points with dedicated setup documentation
+   - Consistent environment configuration approach
+   - Proper sequencing of external service setup
 
-3. **Pipeline Components Section**:
-   - Update asset descriptions to reflect new infrastructure layer
-   - Document object file self-healing capabilities
-   - Explain file format management and reusable components
-   - Update asset dependency explanations
+3. **Content Organization**:
+   - Remove embedded environment variable configurations
+   - Reference dedicated setup documents for detailed procedures
+   - Mark outdated sections for future updates
+   - Update migration notes to reflect current project status
 
-4. **Usage Workflow Section**:
-   - Update asset materialization workflows for new infrastructure
-   - Document object file-based setup procedures
-   - Add troubleshooting guidance for object file issues
-   - Update job execution instructions
+4. **User Experience Focus**:
+   - Eliminate setup confusion through clear step sequencing
+   - Provide celebration markers for successful completion
+   - Reference appropriate documentation at each step
+   - Maintain focus on getting users to first successful run
 
 ### Specific Documentation Changes
 
-**New Infrastructure Section Addition:**
+**New Getting Started Section Structure:**
 ```markdown
-### Infrastructure Layer (Schema-as-Code)
+## Getting Started
 
-The BetterJobs pipeline uses a modern schema-as-code approach where database objects are defined in individual SQL files and automatically created on-demand:
+Follow these steps to get the BetterJobs project running locally:
 
-#### Object File Organization:
-```
-pipeline/sql/objects/
-├── tables/           # Individual table definitions
-│   ├── raw_bamboohr_jobs.sql
-│   ├── stage_jobs_unified.sql
-│   └── analytics_job_metrics.sql
-├── views/            # Individual view definitions
-│   ├── stage_jobs_active_view.sql
-│   └── analytics_company_summary.sql
-└── infrastructure/   # Stages, integrations, file formats
-    ├── storage_integrations.sql
-    ├── file_formats.sql
-    └── raw_s3_stages.sql
-```
+### Step 1: Prerequisites
+- Python 3.10+, Git, AWS Account, Snowflake Account, Google AI Studio Account
 
-#### Infrastructure Asset Flow:
-1. **database_schema_setup** - Creates foundational database, schemas, and roles
-2. **infrastructure_setup** - Creates stages, integrations, and file formats
-3. **tables_setup** - Creates all database tables from object files
-4. **views_setup** - Creates all database views from object files
-5. **static_data_population** - Populates reference data
-6. **setup_validation** - Validates complete infrastructure setup
+### Step 2: Clone and Install
+- Repository cloning and pip install -e . setup
 
-#### Self-Healing Capabilities:
-- Missing database objects are automatically created on-demand
-- Object definitions serve as single source of truth
-- Assets can run independently without full infrastructure setup
-- Clear error messages guide developers to resolution steps
+### Step 3: Environment Configuration
+- Rename .env.example to .env
+- Edit with actual credentials (Snowflake, AWS, LLM APIs)
+
+### Step 4: Set Up External Services
+- AWS S3 Setup (bucket and IAM role creation)
+- References S3_SNOWFLAKE_SETUP.md for detailed instructions
+
+### Step 5: Start the Pipeline
+- dagster dev command
+
+### Step 6: Snowflake Infrastructure Setup
+- References SNOWFLAKE_SETUP.md for detailed infrastructure setup
+
+### Step 7: Verify Setup
+- setup_validation asset execution
+- Success celebration marker
 ```
 
-**Updated Environment Configuration:**
+**Environment Configuration Approach:**
 ```markdown
-### Environment Configuration (Updated for Schema-as-Code)
+### Step 3: Environment Configuration
 
-The schema-as-code infrastructure requires standard Snowflake configuration:
+1. **Rename the environment template .env.example under `pipeline/dagster_betterjobs` to .env**
 
-```env
-# Snowflake (same as before)
-SNOWFLAKE_ACCOUNT=your_account_identifier
-SNOWFLAKE_USER=your_username
-SNOWFLAKE_PASSWORD=your_password
-SNOWFLAKE_DATABASE=BETTERJOBS_DB
-SNOWFLAKE_RAW_SCHEMA=RAW
-SNOWFLAKE_WAREHOUSE=your_warehouse
-SNOWFLAKE_ROLE=your_role
-
-# Optional: Custom database name for object files
-SNOWFLAKE_DATABASE=CUSTOM_DB_NAME  # Defaults to BETTERJOBS_DB
+2. **Edit the .env file** with your credentials:
+   - Snowflake: Account, username, password, and warehouse details
+   - AWS S3: Access key, secret key, region, and bucket information
+   - LLM APIs: Gemini API key (and OpenAI if using)
+   - Database settings: Keep the default database and schema names
 ```
 
-The infrastructure will automatically create all required objects using the definitions in `pipeline/sql/objects/`.
-```
-
-**Updated Installation Section:**
+**Focused Documentation References:**
 ```markdown
-### Infrastructure Setup (Schema-as-Code)
+#### AWS S3 Setup
+Create your S3 bucket and IAM role before setting up Snowflake:
+- Create an S3 bucket (e.g., `betterjobs-dagster`)
+- Set up IAM role with S3 access permissions
+- **For detailed instructions, see: [S3_SNOWFLAKE_SETUP.md](pipeline/docs/setup/S3_SNOWFLAKE_SETUP.md)**
 
-After environment configuration, initialize the infrastructure:
-
-```bash
-cd pipeline/dagster_betterjobs
-dagster dev
+#### Snowflake Infrastructure Setup
+Set up your complete Snowflake infrastructure using automated assets:
+- **For complete setup instructions, see: [SNOWFLAKE_SETUP.md](pipeline/docs/setup/SNOWFLAKE_SETUP.md)**
 ```
 
-In the Dagster UI, materialize the infrastructure assets in order:
-1. **database_schema_setup** - Creates foundational database structure
-2. **infrastructure_setup** - Creates S3 stages, file formats, and integrations
-3. **tables_setup** - Creates all table objects from individual SQL files
-4. **views_setup** - Creates all view objects from individual SQL files
-
-Or run all infrastructure setup at once:
-```bash
-dagster asset materialize -a database_schema_setup infrastructure_setup tables_setup views_setup
-```
-
-#### Self-Healing Infrastructure:
-Individual assets will automatically create missing database objects on-demand, so full infrastructure setup is optional for development and testing.
+**Content Organization Updates:**
+```markdown
+## Pipeline Jobs (OUTDATED - WILL BE UPDATED SOON)
+## Usage Workflow (OUTDATED - WILL BE UPDATED SOON)
+## Data Analytics & Reporting (OUTDATED - WILL BE UPDATED SOON)
 ```
 
 ### Implementation Plan
 
-**Phase 1: Content Updates (Day 1)**
-1. **Audit Current Documentation**:
-   - Review all infrastructure-related sections in README.md
-   - Identify outdated asset names and procedures
-   - Document new schema-as-code concepts to explain
+**Phase 1: Documentation Architecture Restructuring**
+1. **Separate Concerns**:
+   - README.md: Focus on overview and streamlined Getting Started
+   - Create dedicated SNOWFLAKE_SETUP.md for infrastructure procedures
+   - Create focused S3_SNOWFLAKE_SETUP.md for S3 integration
+   - Implement consistent .env.example template usage
 
-2. **Update Core Sections**:
-   - Rewrite Pipeline Components section for new asset structure
-   - Update Getting Started with object file setup procedures
-   - Add schema-as-code explanation and benefits
-   - Update installation and configuration instructions
+2. **Getting Started Redesign**:
+   - Create sequential 7-step process from prerequisites to verification
+   - Remove embedded environment variable configurations
+   - Add clear integration points with dedicated setup documentation
+   - Ensure proper sequencing of external service setup
 
-3. **Add New Documentation**:
-   - Create Infrastructure Layer section explaining object files
-   - Document self-healing capabilities and benefits
-   - Add troubleshooting section for object file issues
-   - Update usage workflows for new asset structure
+3. **Content Organization**:
+   - Mark outdated sections for future updates
+   - Reference appropriate setup documents at each step
+   - Update migration notes to reflect current project status
+   - Add celebration markers for successful completion
 
-**Phase 2: Validation & Polish (Same Day)**
-1. **Documentation Testing**:
-   - Follow updated setup procedures from scratch
-   - Verify all asset names and procedures are accurate
-   - Test environment configuration instructions
-   - Validate code examples and configurations
+**Phase 2: Focused Setup Documentation**
+1. **SNOWFLAKE_SETUP.md Creation**:
+   - Remove comprehensive guide aspects
+   - Focus specifically on Snowflake infrastructure setup
+   - Reference external S3 setup documentation
+   - Streamline steps for infrastructure assets
 
-2. **Quality Review**:
-   - Ensure consistent terminology throughout
-   - Verify all links and references are functional
-   - Check formatting and readability
-   - Align with existing documentation style
+2. **S3_SNOWFLAKE_SETUP.md Enhancement**:
+   - Remove technical background sections
+   - Focus on AWS IAM configuration needed
+   - Eliminate alternative options and extensive troubleshooting
+   - Simplify verification steps
+
+**Phase 3: Integration and Validation**
+1. **Cross-Reference Validation**:
+   - Ensure all setup documents reference each other correctly
+   - Verify step sequencing works across documents
+   - Test environment configuration approach
+   - Validate user experience flow
+
+2. **Quality Assurance**:
+   - Consistent terminology across all documents
+   - Clear separation of responsibilities
+   - Professional presentation standards
+   - User-focused language and approach
 
 ### Success Criteria
-- **Accurate Setup Instructions**: New developers can set up project using updated documentation
-- **Clear Asset Structure**: Infrastructure layer and object files clearly explained
-- **Complete Coverage**: All schema-as-code concepts documented with examples
-- **Consistent Terminology**: Asset names and procedures match implementation
-- **Professional Quality**: Documentation maintains high standards for clarity and completeness
+- **Streamlined Setup Process**: New developers can complete setup through clear 7-step process
+- **Documentation Separation**: Clean responsibilities between overview and detailed setup procedures
+- **Environment Configuration**: Consistent .env.example template usage across all documentation
+- **External Service Integration**: Proper sequencing and references for S3 and Snowflake setup
+- **User Experience**: Clear step transitions with celebration markers for successful completion
+
+### Implementation Summary
+
+**✅ COMPLETED SUCCESSFULLY - 2025-06-26**
+
+**Documentation Restructuring Achieved**:
+- ✅ **README.md Redesign**: Complete Getting Started section with 7-step sequential process
+- ✅ **SNOWFLAKE_SETUP.md**: Focused infrastructure setup documentation
+- ✅ **S3_SNOWFLAKE_SETUP.md**: Streamlined S3 integration configuration
+- ✅ **Environment Template**: Consistent .env.example approach across all documentation
+- ✅ **Content Organization**: Outdated sections marked, migration notes updated
+
+**Key Improvements**:
+- ✅ **Separation of Concerns**: README for overview, dedicated docs for detailed setup
+- ✅ **Step-by-Step Process**: Sequential approach eliminates setup confusion
+- ✅ **External Service Integration**: Proper sequencing of S3 setup before Snowflake
+- ✅ **User Experience**: Celebration markers and clear success indicators
+- ✅ **Professional Standards**: Clean, focused documentation with consistent terminology
 
 ### Benefits
-- ✅ **Developer Experience**: Clear, accurate setup instructions reduce onboarding friction
-- ✅ **Project Adoption**: Updated documentation encourages usage and contribution
-- ✅ **Maintenance Efficiency**: Documentation stays in sync with infrastructure changes
-- ✅ **Knowledge Sharing**: Effective documentation enables collaboration and handoff
-- ✅ **Professional Standards**: Maintains high-quality project documentation
+- ✅ **Developer Onboarding**: Clear, sequential setup process reduces time to first successful run
+- ✅ **Documentation Maintenance**: Focused responsibilities prevent documentation drift
+- ✅ **User Experience**: Step-by-step approach eliminates setup confusion and provides clear success markers
+- ✅ **Professional Standards**: Clean separation between overview and detailed setup procedures
+- ✅ **Knowledge Transfer**: Comprehensive yet focused documentation enables effective collaboration
 
 ---
 

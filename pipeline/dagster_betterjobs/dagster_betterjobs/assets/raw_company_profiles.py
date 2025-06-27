@@ -664,7 +664,7 @@ def handle_profile_duplicates(conn, table_name: str, context: AssetExecutionCont
 
 class RawCompanyProfilesConfig(Config):
     """Configuration for raw company profiles asset."""
-    s3_uri: Optional[str] = os.getenv("S3_URI_COMPANIES_PROFILE")
+    s3_uri: Optional[str] = os.getenv("SNOWFLAKE_S3_COMPANY_PROFILES_URL")
     stage_name: str = "raw_company_profiles_stage"
     table_name: str = "raw_company_profiles"
 
