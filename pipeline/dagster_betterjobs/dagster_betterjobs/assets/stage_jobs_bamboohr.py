@@ -107,7 +107,7 @@ def stage_jobs_bamboohr(context: AssetExecutionContext, config: StageBambooHRCon
 
     try:
         # Ensure stage table exists
-        create_stage_table_if_not_exists(conn)
+        create_stage_table_if_not_exists(context)
         context.log.info(f"[{platform}] Stage table verified/created")
 
         # Get watermark for incremental processing

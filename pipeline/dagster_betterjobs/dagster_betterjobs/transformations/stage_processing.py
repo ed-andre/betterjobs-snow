@@ -25,6 +25,7 @@ from dagster_betterjobs.transformations.text_cleaning import clean_text_fields, 
 from dagster_betterjobs.transformations.language_detection import LanguageDetector
 from dagster_betterjobs.transformations.platform_mapping import PlatformMapper
 from dagster_betterjobs.transformations.uid_generation import add_job_uids_to_dataframe, validate_uid_uniqueness, get_uid_collision_report
+from dagster_betterjobs.utils.schema_utils import ensure_object_exists
 
 
 class PlatformProcessingConfig:
@@ -42,64 +43,26 @@ class PlatformProcessingConfig:
         self.max_records = max_records
 
 
-def create_stage_table_if_not_exists(conn, database_name: str = "BETTERJOBS_DB", stage_schema: str = "STAGE"):
-    """Create the unified stage table if it doesn't exist."""
-    create_unified_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS {database_name}.{stage_schema}.jobs_unified (
-        -- Generated unique identifier (replaces composite primary key)
-        job_uid STRING PRIMARY KEY,
+def create_stage_table_if_not_exists(context: AssetExecutionContext):
+    """
+    Create the unified stage table if it doesn't exist using schema-as-code approach.
 
-        -- Core identifiers
-        job_id STRING,
-        company_id STRING,
-        platform STRING,
-
-        -- Standardized core fields
-        job_title_clean STRING,
-        job_description_clean STRING,
-        company_name_clean STRING,
-        location_standardized STRING,
-        job_url STRING,
-
-        -- Date fields (using TRY_CAST for robust string-to-timestamp conversion)
-        date_posted DATE,
-        date_retrieved TIMESTAMP_NTZ,
-
-        -- Status and classification
-        is_active BOOLEAN DEFAULT TRUE,
-        employment_status STRING,
-        department STRING,
-
-        -- Language detection
-        detected_language STRING,
-        language_confidence FLOAT,
-        is_english BOOLEAN,
-        language_detection_method STRING,
-
-        -- Platform-specific data (preserved as JSON)
-        platform_specific_data VARIANT,
-
-        -- Quality and metadata
-        transformation_timestamp TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-        data_quality_score FLOAT,
-
-        -- Source tracking
-        source_raw_table STRING,
-        raw_data VARIANT,
-
-        -- Partitioning
-        partition_date DATE
-    )
+    🔧 SCHEMA-AS-CODE IMPLEMENTATION 🔧
+    This function now uses the canonical SQL definition from stage_jobs_unified.sql
+    instead of hardcoded CREATE TABLE statements.
     """
 
-    cursor = conn.cursor()
     try:
-        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {database_name}.{stage_schema}")
-        cursor.execute(create_unified_table_sql)
-        conn.commit()
+        # 🔧 SCHEMA-AS-CODE: Ensure table exists using canonical SQL definition
+        # Use the actual Snowflake resource from context instead of creating a wrapper
+        table_fqn = ensure_object_exists("tables/stage_jobs_unified.sql", context.resources.snowflake, context)
+
+        context.log.info(f"✅ SCHEMA-AS-CODE: Stage jobs unified table verified/created: {table_fqn}")
+
         return True
-    finally:
-        cursor.close()
+    except Exception as e:
+        context.log.error(f"❌ Error creating stage table using schema-as-code: {str(e)}")
+        raise
 
 
 def load_platform_raw_data(
