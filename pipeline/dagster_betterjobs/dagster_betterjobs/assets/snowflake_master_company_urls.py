@@ -10,6 +10,7 @@ from dagster import asset, AssetExecutionContext, Config, MetadataValue
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 from ..transformations.uid_generation import generate_company_platform_id
+from ..utils.schema_utils import ensure_object_exists
 
 
 def generate_company_id(company_name: str, platform: str) -> str:
@@ -234,121 +235,6 @@ def get_file_metadata(file_path: str) -> Dict:
     }
 
 
-def setup_snowflake_stage_and_table(conn, stage_name: str, s3_uri: str, table_name: str):
-    """Set up Snowflake stage for S3 and create table if not exists."""
-    cursor = conn.cursor()
-
-    try:
-        # Ensure we're using the correct database and schema
-        cursor.execute("USE DATABASE BETTERJOBS_DB")
-        cursor.execute("USE SCHEMA RAW")
-
-        # Create S3 stage if it doesn't exist
-        if s3_uri:
-            # Ensure S3 URI ends with / for proper path handling
-            s3_uri_clean = s3_uri.rstrip('/') + '/'
-
-            stage_sql = f"""
-            CREATE STAGE IF NOT EXISTS {stage_name}
-            URL = '{s3_uri_clean}'
-            STORAGE_INTEGRATION = betterjobs_s3_integration
-            FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY = '"')
-            """
-            cursor.execute(stage_sql)
-
-        # Create table if it doesn't exist (always create regardless of S3)
-        table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            company_id STRING PRIMARY KEY,
-            company_name STRING NOT NULL,
-            company_industry STRING,
-            platform STRING,
-            ats_url STRING,
-            career_url STRING,
-            url_verified BOOLEAN DEFAULT FALSE,
-            date_added TIMESTAMP_NTZ,
-            last_updated TIMESTAMP_NTZ,
-            source_file STRING,
-            file_hash STRING,
-            ingested_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-        )
-        """
-        cursor.execute(table_sql)
-
-        # Create processing log table to track files
-        log_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {table_name}_processing_log (
-            file_path STRING,
-            file_hash STRING,
-            file_size INTEGER,
-            file_modified_time TIMESTAMP_NTZ,
-            processed_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-            record_count INTEGER,
-            source_type STRING
-        )
-        """
-        cursor.execute(log_table_sql)
-
-        conn.commit()
-    finally:
-        cursor.close()
-
-
-def setup_snowflake_tables_only(conn, table_name: str):
-    """Set up Snowflake tables without S3 stage."""
-    cursor = conn.cursor()
-
-    try:
-        # Ensure we're using the correct database and schema
-        cursor.execute("USE DATABASE BETTERJOBS_DB")
-        cursor.execute("USE SCHEMA RAW")
-
-        # Create table if it doesn't exist
-        table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            company_id STRING PRIMARY KEY,
-            company_name STRING NOT NULL,
-            company_industry STRING,
-            platform STRING,
-            ats_url STRING,
-            career_url STRING,
-            url_verified BOOLEAN DEFAULT FALSE,
-            date_added TIMESTAMP_NTZ,
-            last_updated TIMESTAMP_NTZ,
-            source_file STRING,
-            file_hash STRING,
-            ingested_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-        )
-        """
-        cursor.execute(table_sql)
-
-        # Create processing log table to track files
-        log_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {table_name}_processing_log (
-            file_path STRING,
-            file_hash STRING,
-            file_size INTEGER,
-            file_modified_time TIMESTAMP_NTZ,
-            processed_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-            record_count INTEGER,
-            source_type STRING
-        )
-        """
-        cursor.execute(log_table_sql)
-
-        conn.commit()
-
-        # Verify table was created
-        cursor.execute(f"SHOW TABLES LIKE '{table_name}'")
-        tables = cursor.fetchall()
-        if tables:
-            print(f"✓ Table {table_name} created successfully in BETTERJOBS_DB.RAW")
-        else:
-            print(f"✗ Table {table_name} was not created")
-
-    finally:
-        cursor.close()
-
 
 def get_processed_files(conn, log_table: str, context: AssetExecutionContext = None) -> Dict[str, Dict]:
     """Get list of already processed files with their metadata."""
@@ -552,28 +438,13 @@ def process_s3_csv_files(
 
             if needs_processing:
                 try:
-                    # Create a temporary table for S3 data (no company_id column expected)
-                    temp_table = f"{table_name}_temp_s3"
-                    cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+                    # 🔧 SCHEMA-AS-CODE: Create temp table using canonical SQL definition
+                    temp_table_fqn = ensure_object_exists("tables/raw_master_company_urls_temp_s3.sql", context.resources.snowflake, context)
+                    temp_table = temp_table_fqn.split('.')[-1]  # Extract table name for backward compatibility
 
-                    # Create temp table matching new CSV structure (without company_id)
-                    create_temp_sql = f"""
-                    CREATE OR REPLACE TABLE {temp_table} (
-                        company_name STRING,
-                        company_industry STRING,
-                        platform STRING,
-                        ats_url STRING,
-                        career_url STRING,
-                        url_verified STRING,
-                        date_added STRING,
-                        last_updated STRING,
-                        source_file STRING,
-                        file_hash STRING,
-                        company_id STRING  -- Will be generated after COPY
-                    )
-                    """
-                    cursor.execute(create_temp_sql)
-                    context.log.info(f"Created temp table: {temp_table}")
+                    # Clear temp table for fresh processing
+                    cursor.execute(f"TRUNCATE TABLE {temp_table}")
+                    context.log.info(f"🔧 SCHEMA-AS-CODE: Using temp table {temp_table_fqn}")
 
                     # COPY command for CSV without company_id column
                     # CSV structure: company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
@@ -723,7 +594,8 @@ class SnowflakeMasterCompanyUrlsConfig(Config):
 @asset(
     group_name="1_raw_ingestion_extraction",
     kinds={"python", "sql", "snowflake"},
-    deps=["database_schema_setup", "infrastructure_setup", "tables_setup", "views_setup", "static_data_population"],
+    # SCHEMA-AS-CODE: Removed hard infrastructure dependencies - self-healing through ensure_object_exists()
+    deps=[],
     required_resource_keys={"snowflake"}
 )
 def snowflake_master_company_urls(
@@ -733,6 +605,10 @@ def snowflake_master_company_urls(
     """
     Creates and maintains a master table of company URLs in Snowflake RAW schema.
 
+    ✨ SCHEMA-AS-CODE IMPLEMENTATION ✨
+    This asset uses the schema-as-code approach where required database objects are created
+    on-demand using canonical SQL definition files. No hard infrastructure dependencies required.
+
     This asset ingests CSV files from both S3 bucket (via S3_URI) and local folder
     (via MAIN_INPUT_FOLDER) with incremental processing to detect new/changed files.
 
@@ -740,7 +616,8 @@ def snowflake_master_company_urls(
     using a hash-based approach from company_name.
 
     Features:
-    - Uses Snowflake stages for efficient S3 data loading
+    - Self-healing: Creates missing tables automatically using canonical SQL files
+    - Uses Snowflake stages for efficient S3 data loading (if infrastructure exists)
     - Tracks processed files to avoid reprocessing
     - Generates stable company IDs using SHA-256 hash
     - Supports both S3 and local CSV sources
@@ -761,36 +638,23 @@ def snowflake_master_company_urls(
 
     # Configuration
     stage_name = "COMPANY_URLS_STAGE"
-    table_name = "master_company_urls"
 
     context.log.info(f"Processing company URLs from S3: {s3_uri or 'Not configured'}, Local: {local_folder or 'Not configured'}")
 
-    # Ensure RAW schema exists
-    cursor = conn.cursor()
-    try:
-        cursor.execute("CREATE SCHEMA IF NOT EXISTS RAW")
-        conn.commit()
-    finally:
-        cursor.close()
+        # 🔧 SCHEMA-AS-CODE: Ensure required objects exist using canonical SQL files
+    context.log.info("=== SCHEMA-AS-CODE: Ensuring required objects exist ===")
 
-    # Always set up tables first
-    setup_snowflake_tables_only(conn, table_name)
-    context.log.info("Created Snowflake tables")
+    # Create main table and processing log table using canonical SQL definitions
+    main_table_fqn = ensure_object_exists("tables/raw_master_company_urls.sql", context.resources.snowflake, context)
+    log_table_fqn = ensure_object_exists("tables/raw_master_company_urls_processing_log.sql", context.resources.snowflake, context)
 
-    # Set up S3 stage if enabled and configured
-    s3_stage_ready = False
-    if config.enable_s3_processing and s3_uri:
-        try:
-            setup_snowflake_stage_and_table(conn, stage_name, s3_uri, table_name)
-            s3_stage_ready = True
-            context.log.info("S3 stage setup completed successfully")
-        except Exception as e:
-            context.log.error(f"S3 stage setup failed: {str(e)}")
-            if config.enable_local_processing:
-                context.log.info("Will continue with local processing only")
-                s3_stage_ready = False
-            else:
-                raise ValueError(f"S3 processing failed and local processing is disabled: {str(e)}")
+    # Extract table names from fully qualified names for backward compatibility
+    table_name = main_table_fqn.split('.')[-1]  # "master_company_urls"
+    log_table_name = log_table_fqn.split('.')[-1]  # "master_company_urls_processing_log"
+
+    context.log.info(f"✅ SCHEMA-AS-CODE: Required objects verified/created")
+    context.log.info(f"  • Main table: {main_table_fqn}")
+    context.log.info(f"  • Log table: {log_table_fqn}")
 
     # Track statistics
     stats = {
@@ -807,7 +671,7 @@ def snowflake_master_company_urls(
     all_file_metadata = []
 
     # STEP 1: Process S3 files FIRST (if enabled and configured)
-    if config.enable_s3_processing and s3_uri and s3_stage_ready:
+    if config.enable_s3_processing and s3_uri:
         context.log.info("=== STEP 1: Processing S3 files ===")
         try:
             s3_metadata = process_s3_csv_files(conn, s3_uri, stage_name, table_name, context)
@@ -816,9 +680,8 @@ def snowflake_master_company_urls(
             context.log.info(f"✓ Successfully processed {len(s3_metadata)} S3 files")
         except Exception as e:
             context.log.error(f"✗ Error processing S3 files: {str(e)}")
+            context.log.warning("💡 If S3 stage is missing, run 'infrastructure_setup' asset to create S3 infrastructure")
             stats["errors"] += 1
-    elif config.enable_s3_processing and s3_uri and not s3_stage_ready:
-        context.log.warning("S3 processing was enabled but stage setup failed - skipping S3 processing")
     elif config.enable_s3_processing and not s3_uri:
         context.log.info("S3 processing enabled but S3_URI not configured - skipping S3 processing")
     else:
@@ -979,9 +842,20 @@ def snowflake_master_company_urls(
             cursor.execute("USE DATABASE BETTERJOBS_DB")
             cursor.execute("USE SCHEMA RAW")
 
-            # Create a deduplicated temp table
+            # 🔧 SCHEMA-AS-CODE: Create deduplication temp table using canonical SQL definition
+            dedup_table_fqn = ensure_object_exists("tables/raw_master_company_urls_deduped.sql", context.resources.snowflake, context)
+            dedup_table = dedup_table_fqn.split('.')[-1]  # Extract table name for backward compatibility
+
+            # Clear and populate deduplication temp table
+            cursor.execute(f"TRUNCATE TABLE {dedup_table}")
+
+            # Populate with deduplicated data
             dedup_sql = f"""
-            CREATE OR REPLACE TABLE {table_name}_deduped AS
+            INSERT INTO {dedup_table} (
+                company_id, company_name, company_industry, platform,
+                ats_url, career_url, url_verified, date_added, last_updated,
+                source_file, file_hash, ingested_at, rn
+            )
             SELECT * FROM (
                 SELECT
                     company_id,
@@ -1006,9 +880,11 @@ def snowflake_master_company_urls(
             """
             cursor.execute(dedup_sql)
 
+            context.log.info(f"🔧 SCHEMA-AS-CODE: Populated deduplication table {dedup_table_fqn}")
+
             # Replace main table with deduplicated data
             cursor.execute(f"DROP TABLE {table_name}")
-            cursor.execute(f"ALTER TABLE {table_name}_deduped RENAME TO {table_name}")
+            cursor.execute(f"ALTER TABLE {dedup_table} RENAME TO {table_name}")
 
             conn.commit()
             context.log.info("✓ Final deduplication completed successfully")
@@ -1056,6 +932,7 @@ def snowflake_master_company_urls(
     context.log.info(f"Hash collisions found: {stats['hash_collisions_found']}")
     context.log.info(f"Hash collision records removed: {stats['hash_collision_records_removed']}")
     context.log.info(f"Errors encountered: {stats['errors']}")
+    context.log.info("🔧 SCHEMA-AS-CODE: Self-healing asset completed successfully!")
     context.log.info("=========================")
 
     # Add metadata for Dagster UI
@@ -1076,7 +953,8 @@ def snowflake_master_company_urls(
         "errors": MetadataValue.int(stats["errors"]),
         "snowflake_table": MetadataValue.text(f"BETTERJOBS_DB.RAW.{table_name}"),
         "s3_enabled": MetadataValue.bool(config.enable_s3_processing and bool(s3_uri)),
-        "local_enabled": MetadataValue.bool(config.enable_local_processing and bool(local_folder))
+        "local_enabled": MetadataValue.bool(config.enable_local_processing and bool(local_folder)),
+        "schema_as_code": MetadataValue.bool(True)  # NEW: Indicates schema-as-code implementation
     })
 
     # Return summary as DataFrame for downstream assets
