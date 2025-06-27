@@ -19,6 +19,7 @@ from dagster_betterjobs.transformations.dynamic_lookback import (
     DynamicLookbackConfig,
     get_batch_lookback_periods
 )
+from ..utils.schema_utils import ensure_object_exists
 
 logger = get_dagster_logger()
 
@@ -60,6 +61,20 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
     """
     Discovers and stores job listings from Workday career sites.
     Processes companies partitioned by first letter of company name.
+
+    ✨ SCHEMA-AS-CODE IMPLEMENTATION ✨
+    This asset uses the schema-as-code approach where the required database table is created
+    on-demand using canonical SQL definition files. No hard infrastructure dependencies required.
+
+    Features:
+    - Self-healing: Creates missing tables automatically using canonical SQL files
+    - Partitioned processing by company name alphabetically (A-Z, 0-9, other)
+    - Dynamic lookback periods based on company activity patterns
+    - Incremental processing with checkpoint/resume capability
+    - Rate limiting and retry logic for API stability
+    - Comprehensive job data extraction and storage
+    - Workday-specific job board integration with detailed job fetching
+    - Job status management (active/inactive marking)
     """
     # Initialize Snowflake connection
     conn = context.resources.snowflake.get_connection()
@@ -142,36 +157,19 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
     total_companies = len(companies_df)
     context.log.info(f"Found {total_companies} companies in partition {partition_key}")
 
-    # Create workday_jobs table if it doesn't exist
+    # 🔧 SCHEMA-AS-CODE: Ensure required table exists using canonical SQL definition
+    context.log.info("=== SCHEMA-AS-CODE: Ensuring Workday jobs table exists ===")
+    table_fqn = ensure_object_exists("tables/raw_workday_jobs.sql", context.resources.snowflake, context)
+    table_name = table_fqn.split('.')[-1]  # Extract table name for backward compatibility
+    context.log.info(f"✅ SCHEMA-AS-CODE: Workday jobs table verified/created: {table_fqn}")
+
+    # Set database and schema context
     cursor = conn.cursor()
     try:
         cursor.execute(f"USE DATABASE {database_name}")
         cursor.execute(f"USE SCHEMA {schema_name}")
-
-        create_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS workday_jobs (
-            job_id STRING,
-            company_id STRING,
-            job_title STRING,
-            job_description STRING,
-            job_url STRING,
-            location STRING,
-            time_type STRING,
-            employment_type STRING,
-            published_at DATE,
-            valid_through DATE,
-            date_retrieved TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            is_active BOOLEAN,
-            raw_data STRING,
-            partition_key STRING,
-            work_type STRING,
-            compensation STRING
-        )
-        """
-        cursor.execute(create_table_sql)
-        conn.commit()
     except Exception as e:
-        context.log.error(f"Error creating jobs table: {str(e)}")
+        context.log.error(f"Error setting database context: {str(e)}")
         return {"error": str(e), "status": "failed"}
     finally:
         cursor.close()
@@ -314,7 +312,7 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                             job_ids_placeholders = ",".join(["%s"] * len(job_ids))
                             existing_query = f"""
                             SELECT job_id, is_active, date_retrieved
-                            FROM {database_name}.{schema_name}.workday_jobs
+                            FROM {database_name}.{schema_name}.{table_name}
                             WHERE company_id = %s
                             AND job_id IN ({job_ids_placeholders})
                             """
@@ -492,7 +490,7 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                 success, num_chunks, num_rows, output = write_pandas(
                     conn,
                     jobs_df,
-                    'workday_jobs',
+                    table_name,
                     database=database_name,
                     schema=schema_name,
                     auto_create_table=False,
@@ -513,7 +511,7 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                         for job_record in batch_jobs:
                             if job_record["job_id"] in existing_jobs:
                                 update_sql = f"""
-                                UPDATE {database_name}.{schema_name}.workday_jobs
+                                UPDATE {database_name}.{schema_name}.{table_name}
                                 SET
                                     job_title = %s,
                                     job_description = %s,
@@ -605,7 +603,7 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
                     company_ids_placeholders = ",".join(["%s"] * len(processed_company_ids))
                     current_date = datetime.now().strftime("%Y-%m-%d")
                     inactivate_sql = f"""
-                    UPDATE {database_name}.{schema_name}.workday_jobs
+                    UPDATE {database_name}.{schema_name}.{table_name}
                     SET is_active = FALSE
                     WHERE company_id IN ({company_ids_placeholders})
                     AND DATE(date_retrieved) < %s
@@ -634,11 +632,11 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
     # Update job count in Snowflake
     try:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.workday_jobs WHERE partition_key = %s", (partition_key,))
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.{table_name} WHERE partition_key = %s", (partition_key,))
         count_result = cursor.fetchall()
         partition_jobs = count_result[0][0]
 
-        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.workday_jobs")
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.{table_name}")
         count_result = cursor.fetchall()
         total_jobs = count_result[0][0]
 
@@ -662,7 +660,7 @@ def workday_company_jobs_discovery(context: AssetExecutionContext, config: Workd
         "new_jobs_added": MetadataValue.int(int(stats["new_jobs_added"])),
         "jobs_updated": MetadataValue.int(int(stats["updated_jobs"])),
         "partition_key": MetadataValue.text(partition_key),
-        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.workday_jobs"),
+        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.{table_name}"),
         "dynamic_lookback_enabled": MetadataValue.bool(config.enable_dynamic_lookback)
     }
 

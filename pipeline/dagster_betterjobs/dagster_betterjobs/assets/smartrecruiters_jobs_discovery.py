@@ -18,6 +18,7 @@ from dagster_betterjobs.transformations.dynamic_lookback import (
     DynamicLookbackConfig,
     get_batch_lookback_periods
 )
+from ..utils.schema_utils import ensure_object_exists
 
 logger = get_dagster_logger()
 
@@ -60,6 +61,19 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
 
     Processes companies partitioned by first letter of company name,
     retrieves all current job listings using HTML parsing, and stores them in Snowflake.
+
+    ✨ SCHEMA-AS-CODE IMPLEMENTATION ✨
+    This asset uses the schema-as-code approach where the required database table is created
+    on-demand using canonical SQL definition files. No hard infrastructure dependencies required.
+
+    Features:
+    - Self-healing: Creates missing tables automatically using canonical SQL files
+    - Partitioned processing by company name alphabetically (A-Z, 0-9, other)
+    - Dynamic lookback periods based on company activity patterns
+    - Incremental processing with checkpoint/resume capability
+    - Rate limiting and retry logic for API stability
+    - Comprehensive job data extraction and storage
+    - HTML parsing for SmartRecruiters job boards
     """
     # Initialize Snowflake connection
     conn = context.resources.snowflake.get_connection()
@@ -222,34 +236,19 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
         except Exception as e:
             context.log.error(f"Error loading failed companies file: {str(e)}")
 
-    # Create jobs table if it doesn't exist
+    # 🔧 SCHEMA-AS-CODE: Ensure required table exists using canonical SQL definition
+    context.log.info("=== SCHEMA-AS-CODE: Ensuring SmartRecruiters jobs table exists ===")
+    table_fqn = ensure_object_exists("tables/raw_smartrecruiters_jobs.sql", context.resources.snowflake, context)
+    table_name = table_fqn.split('.')[-1]  # Extract table name for backward compatibility
+    context.log.info(f"✅ SCHEMA-AS-CODE: SmartRecruiters jobs table verified/created: {table_fqn}")
+
+    # Set database and schema context
     cursor = conn.cursor()
     try:
         cursor.execute(f"USE DATABASE {database_name}")
         cursor.execute(f"USE SCHEMA {schema_name}")
-
-        create_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS smartrecruiters_jobs (
-            job_id STRING,
-            company_id STRING,
-            job_title STRING,
-            job_description STRING,
-            job_url STRING,
-            location STRING,
-            department STRING,
-            published_at DATE,
-            requisition_id STRING,
-            date_retrieved TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            is_active BOOLEAN,
-            raw_data STRING,
-            partition_key STRING
-        )
-        """
-        cursor.execute(create_table_sql)
-        conn.commit()
-        context.log.info("Created or verified smartrecruiters_jobs table in Snowflake")
     except Exception as e:
-        context.log.error(f"Error creating jobs table: {str(e)}")
+        context.log.error(f"Error setting database context: {str(e)}")
         return {"error": str(e), "status": "failed"}
     finally:
         cursor.close()
@@ -354,7 +353,7 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
                     try:
                         check_sql = f"""
                         SELECT job_id
-                        FROM {database_name}.{schema_name}.smartrecruiters_jobs
+                        FROM {database_name}.{schema_name}.{table_name}
                         WHERE job_url = %s
                         """
                         cursor.execute(check_sql, (job_url,))
@@ -479,7 +478,7 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
                 success, num_chunks, num_rows, output = write_pandas(
                     conn,
                     jobs_df,
-                    'smartrecruiters_jobs',
+                    table_name,
                     database=database_name,
                     schema=schema_name,
                     auto_create_table=False,
@@ -499,7 +498,7 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
                     for job_record in batch_jobs:
                         if any(result["jobs_updated"] > 0 for result in checkpoint_results[-len(batch):]):
                             update_sql = f"""
-                            UPDATE {database_name}.{schema_name}.smartrecruiters_jobs
+                            UPDATE {database_name}.{schema_name}.{table_name}
                             SET
                                 job_title = %s,
                                 job_description = %s,
@@ -594,13 +593,13 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
     # Update job count in Snowflake
     try:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.smartrecruiters_jobs WHERE partition_key = %s", (partition_key,))
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.{table_name} WHERE partition_key = %s", (partition_key,))
         count_result = cursor.fetchall()
         partition_jobs = count_result[0][0]
         context.log.info(f"Jobs in Snowflake table for partition {partition_key}: {partition_jobs}")
 
         # Get total job count too
-        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.smartrecruiters_jobs")
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.{schema_name}.{table_name}")
         count_result = cursor.fetchall()
         total_jobs = count_result[0][0]
         context.log.info(f"Total jobs in Snowflake table: {total_jobs}")
@@ -627,7 +626,7 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
         "new_jobs_added": MetadataValue.int(int(stats["new_jobs_added"])),
         "jobs_updated": MetadataValue.int(int(stats["updated_jobs"])),
         "partition_key": MetadataValue.text(partition_key),
-        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.smartrecruiters_jobs"),
+        "snowflake_table": MetadataValue.text(f"{database_name}.{schema_name}.{table_name}"),
         "dynamic_lookback_enabled": MetadataValue.bool(config.enable_dynamic_lookback)
     }
 
