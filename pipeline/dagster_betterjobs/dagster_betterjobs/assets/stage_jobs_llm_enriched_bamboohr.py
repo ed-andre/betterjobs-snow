@@ -18,7 +18,8 @@ from dagster import (
 
 from dagster_betterjobs.transformations.llm_processing import (
     process_platform_llm_enrichment,
-    create_platform_metadata
+    create_platform_metadata,
+    create_llm_enrichment_table_if_not_exists
 )
 
 
@@ -58,6 +59,9 @@ def stage_jobs_llm_enriched_bamboohr(context: AssetExecutionContext, config: LLM
     # Get resources
     conn = context.resources.snowflake.get_connection()
     gemini = context.resources.gemini
+
+    # Ensure LLM enrichment table exists
+    create_llm_enrichment_table_if_not_exists(context)
 
     context.log.info("🚀 [BAMBOOHR] Starting platform-specific LLM enrichment...")
 

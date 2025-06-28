@@ -18,6 +18,7 @@ Used by individual platform LLM assets for parallel processing.
 import json
 import time
 import sys
+import os
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Any, List, Optional
@@ -32,6 +33,28 @@ from dagster_betterjobs.transformations.llm_prompts import (
     JobExtractionPrompts,
     PromptFormatter
 )
+from dagster_betterjobs.utils.schema_utils import ensure_object_exists
+
+
+def create_llm_enrichment_table_if_not_exists(context: AssetExecutionContext):
+    """
+    Create the LLM enrichment table if it doesn't exist using schema-as-code approach.
+
+    🔧 SCHEMA-AS-CODE IMPLEMENTATION 🔧
+    This function uses the canonical SQL definition from stage_jobs_llm_enriched.sql
+    to ensure the JOBS_LLM_ENRICHED table exists before processing.
+    """
+
+    try:
+        # 🔧 SCHEMA-AS-CODE: Ensure table exists using canonical SQL definition
+        table_fqn = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", context.resources.snowflake, context)
+
+        context.log.info(f"✅ SCHEMA-AS-CODE: LLM enrichment table verified/created: {table_fqn}")
+
+        return True
+    except Exception as e:
+        context.log.error(f"❌ Error creating LLM enrichment table using schema-as-code: {str(e)}")
+        raise
 
 
 def process_platform_llm_enrichment(
@@ -45,7 +68,7 @@ def process_platform_llm_enrichment(
     Shared LLM enrichment processing logic for individual platforms.
 
     This function contains all the existing LLM processing logic but filters
-    jobs by platform for parallel processing. Implements complete DRY approach.
+    jobs by platform for parallel processing.
 
     Args:
         platform: Platform name (bamboohr, greenhouse, workday, smartrecruiters)
@@ -79,13 +102,17 @@ def process_platform_llm_enrichment(
         "error_summary": {}
     }
 
-    database_name = "BETTERJOBS_DB"
-    stage_schema = "STAGE"
+    database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
+    stage_schema = os.getenv("SNOWFLAKE_STAGE_SCHEMA", "STAGE")
 
     cursor = None
 
     try:
         cursor = conn.cursor()
+
+        # Ensure LLM enrichment table exists
+        create_llm_enrichment_table_if_not_exists(context)
+        context.log.info(f"[{platform.upper()}] LLM enrichment table verified/created")
 
         context.log.info(f"🚀 [{platform.upper()}] Starting LLM enrichment processing...")
         context.log.info(f"🛡️ [{platform.upper()}] Recursion protection enabled: max depth={SAFE_RECURSION_LIMIT}, size limits active")

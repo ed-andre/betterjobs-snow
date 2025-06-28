@@ -17,6 +17,10 @@ from dagster import (
     MetadataValue
 )
 
+from dagster_betterjobs.transformations.llm_processing import (
+    create_llm_enrichment_table_if_not_exists
+)
+
 
 @asset(
     group_name="2a_stage_cleaning_enrichment",
@@ -63,6 +67,10 @@ def stage_jobs_llm_enriched_unified(context: AssetExecutionContext) -> Dict[str,
 
     try:
         cursor = conn.cursor()
+
+        # Ensure LLM enrichment table exists
+        create_llm_enrichment_table_if_not_exists(context)
+        context.log.info("LLM enrichment table verified/created")
 
         context.log.info("🎯 Starting LLM enrichment coordination and validation...")
 
