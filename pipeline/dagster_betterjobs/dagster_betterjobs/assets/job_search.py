@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Set, Any
 from pathlib import Path
 import re
 import html
+import json
 from dagster import (
     asset, AssetExecutionContext, Config, MetadataValue,
     get_dagster_logger, Output, Definitions, define_asset_job, RunConfig
@@ -52,6 +53,24 @@ class JobSearchConfig(Config):
     include_descriptions: bool = True  # Include full job descriptions in output
     include_raw_data: bool = False  # Include raw API response data in output
 
+    # NEW: Enriched data display options (ENHANCEMENT-032)
+    show_enriched_data: bool = True  # Display LLM-enriched job insights
+    min_enrichment_confidence: float = 0.6  # Minimum overall confidence for enriched data
+    min_salary_confidence: float = 0.7  # Minimum confidence for salary data
+    min_experience_confidence: float = 0.6  # Minimum confidence for experience data
+    min_skills_confidence: float = 0.6  # Minimum confidence for skills data
+    min_work_arrangement_confidence: float = 0.6  # Minimum confidence for work arrangement data
+    min_classification_confidence: float = 0.6  # Minimum confidence for classification data
+
+    # Display limits for enriched data
+    max_skills_display: int = 8  # Maximum number of skills to display
+    max_keywords_display: int = 8  # Maximum number of keywords to display
+    max_office_locations_display: int = 5  # Maximum number of office locations to display
+
+    # UI preferences for enriched data
+    show_confidence_scores: bool = True  # Show confidence scores in UI
+    highlight_high_confidence: bool = True  # Highlight high-confidence data
+
 @asset(
     group_name="job_search",
     kinds={"snowflake", "python"},
@@ -75,8 +94,8 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
     """
     # Initialize Snowflake connection
     conn = context.resources.snowflake.get_connection()
-    database_name = "BETTERJOBS_DB"
-    stage_schema = "STAGE"
+    database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
+    stage_schema = os.getenv("SNOWFLAKE_STAGE_SCHEMA", "STAGE")
 
     # Initialize basic stats (will be completed after date variables are set)
     stats = {
@@ -134,31 +153,112 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
         # Log complete search parameters
         context.log.info(f"📊 Search parameters: {stats['search_params']['date_range']}, platforms: {config.platforms}")
 
-        # Build the unified search query using STAGE.jobs_unified
+        # Build the unified search query using STAGE.jobs_unified with LLM enriched data (ENHANCEMENT-032)
         query = f"""
         SELECT
-            job_uid,
-            job_id,
-            platform,
-            company_id,
-            company_name_clean as company_name,
-            job_title_clean as job_title,
-            {"job_description_clean as job_description," if config.include_descriptions else ""}
-            location_standardized as location,
-            job_url,
-            date_posted as posting_date,
-            date_retrieved,
-            is_active,
-            employment_status,
-            department,
-            detected_language,
-            language_confidence,
-            is_english,
-            data_quality_score,
-            {"raw_data," if config.include_raw_data else ""}
-            transformation_timestamp
-        FROM {database_name}.{stage_schema}.jobs_unified
-        WHERE is_active = TRUE
+            j.job_uid,
+            j.job_id,
+            j.platform,
+            j.company_id,
+            j.company_name_clean as company_name,
+            j.job_title_clean as job_title,
+            {"j.job_description_clean as job_description," if config.include_descriptions else ""}
+            j.location_standardized as location,
+            j.job_url,
+            j.date_posted as posting_date,
+            j.date_retrieved,
+            j.is_active,
+            j.employment_status,
+            j.department,
+            j.detected_language,
+            j.language_confidence,
+            j.is_english,
+            j.data_quality_score,
+            {"j.raw_data," if config.include_raw_data else ""}
+            j.transformation_timestamp,
+
+            -- NEW: LLM enriched fields with confidence filtering (ENHANCEMENT-032)
+            CASE
+                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_MIN
+                ELSE NULL
+            END as enriched_salary_min,
+            CASE
+                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_MAX
+                ELSE NULL
+            END as enriched_salary_max,
+            CASE
+                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_CURRENCY
+                ELSE NULL
+            END as enriched_salary_currency,
+            CASE
+                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_PERIOD
+                ELSE NULL
+            END as enriched_salary_period,
+            CASE
+                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_TYPE
+                ELSE NULL
+            END as enriched_salary_type,
+
+            CASE
+                WHEN llm.EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN llm.MIN_YEARS_EXPERIENCE
+                ELSE NULL
+            END as enriched_min_years_experience,
+            CASE
+                WHEN llm.EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN llm.MAX_YEARS_EXPERIENCE
+                ELSE NULL
+            END as enriched_max_years_experience,
+            CASE
+                WHEN llm.EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN llm.EXPERIENCE_LEVEL
+                ELSE NULL
+            END as enriched_experience_level,
+
+            CASE
+                WHEN llm.SKILLS_CONFIDENCE >= {config.min_skills_confidence} THEN llm.TECHNICAL_SKILLS
+                ELSE NULL
+            END as enriched_technical_skills,
+
+            CASE
+                WHEN llm.WORK_ARRANGEMENT_CONFIDENCE >= {config.min_work_arrangement_confidence} THEN llm.WORK_TYPE
+                ELSE NULL
+            END as enriched_work_type,
+            CASE
+                WHEN llm.WORK_ARRANGEMENT_CONFIDENCE >= {config.min_work_arrangement_confidence} THEN llm.OFFICE_LOCATIONS
+                ELSE NULL
+            END as enriched_office_locations,
+
+            CASE
+                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.PRIMARY_KEYWORDS
+                ELSE NULL
+            END as enriched_primary_keywords,
+            CASE
+                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.INDUSTRY_KEYWORDS
+                ELSE NULL
+            END as enriched_industry_keywords,
+            CASE
+                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.ROLE_TYPE
+                ELSE NULL
+            END as enriched_role_type,
+            CASE
+                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.TEAM_SIZE
+                ELSE NULL
+            END as enriched_team_size,
+
+            -- Confidence indicators for display decisions
+            llm.LLM_OVERALL_CONFIDENCE as enriched_overall_confidence,
+            llm.SALARY_CONFIDENCE as enriched_salary_confidence,
+            llm.EXPERIENCE_CONFIDENCE as enriched_experience_confidence,
+            llm.SKILLS_CONFIDENCE as enriched_skills_confidence,
+            llm.WORK_ARRANGEMENT_CONFIDENCE as enriched_work_arrangement_confidence,
+            llm.CLASSIFICATION_CONFIDENCE as enriched_classification_confidence,
+
+            -- Processing metadata
+            llm.LLM_PROCESSED as has_llm_enrichment,
+            llm.LLM_PROCESSING_TIMESTAMP as enriched_processing_date
+
+        FROM {database_name}.{stage_schema}.jobs_unified j
+        LEFT JOIN {database_name}.{stage_schema}.jobs_llm_enriched llm
+            ON j.job_uid = llm.job_uid
+        WHERE j.is_active = TRUE
         """
 
         # Add date filters
@@ -485,6 +585,297 @@ def generate_results_preview(results: pd.DataFrame) -> str:
         preview += f"\n... and {len(results) - 5} more results."
 
     return preview
+
+# NEW: Enriched data processing functions (ENHANCEMENT-032)
+def process_enriched_data(job_row: pd.Series, config: JobSearchConfig) -> Dict[str, Any]:
+    """
+    Process enriched LLM data for display with confidence-based filtering.
+
+    Args:
+        job_row: Pandas Series containing job data with enriched fields
+        config: JobSearchConfig with confidence thresholds
+
+    Returns:
+        Dictionary containing processed enriched data sections
+    """
+    import json
+
+    enriched = {}
+
+    # Salary information (confidence-based filtering)
+    if (pd.notna(job_row.get('enriched_salary_min')) and
+        pd.notna(job_row.get('enriched_salary_confidence')) and
+        job_row.get('enriched_salary_confidence', 0) >= config.min_salary_confidence):
+        enriched['salary'] = {
+            'min': int(job_row['enriched_salary_min']),
+            'max': int(job_row['enriched_salary_max']) if pd.notna(job_row.get('enriched_salary_max')) else None,
+            'currency': job_row.get('enriched_salary_currency', 'USD'),
+            'period': job_row.get('enriched_salary_period', 'year'),
+            'type': job_row.get('enriched_salary_type', 'base'),
+            'confidence': float(job_row.get('enriched_salary_confidence', 0)) if pd.notna(job_row.get('enriched_salary_confidence')) else 0.0
+        }
+
+    # Experience requirements (confidence-based filtering)
+    if (pd.notna(job_row.get('enriched_min_years_experience')) and
+        pd.notna(job_row.get('enriched_experience_confidence')) and
+        job_row.get('enriched_experience_confidence', 0) >= config.min_experience_confidence):
+        enriched['experience'] = {
+            'min_years': int(job_row['enriched_min_years_experience']),
+            'max_years': int(job_row['enriched_max_years_experience']) if pd.notna(job_row.get('enriched_max_years_experience')) else None,
+            'level': job_row.get('enriched_experience_level'),
+            'confidence': float(job_row.get('enriched_experience_confidence', 0)) if pd.notna(job_row.get('enriched_experience_confidence')) else 0.0
+        }
+
+    # Technical skills (confidence-based filtering)
+    if (job_row.get('enriched_technical_skills') and
+        pd.notna(job_row.get('enriched_skills_confidence')) and
+        job_row.get('enriched_skills_confidence', 0) >= config.min_skills_confidence):
+        try:
+            skills_data = json.loads(job_row['enriched_technical_skills']) if isinstance(job_row['enriched_technical_skills'], str) else job_row['enriched_technical_skills']
+            if skills_data and len(skills_data) > 0:
+                # Limit skills to max display and ensure they're strings
+                skills_list = [str(skill) for skill in skills_data[:config.max_skills_display]]
+                enriched['technical_skills'] = {
+                    'skills': skills_list,
+                    'confidence': float(job_row.get('enriched_skills_confidence', 0)) if pd.notna(job_row.get('enriched_skills_confidence')) else 0.0
+                }
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+
+    # Work arrangements (confidence-based filtering)
+    if (pd.notna(job_row.get('enriched_work_arrangement_confidence')) and
+        job_row.get('enriched_work_arrangement_confidence', 0) >= config.min_work_arrangement_confidence):
+        work_arrangement = {}
+        if job_row.get('enriched_work_type'):
+            work_arrangement['work_type'] = str(job_row['enriched_work_type'])
+        if job_row.get('enriched_office_locations'):
+            try:
+                locations_data = json.loads(job_row['enriched_office_locations']) if isinstance(job_row['enriched_office_locations'], str) else job_row['enriched_office_locations']
+                if locations_data:
+                    # Limit office locations and ensure they're strings
+                    locations_list = [str(loc) for loc in locations_data[:config.max_office_locations_display]]
+                    work_arrangement['office_locations'] = locations_list
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+        if work_arrangement:
+            work_arrangement['confidence'] = float(job_row.get('enriched_work_arrangement_confidence', 0)) if pd.notna(job_row.get('enriched_work_arrangement_confidence')) else 0.0
+            enriched['work_arrangement'] = work_arrangement
+
+    # Job classification (confidence-based filtering)
+    if (pd.notna(job_row.get('enriched_classification_confidence')) and
+        job_row.get('enriched_classification_confidence', 0) >= config.min_classification_confidence):
+        classification = {}
+
+        # Keywords (primary and industry)
+        keywords = []
+        if job_row.get('enriched_primary_keywords'):
+            try:
+                primary_kw = json.loads(job_row['enriched_primary_keywords']) if isinstance(job_row['enriched_primary_keywords'], str) else job_row['enriched_primary_keywords']
+                if primary_kw:
+                    keywords.extend([str(kw) for kw in primary_kw[:5]])  # Top 5 primary keywords
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+        if job_row.get('enriched_industry_keywords'):
+            try:
+                industry_kw = json.loads(job_row['enriched_industry_keywords']) if isinstance(job_row['enriched_industry_keywords'], str) else job_row['enriched_industry_keywords']
+                if industry_kw:
+                    keywords.extend([str(kw) for kw in industry_kw[:3]])  # Top 3 industry keywords
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+        # Limit total keywords to max display
+        if keywords:
+            classification['keywords'] = keywords[:config.max_keywords_display]
+
+        if job_row.get('enriched_role_type'):
+            classification['role_type'] = str(job_row['enriched_role_type'])
+
+        if job_row.get('enriched_team_size'):
+            classification['team_size'] = str(job_row['enriched_team_size'])
+
+        if classification:
+            classification['confidence'] = float(job_row.get('enriched_classification_confidence', 0)) if pd.notna(job_row.get('enriched_classification_confidence')) else 0.0
+            enriched['classification'] = classification
+
+    # Overall metadata
+    enriched['has_enrichment'] = bool(job_row.get('has_llm_enrichment', False))
+    enriched['overall_confidence'] = float(job_row.get('enriched_overall_confidence', 0)) if pd.notna(job_row.get('enriched_overall_confidence')) else 0.0
+    enriched['processing_date'] = job_row.get('enriched_processing_date')
+
+    return enriched
+
+def format_salary_display(salary_data: Dict) -> str:
+    """Format salary information for display."""
+    min_salary = salary_data['min']
+    max_salary = salary_data.get('max')
+    currency = salary_data.get('currency', 'USD')
+    period = salary_data.get('period', 'year')
+
+    # Format currency symbol
+    currency_symbol = '$' if currency.upper() == 'USD' else f'{currency} '
+
+    if max_salary and max_salary != min_salary:
+        return f"{currency_symbol}{min_salary:,} - {currency_symbol}{max_salary:,} per {period}"
+    else:
+        return f"{currency_symbol}{min_salary:,}+ per {period}"
+
+def format_experience_display(exp_data: Dict) -> str:
+    """Format experience requirements for display."""
+    min_years = exp_data['min_years']
+    max_years = exp_data.get('max_years')
+    level = exp_data.get('level')
+
+    if min_years == 0:
+        years_text = "Entry level"
+    elif max_years and max_years != min_years:
+        years_text = f"{min_years}-{max_years} years"
+    else:
+        years_text = f"{min_years}+ years"
+
+    return f"{years_text}" + (f" ({level})" if level else "")
+
+def generate_salary_section_html(salary_data: Dict, config: JobSearchConfig) -> str:
+    """Generate inline text for salary information."""
+    if not salary_data:
+        return ""
+
+    salary_display = format_salary_display(salary_data)
+
+    return f"💰 <strong>Salary Range:</strong> {salary_display}"
+
+def generate_experience_section_html(exp_data: Dict, config: JobSearchConfig) -> str:
+    """Generate inline text for experience requirements."""
+    if not exp_data:
+        return ""
+
+    experience_display = format_experience_display(exp_data)
+
+    return f"🎯 <strong>Experience Required:</strong> {experience_display}"
+
+def generate_skills_section_html(skills_data: Dict, config: JobSearchConfig) -> str:
+    """Generate inline text for technical skills with badges."""
+    if not skills_data or not skills_data.get('skills'):
+        return ""
+
+    skills = skills_data['skills']
+
+    # Create skill badges
+    skill_badges = ''.join([f'<span class="skill-badge">{html.escape(str(skill))}</span>' for skill in skills[:config.max_skills_display]])
+    if len(skills) > config.max_skills_display:
+        skill_badges += f'<span class="more-badge">+{len(skills) - config.max_skills_display} more</span>'
+
+    return f"🛠️ <strong>Technical Skills:</strong> {skill_badges}"
+
+def generate_work_arrangement_section_html(work_data: Dict, config: JobSearchConfig) -> str:
+    """Generate inline text for work arrangement."""
+    if not work_data:
+        return ""
+
+    content_parts = []
+    if work_data.get('work_type'):
+        content_parts.append(f"Type: {html.escape(work_data['work_type'])}")
+
+    if work_data.get('office_locations'):
+        locations_text = ', '.join([html.escape(str(loc)) for loc in work_data['office_locations'][:config.max_office_locations_display]])
+        if len(work_data['office_locations']) > config.max_office_locations_display:
+            locations_text += f" (+{len(work_data['office_locations']) - config.max_office_locations_display} more)"
+        content_parts.append(f"Locations: {locations_text}")
+
+    content_text = ', '.join(content_parts) if content_parts else "Not specified"
+
+    return f"🏢 <strong>Work Arrangement:</strong> {content_text}"
+
+def generate_classification_section_html(classification_data: Dict, config: JobSearchConfig) -> str:
+    """Generate inline text for job classification (role type and team size only)."""
+    if not classification_data:
+        return ""
+
+    content_parts = []
+
+    # Role type
+    if classification_data.get('role_type'):
+        content_parts.append(f"👤 <strong>Role Type:</strong> {html.escape(classification_data['role_type'])}")
+
+    # Team size
+    if classification_data.get('team_size'):
+        content_parts.append(f"👥 <strong>Team Size:</strong> {html.escape(classification_data['team_size'])}")
+
+    if not content_parts:
+        return ""
+
+    # Join the parts
+    return ' '.join(content_parts)
+
+def generate_keywords_section_html(classification_data: Dict, config: JobSearchConfig) -> str:
+    """Generate keywords section for display on separate line."""
+    if not classification_data or not classification_data.get('keywords'):
+        return ""
+
+    keywords = classification_data['keywords']
+    keyword_badges = ''.join([f'<span class="keyword-badge">{html.escape(str(kw))}</span>' for kw in keywords[:config.max_keywords_display]])
+    if len(keywords) > config.max_keywords_display:
+        keyword_badges += f'<span class="more-badge">+{len(keywords) - config.max_keywords_display} more</span>'
+
+    return f"🏷️ <strong>Keywords:</strong> {keyword_badges}"
+
+def generate_enriched_insights_section_html(enriched_data: Dict, config: JobSearchConfig) -> str:
+    """Generate complete enriched job insights section HTML with keywords on separate line."""
+    if not enriched_data.get('has_enrichment') or not config.show_enriched_data:
+        return ""
+
+    # Generate main sections (top line)
+    main_sections = []
+
+    if enriched_data.get('salary'):
+        main_sections.append(generate_salary_section_html(enriched_data['salary'], config))
+
+    if enriched_data.get('experience'):
+        main_sections.append(generate_experience_section_html(enriched_data['experience'], config))
+
+    if enriched_data.get('technical_skills'):
+        main_sections.append(generate_skills_section_html(enriched_data['technical_skills'], config))
+
+    if enriched_data.get('work_arrangement'):
+        main_sections.append(generate_work_arrangement_section_html(enriched_data['work_arrangement'], config))
+
+    if enriched_data.get('classification'):
+        main_sections.append(generate_classification_section_html(enriched_data['classification'], config))
+
+    # Generate keywords section (bottom line)
+    keywords_section = ""
+    if enriched_data.get('classification'):
+        keywords_section = generate_keywords_section_html(enriched_data['classification'], config)
+
+    # Filter out empty main sections and join with wider spacing
+    valid_main_sections = [section for section in main_sections if section.strip()]
+
+    if not valid_main_sections and not keywords_section:
+        return ""
+
+    # Build the content with main sections on first line and keywords on second line
+    content_parts = []
+
+    if valid_main_sections:
+        main_line = '&nbsp;&nbsp;&nbsp;&nbsp;'.join(valid_main_sections)
+        content_parts.append(main_line)
+
+    if keywords_section:
+        content_parts.append(keywords_section)
+
+    sections_text = '<br>'.join(content_parts)  # Use line break to separate lines
+
+    return f"""
+    <div class="job-insights" data-has-enrichment="true">
+        <div class="insights-header">
+            <h4 class="insights-title">💡 Job Insights</h4>
+        </div>
+        <div class="insights-content">
+            {sections_text}
+        </div>
+    </div>
+    """
 
 def sanitize_html_description(description: str) -> str:
     """
@@ -1059,6 +1450,26 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
             .job-title {
                 margin-right: 0;
             }
+
+            .insights-horizontal {
+                flex-direction: column;
+            }
+
+            .insight-card {
+                min-width: unset;
+                max-width: unset;
+            }
+
+            .insights-content {
+                font-size: 0.85rem;
+                line-height: 1.4;
+            }
+
+            .skill-badge, .keyword-badge, .more-badge {
+                font-size: 0.7rem;
+                padding: 0.15rem 0.4rem;
+                margin: 0 0.2rem 0.3rem 0;
+            }
         }
 
         @media (max-width: 480px) {
@@ -1102,6 +1513,94 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
                 max-height: none;
                 overflow: visible;
             }
+        }
+
+        /* NEW: Enriched Job Insights Styles (ENHANCEMENT-032) */
+        .job-insights {
+            padding: 1rem;
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            border-top: 1px solid var(--border-light);
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .job-insights[data-has-enrichment="false"] {
+            display: none;
+        }
+
+        .insights-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .insights-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .insights-content {
+            font-size: 0.9rem;
+            line-height: 1.8;
+            color: var(--text-secondary);
+        }
+
+        .insights-content strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .skill-badge {
+            display: inline-block;
+            background: var(--primary-color);
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin: 0 0.25rem 0.4rem 0;
+        }
+
+        .keyword-badge {
+            display: inline-block;
+            background: var(--warning-color);
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin: 0 0.25rem 0.4rem 0;
+        }
+
+        .more-badge {
+            display: inline-block;
+            background: var(--text-muted);
+            color: white;
+            padding: 0.2rem 0.5rem;
+            border-radius: var(--radius-sm);
+            font-size: 0.75rem;
+            font-weight: 500;
+            margin: 0 0.25rem 0.4rem 0;
+        }
+
+        .insights-horizontal {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            align-items: flex-start;
+        }
+
+        .insight-card {
+            background: var(--surface);
+            border-radius: var(--radius-md);
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
+            flex: 0 0 auto;
+            min-width: 180px;
+            max-width: 250px;
         }
     </style>
     """
@@ -1329,6 +1828,10 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
             job_title = job.get('job_title', 'Unknown title')
             company_name = job.get('company_name', '')
 
+            # NEW: Process enriched data for this job (ENHANCEMENT-032)
+            enriched_data = process_enriched_data(job, config)
+            enriched_insights_html = generate_enriched_insights_section_html(enriched_data, config)
+
             html += f"""
                     <div class="job-card" data-job-uid="{job.get('job_uid', '')}" data-platform="{job.get('platform', '')}" data-company="{company_name}" data-location="{location}" data-quality="{quality_pct}" data-relevance="{relevance_pct}" data-remote="{str(is_remote).lower()}">
                         <div class="job-card-header">
@@ -1381,6 +1884,8 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
             html += f"""
                              </div>
                          </div>
+
+                         {enriched_insights_html}
 
                          <div class="job-actions">
                              <a href="{job.get('job_url', '#')}" target="_blank" class="job-link">

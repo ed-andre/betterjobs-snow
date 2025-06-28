@@ -18,11 +18,13 @@ This document tracks planned enhancements and architectural improvements for the
 
 ## ENHANCEMENT-031: Partition LLM Enrichment Assets for Improved Performance and Scalability
 
-**Status:** Planned
+**Status:** Completed
 **Priority:** High
 **Component:** LLM Processing Pipeline (`stage_jobs_llm_enriched_{platform}` assets)
-**Date Planned:** 2025-06-28
+**Date Planned:** 2025-06-27
+**Date Completed:** 2025-06-28
 **Estimated Effort:** 3-4 days
+**Actual Effort:** 1 day
 **Business Impact:** High - Performance optimization and scalability improvement
 
 ### Problem Statement
@@ -786,4 +788,707 @@ other         | 123          | 0.8%
 - 📊 **Scalability**: Handle 10K+ jobs per platform efficiently
 - 🔧 **Operational Excellence**: Improved reliability and maintainability
 - 💰 **Cost Optimization**: More efficient use of LLM API resources
+
+--
+
+## ENHANCEMENT-032: Enrich Job Search Results with LLM-Processed Data
+
+**Status:** Completed
+**Priority:** Medium
+**Component:** Job Search Asset (`job_search.py`)
+**Date Planned:** 2025-06-28
+**Date Completed:** 2025-06-28
+**Business Impact:** Medium - Enhanced user experience and data value utilization
+
+### Problem Statement
+**Limited Data Utilization**: Current job search results only display basic job information from `JOBS_UNIFIED` table, missing valuable insights extracted by LLM processing from `JOBS_LLM_ENRICHED` table:
+
+**Current Limitations**:
+- Job search results show only basic fields (title, company, location, description)
+- Rich LLM-extracted data (salary, experience, skills, work arrangements) is ignored in the search results
+- Users cannot see structured job insights that would help with decision-making
+- Investment in LLM processing is not being leveraged for end-user of this feature
+
+
+**Missing Valuable Insights**:
+- **Salary Information**: Extracted salary ranges, currency, period, and compensation type
+- **Experience Requirements**: Years of experience, seniority level, specific technology requirements
+- **Skills Analysis**: Technical and soft skills extracted from job descriptions
+- **Work Arrangements**: Remote flexibility, work type, office locations, travel requirements
+- **Job Classification**: Role type, job family, team size, primary keywords
+- **Quality Indicators**: Confidence scores for various extracted fields
+
+### Business Justification
+- **Enhanced User Experience**: Provide structured, actionable insights alongside job listings
+- **Competitive Advantage**: Match features found in premium job search platforms
+- **ROI on LLM Investment**: Leverage expensive LLM processing for direct user value in the stage layer
+- **Data-Driven Decisions**: Help users make informed decisions with structured data
+- **Professional Presentation**: Elevate the quality and professionalism of search results
+- **Filtering Capabilities**: Enable advanced filtering based on enriched data (future enhancement)
+
+### Solution Architecture
+
+**Approach**: Enhance the existing job search functionality by joining LLM enriched data and displaying it in a structured, confidence-aware manner within the HTML report.
+
+**Key Design Principles**:
+- **Confidence-Based Display**: Only show enriched data when confidence scores meet quality thresholds
+- **Graceful Degradation**: Handle missing or low-confidence data elegantly
+- **Visual Hierarchy**: Present enriched data in a clear, scannable format
+- **Responsive Design**: Ensure new sections work across all device sizes
+- **Performance Conscious**: Minimize query complexity impact
+
+### Technical Approach
+
+#### **1. Database Query Enhancement**
+
+**Current Query Structure**: Uses only `STAGE.JOBS_UNIFIED` table
+**Enhanced Query Structure**: LEFT JOIN with `STAGE.JOBS_LLM_ENRICHED` table
+
+```sql
+-- Enhanced query with LLM enriched data
+SELECT
+    -- Existing JOBS_UNIFIED fields
+    j.job_uid,
+    j.job_id,
+    j.platform,
+    j.company_id,
+    j.company_name_clean as company_name,
+    j.job_title_clean as job_title,
+    j.job_description_clean as job_description,
+    j.location_standardized as location,
+    j.job_url,
+    j.date_posted as posting_date,
+    j.date_retrieved,
+    j.is_active,
+    j.employment_status,
+    j.department,
+    j.detected_language,
+    j.language_confidence,
+    j.is_english,
+    j.data_quality_score,
+    j.transformation_timestamp,
+
+    -- NEW: LLM enriched fields with confidence filtering
+    CASE
+        WHEN llm.LLM_OVERALL_CONFIDENCE >= 0.7 THEN llm.SALARY_MIN
+        ELSE NULL
+    END as enriched_salary_min,
+    CASE
+        WHEN llm.LLM_OVERALL_CONFIDENCE >= 0.7 THEN llm.SALARY_MAX
+        ELSE NULL
+    END as enriched_salary_max,
+    CASE
+        WHEN llm.LLM_OVERALL_CONFIDENCE >= 0.7 THEN llm.SALARY_CURRENCY
+        ELSE NULL
+    END as enriched_salary_currency,
+    CASE
+        WHEN llm.LLM_OVERALL_CONFIDENCE >= 0.7 THEN llm.SALARY_PERIOD
+        ELSE NULL
+    END as enriched_salary_period,
+    CASE
+        WHEN llm.LLM_OVERALL_CONFIDENCE >= 0.7 THEN llm.SALARY_TYPE
+        ELSE NULL
+    END as enriched_salary_type,
+
+    CASE
+        WHEN llm.EXPERIENCE_CONFIDENCE >= 0.6 THEN llm.MIN_YEARS_EXPERIENCE
+        ELSE NULL
+    END as enriched_min_years_experience,
+    CASE
+        WHEN llm.EXPERIENCE_CONFIDENCE >= 0.6 THEN llm.MAX_YEARS_EXPERIENCE
+        ELSE NULL
+    END as enriched_max_years_experience,
+    CASE
+        WHEN llm.EXPERIENCE_CONFIDENCE >= 0.6 THEN llm.EXPERIENCE_LEVEL
+        ELSE NULL
+    END as enriched_experience_level,
+
+    CASE
+        WHEN llm.SKILLS_CONFIDENCE >= 0.6 THEN llm.TECHNICAL_SKILLS
+        ELSE NULL
+    END as enriched_technical_skills,
+
+    CASE
+        WHEN llm.WORK_ARRANGEMENT_CONFIDENCE >= 0.6 THEN llm.WORK_TYPE
+        ELSE NULL
+    END as enriched_work_type,
+    CASE
+        WHEN llm.WORK_ARRANGEMENT_CONFIDENCE >= 0.6 THEN llm.OFFICE_LOCATIONS
+        ELSE NULL
+    END as enriched_office_locations,
+
+    CASE
+        WHEN llm.CLASSIFICATION_CONFIDENCE >= 0.6 THEN llm.PRIMARY_KEYWORDS
+        ELSE NULL
+    END as enriched_primary_keywords,
+    CASE
+        WHEN llm.CLASSIFICATION_CONFIDENCE >= 0.6 THEN llm.INDUSTRY_KEYWORDS
+        ELSE NULL
+    END as enriched_industry_keywords,
+    CASE
+        WHEN llm.CLASSIFICATION_CONFIDENCE >= 0.6 THEN llm.ROLE_TYPE
+        ELSE NULL
+    END as enriched_role_type,
+    CASE
+        WHEN llm.CLASSIFICATION_CONFIDENCE >= 0.6 THEN llm.TEAM_SIZE
+        ELSE NULL
+    END as enriched_team_size,
+
+    -- Confidence indicators for display decisions
+    llm.LLM_OVERALL_CONFIDENCE as enriched_overall_confidence,
+    llm.SALARY_CONFIDENCE as enriched_salary_confidence,
+    llm.EXPERIENCE_CONFIDENCE as enriched_experience_confidence,
+    llm.SKILLS_CONFIDENCE as enriched_skills_confidence,
+    llm.WORK_ARRANGEMENT_CONFIDENCE as enriched_work_arrangement_confidence,
+    llm.CLASSIFICATION_CONFIDENCE as enriched_classification_confidence,
+
+    -- Processing metadata
+    llm.LLM_PROCESSED as has_llm_enrichment,
+    llm.LLM_PROCESSING_TIMESTAMP as enriched_processing_date
+
+FROM {database_name}.{stage_schema}.jobs_unified j
+LEFT JOIN {database_name}.{stage_schema}.jobs_llm_enriched llm
+    ON j.job_uid = llm.job_uid
+WHERE j.is_active = TRUE
+-- ... existing WHERE conditions ...
+```
+
+#### **2. Data Processing Enhancement**
+
+**Enhanced Data Handling Logic**:
+```python
+def process_enriched_data(job_row: pd.Series) -> Dict[str, Any]:
+    """Process enriched LLM data for display with confidence-based filtering."""
+
+    enriched = {}
+
+    # Salary information (confidence >= 0.7)
+    if (job_row.get('enriched_salary_min') and
+        job_row.get('enriched_salary_confidence', 0) >= 0.7):
+        enriched['salary'] = {
+            'min': int(job_row['enriched_salary_min']),
+            'max': int(job_row['enriched_salary_max']) if job_row.get('enriched_salary_max') else None,
+            'currency': job_row.get('enriched_salary_currency', 'USD'),
+            'period': job_row.get('enriched_salary_period', 'year'),
+            'type': job_row.get('enriched_salary_type', 'base'),
+            'confidence': float(job_row.get('enriched_salary_confidence', 0))
+        }
+
+    # Experience requirements (confidence >= 0.6)
+    if (job_row.get('enriched_min_years_experience') is not None and
+        job_row.get('enriched_experience_confidence', 0) >= 0.6):
+        enriched['experience'] = {
+            'min_years': int(job_row['enriched_min_years_experience']),
+            'max_years': int(job_row['enriched_max_years_experience']) if job_row.get('enriched_max_years_experience') else None,
+            'level': job_row.get('enriched_experience_level'),
+            'confidence': float(job_row.get('enriched_experience_confidence', 0))
+        }
+
+    # Technical skills (confidence >= 0.6)
+    if (job_row.get('enriched_technical_skills') and
+        job_row.get('enriched_skills_confidence', 0) >= 0.6):
+        try:
+            skills_data = json.loads(job_row['enriched_technical_skills']) if isinstance(job_row['enriched_technical_skills'], str) else job_row['enriched_technical_skills']
+            if skills_data and len(skills_data) > 0:
+                enriched['technical_skills'] = {
+                    'skills': skills_data[:8],  # Limit to top 8 skills for display
+                    'confidence': float(job_row.get('enriched_skills_confidence', 0))
+                }
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Work arrangements (confidence >= 0.6)
+    if job_row.get('enriched_work_arrangement_confidence', 0) >= 0.6:
+        work_arrangement = {}
+        if job_row.get('enriched_work_type'):
+            work_arrangement['work_type'] = job_row['enriched_work_type']
+        if job_row.get('enriched_office_locations'):
+            try:
+                locations_data = json.loads(job_row['enriched_office_locations']) if isinstance(job_row['enriched_office_locations'], str) else job_row['enriched_office_locations']
+                if locations_data:
+                    work_arrangement['office_locations'] = locations_data
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if work_arrangement:
+            work_arrangement['confidence'] = float(job_row.get('enriched_work_arrangement_confidence', 0))
+            enriched['work_arrangement'] = work_arrangement
+
+    # Job classification (confidence >= 0.6)
+    if job_row.get('enriched_classification_confidence', 0) >= 0.6:
+        classification = {}
+
+        # Keywords
+        keywords = []
+        if job_row.get('enriched_primary_keywords'):
+            try:
+                primary_kw = json.loads(job_row['enriched_primary_keywords']) if isinstance(job_row['enriched_primary_keywords'], str) else job_row['enriched_primary_keywords']
+                if primary_kw:
+                    keywords.extend(primary_kw[:5])  # Top 5 primary keywords
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if job_row.get('enriched_industry_keywords'):
+            try:
+                industry_kw = json.loads(job_row['enriched_industry_keywords']) if isinstance(job_row['enriched_industry_keywords'], str) else job_row['enriched_industry_keywords']
+                if industry_kw:
+                    keywords.extend(industry_kw[:3])  # Top 3 industry keywords
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if keywords:
+            classification['keywords'] = keywords
+
+        if job_row.get('enriched_role_type'):
+            classification['role_type'] = job_row['enriched_role_type']
+
+        if job_row.get('enriched_team_size'):
+            classification['team_size'] = job_row['enriched_team_size']
+
+        if classification:
+            classification['confidence'] = float(job_row.get('enriched_classification_confidence', 0))
+            enriched['classification'] = classification
+
+    # Overall metadata
+    enriched['has_enrichment'] = bool(job_row.get('has_llm_enrichment', False))
+    enriched['overall_confidence'] = float(job_row.get('enriched_overall_confidence', 0))
+    enriched['processing_date'] = job_row.get('enriched_processing_date')
+
+    return enriched
+```
+
+#### **3. HTML Template Enhancement**
+
+**New Enriched Data Section**: Add between job metadata and job description
+
+```html
+<!-- NEW: Enriched Job Insights Section -->
+<div class="job-insights" data-has-enrichment="{has_enrichment}">
+    <div class="insights-header">
+        <h4 class="insights-title">💡 AI-Extracted Job Insights</h4>
+        <span class="insights-confidence">
+            {overall_confidence}% confidence
+        </span>
+    </div>
+
+    <div class="insights-grid">
+        <!-- Salary Information -->
+        {salary_section_html}
+
+        <!-- Experience Requirements -->
+        {experience_section_html}
+
+        <!-- Technical Skills -->
+        {skills_section_html}
+
+        <!-- Work Arrangements -->
+        {work_arrangement_section_html}
+
+        <!-- Job Classification -->
+        {classification_section_html}
+    </div>
+</div>
+```
+
+**Enhanced CSS for Enriched Sections**:
+```css
+/* Job Insights Section */
+.job-insights {
+    padding: 1.5rem;
+    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    border-top: 1px solid var(--border-light);
+    border-bottom: 1px solid var(--border-light);
+}
+
+.job-insights[data-has-enrichment="false"] {
+    display: none;
+}
+
+.insights-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.insights-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.insights-confidence {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    background: var(--success-color);
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-weight: 500;
+}
+
+.insights-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+}
+
+.insight-card {
+    background: var(--surface);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+}
+
+.insight-header {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.insight-content {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.insight-value {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.skill-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+}
+
+.skill-tag {
+    background: var(--primary-color);
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.keyword-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    margin-top: 0.5rem;
+}
+
+.keyword-tag {
+    background: var(--warning-color);
+    color: white;
+    padding: 0.25rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.keyword-tag.industry {
+    background: var(--secondary-color);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .insights-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .insights-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+}
+```
+
+### Implementation Plan
+
+#### **Phase 1: Database Query Enhancement (Day 1 - Morning)**
+
+**Step 1.1: Update Job Search Query**
+- Modify the main query in `search_jobs()` function to include LEFT JOIN with `JOBS_LLM_ENRICHED`
+- Add confidence-based conditional field selection
+- Test query performance impact and optimize if needed
+
+**Step 1.2: Create Data Processing Functions**
+```python
+# Add new functions to job_search.py
+def process_enriched_data(job_row: pd.Series) -> Dict[str, Any]:
+    """Process enriched LLM data for display."""
+    # Implementation as outlined above
+
+def format_salary_display(salary_data: Dict) -> str:
+    """Format salary information for display."""
+    min_salary = salary_data['min']
+    max_salary = salary_data.get('max')
+    currency = salary_data.get('currency', 'USD')
+    period = salary_data.get('period', 'year')
+
+    if max_salary:
+        return f"${min_salary:,} - ${max_salary:,} {currency} per {period}"
+    else:
+        return f"${min_salary:,}+ {currency} per {period}"
+
+def format_experience_display(exp_data: Dict) -> str:
+    """Format experience requirements for display."""
+    min_years = exp_data['min_years']
+    max_years = exp_data.get('max_years')
+    level = exp_data.get('level')
+
+    years_text = f"{min_years}+ years" if not max_years else f"{min_years}-{max_years} years"
+    return f"{years_text}" + (f" ({level})" if level else "")
+```
+
+**Step 1.3: Update Configuration Class**
+```python
+class JobSearchConfig(Config):
+    # Existing fields...
+
+    # NEW: Enriched data display options
+    show_enriched_data: bool = True
+    min_enrichment_confidence: float = 0.6
+    max_skills_display: int = 8
+    max_keywords_display: int = 8
+```
+
+#### **Phase 2: HTML Template Enhancement (Day 1 - Afternoon)**
+
+**Step 2.1: Create Enriched Data HTML Generators**
+```python
+def generate_salary_section_html(salary_data: Dict) -> str:
+    """Generate HTML for salary information section."""
+    if not salary_data:
+        return ""
+
+    salary_display = format_salary_display(salary_data)
+    confidence = int(salary_data['confidence'] * 100)
+
+    return f"""
+    <div class="insight-card">
+        <div class="insight-header">
+            💰 Salary Range
+            <span class="confidence-badge">{confidence}%</span>
+        </div>
+        <div class="insight-content">
+            <div class="insight-value">{salary_display}</div>
+            {f'<div class="salary-type">{salary_data["type"].title()} Salary</div>' if salary_data.get("type") else ""}
+        </div>
+    </div>
+    """
+
+def generate_experience_section_html(exp_data: Dict) -> str:
+    """Generate HTML for experience requirements section."""
+    if not exp_data:
+        return ""
+
+    experience_display = format_experience_display(exp_data)
+    confidence = int(exp_data['confidence'] * 100)
+
+    return f"""
+    <div class="insight-card">
+        <div class="insight-header">
+            🎯 Experience Required
+            <span class="confidence-badge">{confidence}%</span>
+        </div>
+        <div class="insight-content">
+            <div class="insight-value">{experience_display}</div>
+        </div>
+    </div>
+    """
+
+def generate_skills_section_html(skills_data: Dict) -> str:
+    """Generate HTML for technical skills section."""
+    if not skills_data or not skills_data.get('skills'):
+        return ""
+
+    skills = skills_data['skills'][:8]  # Limit display
+    confidence = int(skills_data['confidence'] * 100)
+
+    skill_tags = ''.join([f'<span class="skill-tag">{skill}</span>' for skill in skills])
+
+    return f"""
+    <div class="insight-card">
+        <div class="insight-header">
+            🛠️ Technical Skills
+            <span class="confidence-badge">{confidence}%</span>
+        </div>
+        <div class="insight-content">
+            <div class="skill-tags">{skill_tags}</div>
+        </div>
+    </div>
+    """
+
+# Similar functions for work_arrangement and classification sections...
+```
+
+**Step 2.2: Integrate into Main HTML Generation**
+- Modify `generate_enhanced_html_report()` function
+- Add enriched data processing for each job
+- Insert enriched sections into job card HTML structure
+
+#### **Phase 3: UI Enhancement and Styling (Day 2 - Morning)**
+
+**Step 3.1: Add Enhanced CSS**
+- Add comprehensive CSS for enriched data sections
+- Ensure responsive design works across all screen sizes
+- Add print-friendly styles for enriched sections
+
+**Step 3.2: Add Interactive Features**
+- Add toggle functionality to show/hide enriched data
+- Add confidence score indicators with tooltips
+- Implement expandable sections for detailed view
+
+**Step 3.3: Error Handling and Edge Cases**
+- Handle JSON parsing errors gracefully
+- Manage missing or malformed enriched data
+- Add fallback displays for low-confidence data
+
+#### **Phase 4: Testing and Optimization (Day 2 - Afternoon)**
+
+**Step 4.1: Performance Testing**
+- Measure query performance impact with LEFT JOIN
+- Test HTML generation time with enriched data
+- Optimize data processing functions if needed
+
+**Step 4.2: UI/UX Testing**
+- Test across different screen sizes and devices
+- Verify enriched data displays correctly
+- Ensure proper handling of missing data scenarios
+
+**Step 4.3: Data Quality Validation**
+- Verify confidence thresholds work as expected
+- Test with various job samples to ensure quality
+- Validate JSON data parsing and display
+
+#### **Phase 5: Documentation and Deployment (Day 3)**
+
+**Step 5.1: Update Documentation**
+- Document new configuration options
+- Add examples of enriched data display
+- Update README with new features
+
+**Step 5.2: Create Test Cases**
+```python
+def test_enriched_data_processing():
+    """Test enriched data processing functions."""
+    # Test various scenarios
+    pass
+
+def test_confidence_filtering():
+    """Test confidence-based data filtering."""
+    # Verify only high-confidence data is displayed
+    pass
+
+def test_html_generation_with_enriched_data():
+    """Test HTML generation includes enriched sections."""
+    # Verify enriched sections appear correctly
+    pass
+```
+
+**Step 5.3: Deploy and Monitor**
+- Deploy enhanced job search functionality
+- Monitor query performance and user feedback
+- Prepare for potential rollback if issues arise
+
+### Success Criteria
+
+**Functional Requirements**:
+- ✅ **Data Integration**: Successfully join and display LLM enriched data
+- ✅ **Confidence Filtering**: Only display data meeting confidence thresholds
+- ✅ **Responsive Design**: Enriched sections work across all screen sizes
+- ✅ **Error Handling**: Graceful handling of missing or malformed data
+
+**Performance Requirements**:
+- ✅ **Query Performance**: <10% increase in query execution time
+- ✅ **HTML Generation**: <20% increase in report generation time
+- ✅ **Memory Usage**: Efficient processing of enriched data structures
+- ✅ **User Experience**: No noticeable performance degradation
+
+**Quality Requirements**:
+- ✅ **Data Accuracy**: Enriched data displays match source data
+- ✅ **Visual Design**: Professional, clean presentation of enriched data
+- ✅ **Accessibility**: Proper semantic HTML and contrast ratios
+- ✅ **Maintainability**: Clean, well-documented code structure
+
+**User Experience Requirements**:
+- ✅ **Information Value**: Users find enriched data useful and actionable
+- ✅ **Visual Hierarchy**: Clear separation between basic and enriched data
+- ✅ **Progressive Enhancement**: Basic functionality works without enriched data
+- ✅ **Print Compatibility**: Enriched sections print correctly
+
+### Risk Mitigation
+
+**Technical Risks**:
+- **Query Performance Impact**: Monitor and optimize JOIN performance
+- **Data Quality Issues**: Implement robust confidence-based filtering
+- **JSON Parsing Errors**: Add comprehensive error handling for VARIANT fields
+- **Memory Usage**: Optimize data processing for large result sets
+
+**UI/UX Risks**:
+- **Information Overload**: Carefully design information hierarchy and spacing
+- **Responsive Design Issues**: Test extensively across device sizes
+- **Accessibility Concerns**: Ensure proper semantic markup and contrast
+- **Print Layout Problems**: Test and optimize print styles
+
+**Data Risks**:
+- **Low Confidence Data**: Set appropriate confidence thresholds
+- **Missing Enriched Data**: Design graceful fallbacks
+- **Inconsistent Data Quality**: Implement data validation and sanitization
+- **Performance Degradation**: Monitor and optimize processing pipeline
+
+### Configuration Options
+
+**New Configuration Parameters**:
+```python
+class JobSearchConfig(Config):
+    # Existing parameters...
+
+    # Enriched data display controls
+    show_enriched_data: bool = True
+    min_enrichment_confidence: float = 0.6
+    min_salary_confidence: float = 0.7
+    min_experience_confidence: float = 0.6
+    min_skills_confidence: float = 0.6
+    min_work_arrangement_confidence: float = 0.6
+    min_classification_confidence: float = 0.6
+
+    # Display limits
+    max_skills_display: int = 8
+    max_keywords_display: int = 8
+    max_office_locations_display: int = 5
+
+    # UI preferences
+    show_confidence_scores: bool = True
+    expandable_enriched_sections: bool = False
+    highlight_high_confidence: bool = True
+```
+
+### Expected Benefits
+
+**Immediate Benefits** (Day 1 post-implementation):
+- 🎯 **Enhanced Job Insights**: Users see structured salary, experience, and skills data
+- 💼 **Professional Presentation**: More comprehensive and competitive job search results
+- 🔍 **Better Decision Making**: Users can quickly assess job fit based on enriched data
+
+**Short-term Benefits** (Week 1)**:
+- 📊 **Data Value Realization**: LLM processing investment shows direct user value
+- 🚀 **User Engagement**: More informative results likely to increase user satisfaction
+- 🎨 **Visual Appeal**: Enhanced UI design improves overall user experience
+
+**Long-term Benefits** (Month 1+)**:
+- 🔧 **Platform Foundation**: Establishes groundwork for advanced filtering and search features
+- 📈 **Competitive Position**: Feature parity with premium job search platforms
+- 💡 **Analytics Opportunities**: Rich structured data enables usage analytics and insights
 

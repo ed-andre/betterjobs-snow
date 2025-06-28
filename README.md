@@ -53,7 +53,7 @@ The pipeline includes an advanced job search capability that generates modern, i
 - **Modern UI**: Responsive design with professional styling suitable for stakeholder presentations
 - **Smart Deduplication**: Cross-platform duplicate removal ensures unique job listings
 - **Shareable URLs**: Bookmark and share filtered search results with URL parameters
-- **Real-time Updates**: Dynamic job counts and filter states update instantly
+
 
 ![Job Search HTML Report](media/searchjobhtmlreport.png)
 
@@ -62,6 +62,7 @@ The job search reports show:
 - **Filter Panel**: Interactive tags for keywords, job titles, locations, and platforms
 - **Job Cards**: Clean, professional job listing cards with relevance and quality scores
 - **Detailed Information**: Company details, posting dates, locations, and full job descriptions
+- **AI-Powered Job Insights**: Extracted job insights such as salary range, experience required, technical skills, and more
 
 ### Dagster Pipeline Architecture (IN DEVELOPMENT)
 
