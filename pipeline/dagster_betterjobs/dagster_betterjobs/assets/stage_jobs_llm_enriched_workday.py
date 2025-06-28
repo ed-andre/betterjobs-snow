@@ -2,10 +2,10 @@
 Workday Platform LLM Enrichment Asset
 
 Platform-specific LLM enrichment for Workday jobs using shared processing logic.
-Part of ENHANCEMENT-010: LLM Enrichment Asset Breakdown for parallel processing.
+Part of ENHANCEMENT-031: Company-based partitioned LLM enrichment for parallel processing.
 
-This asset processes only Workday jobs for AI-powered information extraction,
-enabling parallel processing across all ATS platforms.
+This asset processes Workday jobs partitioned by company name (A-Z, 0-9, other)
+for AI-powered information extraction, enabling maximum parallel processing.
 """
 
 from typing import Dict, Any
@@ -13,26 +13,16 @@ from typing import Dict, Any
 from dagster import (
     asset,
     AssetExecutionContext,
-    Config
+    MetadataValue
 )
 
 from dagster_betterjobs.transformations.llm_processing import (
     process_platform_llm_enrichment,
     create_platform_metadata,
-    create_llm_enrichment_table_if_not_exists
+    create_llm_enrichment_table_if_not_exists,
+    PartitionedLLMEnrichmentConfig
 )
-
-
-class LLMEnrichmentConfig(Config):
-    """Configuration for LLM enrichment processing."""
-    batch_size: int = 15  # Standard batch size for Workday jobs
-    delay_between_batches: float = 1.0  # Rate limiting between batches
-    max_retries: int = 3  # Maximum retry attempts for failed API calls
-    max_description_length: int = 8000  # Token limit for job descriptions
-    confidence_threshold: float = 0.6  # Threshold for low-confidence flagging
-    limit_jobs: int = None  # Limit for testing (None = process all)
-    # enable_validation_pass: bool = True  # DISABLED: Second-pass validation (future enhancement)
-    processing_mode: str = "new_only"  # "new_only", "all", "failed_only"
+from dagster_betterjobs.partitions import llm_company_partitions
 
 
 @asset(
@@ -40,14 +30,15 @@ class LLMEnrichmentConfig(Config):
     kinds={"snowflake", "python", "gemini"},
     required_resource_keys={"snowflake", "gemini"},
     deps=["stage_jobs_unified"],
-    description="Extract structured information from Workday job descriptions using Gemini LLM"
+    partitions_def=llm_company_partitions,
+    description="Extract structured information from Workday job descriptions using Gemini LLM (partitioned by company)"
 )
-def stage_jobs_llm_enriched_workday(context: AssetExecutionContext, config: LLMEnrichmentConfig) -> Dict[str, Any]:
+def stage_jobs_llm_enriched_workday(context: AssetExecutionContext, config: PartitionedLLMEnrichmentConfig) -> Dict[str, Any]:
     """
     Enrich Workday job data with AI-extracted information using Gemini LLM.
 
-    This asset processes jobs from the Workday platform and extracts
-    structured information including salary, skills, experience requirements,
+    This asset processes jobs from the Workday platform partitioned by company name
+    and extracts structured information including salary, skills, experience requirements,
     work arrangements, and job classifications using the Gemini API.
 
     Uses shared processing logic from llm_processing.py for DRY implementation.
@@ -56,6 +47,9 @@ def stage_jobs_llm_enriched_workday(context: AssetExecutionContext, config: LLME
         Dict with processing statistics and results
     """
 
+    # Get partition key for company-based filtering
+    partition_key = context.partition_key
+
     # Get resources
     conn = context.resources.snowflake.get_connection()
     gemini = context.resources.gemini
@@ -63,21 +57,23 @@ def stage_jobs_llm_enriched_workday(context: AssetExecutionContext, config: LLME
     # Ensure LLM enrichment table exists
     create_llm_enrichment_table_if_not_exists(context)
 
-    context.log.info("🚀 [WORKDAY] Starting platform-specific LLM enrichment...")
+    context.log.info(f"🚀 [WORKDAY] Starting partitioned LLM enrichment for companies: {partition_key}")
 
-    # Process using shared logic
+    # Process using shared logic with partition filtering
     stats = process_platform_llm_enrichment(
         platform="workday",
         context=context,
         config=config,
         conn=conn,
-        gemini=gemini
+        gemini=gemini,
+        partition_key=partition_key
     )
 
     # Add metadata for Dagster UI
     metadata = create_platform_metadata(stats, "workday")
+    metadata["partition_key"] = MetadataValue.text(partition_key)
     context.add_output_metadata(metadata)
 
-    context.log.info(f"✅ [WORKDAY] LLM enrichment completed successfully")
+    context.log.info(f"✅ [WORKDAY] Partitioned LLM enrichment completed successfully for {partition_key}")
 
     return stats

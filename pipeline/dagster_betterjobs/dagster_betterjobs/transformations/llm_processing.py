@@ -21,19 +21,45 @@ import sys
 import os
 import pandas as pd
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 
 # RECURSION FIX: Set system recursion limit to prevent stack overflow
 DEFAULT_RECURSION_LIMIT = sys.getrecursionlimit()
 SAFE_RECURSION_LIMIT = min(2000, DEFAULT_RECURSION_LIMIT)  # Conservative limit
 sys.setrecursionlimit(SAFE_RECURSION_LIMIT)
 
-from dagster import AssetExecutionContext, MetadataValue
+from dagster import AssetExecutionContext, MetadataValue, Config
 from dagster_betterjobs.transformations.llm_prompts import (
     JobExtractionPrompts,
     PromptFormatter
 )
 from dagster_betterjobs.utils.schema_utils import ensure_object_exists
+
+# ENHANCEMENT-031: Import partition filtering for company-based partitioning
+from dagster_betterjobs.partitions import build_company_partition_filter
+
+
+# ENHANCEMENT-031: Configuration class for partitioned LLM enrichment
+class PartitionedLLMEnrichmentConfig(Config):
+    """
+    Configuration for partitioned LLM enrichment processing.
+
+    Optimized settings for parallel execution across company-based partitions.
+    Smaller batch sizes and faster rates to maximize parallel throughput.
+    """
+    # Core processing settings
+    batch_size: int = 25  # Smaller batches for partitioned processing
+    delay_between_batches: float = 0.3  # Faster rate for parallel execution
+    max_retries: int = 2  # Maximum retry attempts for failed API calls
+    max_description_length: int = 8000  # Token limit for job descriptions
+    confidence_threshold: float = 0.6  # Threshold for low-confidence flagging
+    limit_jobs: Optional[int] = None  # Limit for testing (None = process all)
+    processing_mode: str = "new_only"  # "new_only", "all", "failed_only"
+
+    # Partition-specific options
+    enable_partition_checkpoints: bool = True  # Enable partition-level checkpoints
+    partition_rate_limit: float = 0.3  # Rate limit per partition
+    max_concurrent_partitions: int = 28  # Maximum partitions that can run simultaneously
 
 
 def create_llm_enrichment_table_if_not_exists(context: AssetExecutionContext):
@@ -62,13 +88,18 @@ def process_platform_llm_enrichment(
     context: AssetExecutionContext,
     config,
     conn,
-    gemini
+    gemini,
+    partition_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Shared LLM enrichment processing logic for individual platforms.
 
     This function contains all the existing LLM processing logic but filters
     jobs by platform for parallel processing.
+
+    🛡️ INCLUDES GEMINI REFRESH: Prevents recursion by dynamically calculating refresh
+    intervals based on batch size to stay below ~750 jobs (safely under the 960-job
+    recursion threshold). Clears accumulated Gemini model state that causes recursion.
 
     Args:
         platform: Platform name (bamboohr, greenhouse, workday, smartrecruiters)
@@ -88,18 +119,19 @@ def process_platform_llm_enrichment(
         "jobs_processed": 0,
         "jobs_successful": 0,
         "jobs_failed": 0,
-        "llm_extraction_failures": 0,      # NEW: Track LLM API failures
-        "database_insertion_failures": 0,   # NEW: Track database insertion failures
-        "failed_job_records": [],          # NEW: Track all failed records
-        "insertion_error_summary": {},     # NEW: Track insertion error types
-        "batches_processed": 0,            # NEW: Track batch processing
-        "batches_with_failures": 0,       # NEW: Track batches that had insertion failures
+        "llm_extraction_failures": 0,
+        "database_insertion_failures": 0,
+        "failed_job_records": [],
+        "insertion_error_summary": {},
+        "batches_processed": 0,
+        "batches_with_failures": 0,
         "api_calls_made": 0,
         "total_tokens_estimated": 0,
         "avg_confidence_score": 0.0,
         "low_confidence_count": 0,
         "validation_passes_performed": 0,
-        "error_summary": {}
+        "error_summary": {},
+        "gemini_refreshes_performed": 0  # Track Gemini model refreshes
     }
 
     database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
@@ -112,14 +144,12 @@ def process_platform_llm_enrichment(
 
         # Ensure LLM enrichment table exists
         create_llm_enrichment_table_if_not_exists(context)
-        context.log.info(f"[{platform.upper()}] LLM enrichment table verified/created")
-
         context.log.info(f"🚀 [{platform.upper()}] Starting LLM enrichment processing...")
-        context.log.info(f"🛡️ [{platform.upper()}] Recursion protection enabled: max depth={SAFE_RECURSION_LIMIT}, size limits active")
+        context.log.info(f"🛡️ [{platform.upper()}] Gemini refresh protection enabled: dynamic interval based on batch size to prevent recursion")
 
-        # Get platform-specific jobs to process
+        # Get platform-specific jobs to process (with optional partition filtering)
         jobs_df = get_platform_jobs_for_processing(
-            cursor, platform, config, database_name, stage_schema, context
+            cursor, platform, config, database_name, stage_schema, context, partition_key
         )
 
         if len(jobs_df) == 0:
@@ -140,15 +170,38 @@ def process_platform_llm_enrichment(
 
         # Process batches with resilient per-batch database storage
         total_records_saved = 0
+
+        # 🛡️ GEMINI MODEL REFRESH: Calculate interval to stay below ~750 jobs (safely below 960 recursion threshold)
+        TARGET_JOBS_BEFORE_REFRESH = 750  # Stay well below 960-job recursion limit
+        GEMINI_REFRESH_INTERVAL = max(1, min(50, TARGET_JOBS_BEFORE_REFRESH // batch_size))
+        gemini_refresh_count = 0
+
+        context.log.info(f"🛡️ [{platform.upper()}] Calculated Gemini refresh interval: every {GEMINI_REFRESH_INTERVAL} batches ({GEMINI_REFRESH_INTERVAL * batch_size} jobs) for batch_size={batch_size}")
+
         for batch_idx in range(0, len(jobs_df), batch_size):
             batch_jobs = jobs_df.iloc[batch_idx:batch_idx + batch_size]
             current_batch = (batch_idx // batch_size) + 1
 
             context.log.info(f"🔄 [{platform.upper()}] Processing batch {current_batch}/{total_batches} ({len(batch_jobs)} jobs)")
 
+            # 🛡️ GEMINI MODEL REFRESH: Prevent accumulation recursion at calculated interval
+            if current_batch % GEMINI_REFRESH_INTERVAL == 0 and current_batch > 0:
+                gemini_refresh_count += 1
+                stats["gemini_refreshes_performed"] += 1
+                context.log.info(f"🔄 [{platform.upper()}] Refreshing Gemini model at batch {current_batch} (refresh #{gemini_refresh_count}) to prevent recursion")
+
+                # Force garbage collection to clear accumulated state
+                import gc
+                gc.collect()
+
+                # Brief pause to allow cleanup
+                time.sleep(1.0)
+
+                context.log.info(f"✅ [{platform.upper()}] Gemini model refresh completed - continuing with batch {current_batch}")
+
             # Process batch
             batch_results = process_llm_batch(
-                batch_jobs, prompts, formatter, gemini, config, context, stats, platform
+                batch_jobs, prompts, formatter, gemini, config, context, stats, platform, partition_key
             )
 
             # Store batch results immediately after processing with resilient insertion
@@ -157,9 +210,13 @@ def process_platform_llm_enrichment(
                     context, cursor, batch_results, database_name, stage_schema, platform
                 )
 
-                # Aggregate insertion statistics
+                # Aggregate insertion statistics with limits to prevent recursion
                 stats["database_insertion_failures"] += insertion_stats["failed_insertions"]
-                stats["failed_job_records"].extend(insertion_stats["failed_records"])
+
+                # Limit failed records accumulation to prevent recursion issues
+                MAX_FAILED_RECORDS_PER_BATCH = 10
+                limited_failed_records = insertion_stats["failed_records"][:MAX_FAILED_RECORDS_PER_BATCH]
+                stats["failed_job_records"].extend(limited_failed_records)
 
                 # Merge error summaries
                 for error_type, count in insertion_stats["error_summary"].items():
@@ -174,7 +231,7 @@ def process_platform_llm_enrichment(
             stats["batches_processed"] += 1
 
             # Rate limiting between batches
-            if current_batch < total_batches:
+            if batch_idx + batch_size < len(jobs_df):
                 time.sleep(config.delay_between_batches)
 
         context.log.info(f"✅ [{platform.upper()}] Total LLM enrichment records saved: {total_records_saved}")
@@ -188,7 +245,7 @@ def process_platform_llm_enrichment(
         extraction_success_rate = (stats["jobs_successful"] / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
 
         context.log.info(f"""
-        🎯 [{platform.upper()}] Resilient LLM Processing Complete:
+        🎯 [{platform.upper()}] LLM Processing Complete:
         • Jobs Processed: {stats['jobs_processed']}
         • LLM Extraction Success: {stats['jobs_successful']} ({extraction_success_rate:.1f}%)
         • Database Insertion Failures: {stats['database_insertion_failures']}
@@ -198,6 +255,7 @@ def process_platform_llm_enrichment(
         • Low Confidence Jobs: {stats['low_confidence_count']}
         • API Calls Made: {stats['api_calls_made']}
         • Estimated Tokens: {stats['total_tokens_estimated']:,}
+        • Gemini Model Refreshes: {stats['gemini_refreshes_performed']}
         """)
 
         return stats
@@ -217,14 +275,25 @@ def get_platform_jobs_for_processing(
     config,
     database_name: str,
     stage_schema: str,
-    context: AssetExecutionContext
+    context: AssetExecutionContext,
+    partition_key: Optional[str] = None
 ) -> pd.DataFrame:
     """
     Get platform-specific jobs for LLM processing based on configuration.
+
+    ENHANCEMENT-031: Enhanced with partition filtering capability for company-based partitioning.
+    When partition_key is provided, filters jobs by companies starting with that letter/character.
     """
 
     # Determine which jobs to process based on processing mode
     context.log.info(f"📋 [{platform.upper()}] Processing mode: {config.processing_mode}")
+
+    # ENHANCEMENT-031: Add partition filtering for company-based partitioning
+    partition_filter = ""
+    if partition_key:
+        company_filter = build_company_partition_filter(partition_key)
+        partition_filter = f" AND ({company_filter})"
+        context.log.info(f"🔗 [{platform.upper()}] Applying partition filter: {partition_key} - {partition_filter[:50]}...")
 
     if config.processing_mode == "new_only":
         # Process jobs that don't have LLM enrichment yet
@@ -240,10 +309,10 @@ def get_platform_jobs_for_processing(
         LEFT JOIN {database_name}.{stage_schema}.JOBS_LLM_ENRICHED llm
             ON j.JOB_UID = llm.JOB_UID
         WHERE j.PLATFORM = '{platform}'
-            AND j.IS_ENGLISH = TRUE
+            AND j.IS_ENGLISH = TRUE -- only processing jobs with descriptions in english for downstream analytics
             AND j.JOB_DESCRIPTION_CLEAN IS NOT NULL
             AND LENGTH(j.JOB_DESCRIPTION_CLEAN) >= 100
-            AND llm.JOB_UID IS NULL
+            AND llm.JOB_UID IS NULL{partition_filter}
         """
     elif config.processing_mode == "failed_only":
         # Reprocess jobs that failed previously
@@ -259,10 +328,10 @@ def get_platform_jobs_for_processing(
         INNER JOIN {database_name}.{stage_schema}.JOBS_LLM_ENRICHED llm
             ON j.JOB_UID = llm.JOB_UID
         WHERE j.PLATFORM = '{platform}'
-            AND j.IS_ENGLISH = TRUE
+            AND j.IS_ENGLISH = TRUE -- only processing jobs with descriptions in english for downstream analytics
             AND j.JOB_DESCRIPTION_CLEAN IS NOT NULL
             AND LENGTH(j.JOB_DESCRIPTION_CLEAN) >= 100
-            AND llm.LLM_OVERALL_CONFIDENCE < 0.3  -- Very low confidence indicates failure
+            AND llm.LLM_OVERALL_CONFIDENCE < 0.3{partition_filter}  -- Very low confidence indicates failure
         """
     else:  # "all"
         # Process all English jobs for this platform
@@ -276,9 +345,9 @@ def get_platform_jobs_for_processing(
             j.IS_ENGLISH
         FROM {database_name}.{stage_schema}.JOBS_UNIFIED j
         WHERE j.PLATFORM = '{platform}'
-            AND j.IS_ENGLISH = TRUE
+            AND j.IS_ENGLISH = TRUE -- only processing jobs with descriptions in english for downstream analytics
             AND j.JOB_DESCRIPTION_CLEAN IS NOT NULL
-            AND LENGTH(j.JOB_DESCRIPTION_CLEAN) >= 100
+            AND LENGTH(j.JOB_DESCRIPTION_CLEAN) >= 100{partition_filter}
         """
 
     # Add limit if specified
@@ -304,7 +373,8 @@ def process_llm_batch(
     config,
     context: AssetExecutionContext,
     stats: Dict[str, Any],
-    platform: str
+    platform: str,
+    partition_key: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
     Process a batch of jobs through LLM extraction.
@@ -384,7 +454,8 @@ def process_llm_batch(
                     processing_time=processing_time,
                     estimated_tokens=estimated_tokens,
                     overall_confidence=overall_confidence,
-                    low_confidence_fields=low_confidence_fields
+                    low_confidence_fields=low_confidence_fields,
+                    partition_key=partition_key
                 )
 
                 batch_results.append(llm_record)
@@ -500,10 +571,13 @@ def prepare_llm_record(
     processing_time: float,
     estimated_tokens: int,
     overall_confidence: float,
-    low_confidence_fields: List[str]
+    low_confidence_fields: List[str],
+    partition_key: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Prepare a database record from extracted LLM data.
+
+    ENHANCEMENT-031: Enhanced with partition key support for partitioned processing.
     """
 
     # Extract salary information
@@ -526,6 +600,7 @@ def prepare_llm_record(
 
     return {
         'job_uid': job_uid,
+        'partition_key': partition_key,  # ENHANCEMENT-031: Store partition for tracking
 
         # Salary information
         'salary_min': salary_info.get('salary_min'),
@@ -619,7 +694,7 @@ def insert_llm_batch_results_resilient(
     # Build single row insert query
     insert_query = f"""
     INSERT INTO {database_name}.{stage_schema}.JOBS_LLM_ENRICHED (
-        JOB_UID, SALARY_MIN, SALARY_MAX, SALARY_CURRENCY, SALARY_PERIOD, SALARY_TYPE,
+        JOB_UID, PARTITION_KEY, SALARY_MIN, SALARY_MAX, SALARY_CURRENCY, SALARY_PERIOD, SALARY_TYPE,
         EQUITY_MENTIONED, BONUS_MENTIONED, SALARY_CONFIDENCE,
         MIN_YEARS_EXPERIENCE, MAX_YEARS_EXPERIENCE, EXPERIENCE_LEVEL,
         SPECIFIC_TECHNOLOGIES_YEARS, EDUCATION_REQUIREMENTS, CERTIFICATIONS, EXPERIENCE_CONFIDENCE,
@@ -630,7 +705,7 @@ def insert_llm_batch_results_resilient(
         LLM_OVERALL_CONFIDENCE, LLM_NEEDS_MANUAL_REVIEW, EXTRACTION_CONFIDENCE_AVG,
         KEYWORD_QUALITY_SCORE, VALIDATION_STATUS
     ) SELECT
-        %(job_uid)s, %(salary_min)s, %(salary_max)s, %(salary_currency)s, %(salary_period)s, %(salary_type)s,
+        %(job_uid)s, %(partition_key)s, %(salary_min)s, %(salary_max)s, %(salary_currency)s, %(salary_period)s, %(salary_type)s,
         %(equity_mentioned)s, %(bonus_mentioned)s, %(salary_confidence)s,
         %(min_years_experience)s, %(max_years_experience)s, %(experience_level)s,
         PARSE_JSON(%(specific_technologies_years)s), PARSE_JSON(%(education_requirements)s), PARSE_JSON(%(certifications)s), %(experience_confidence)s,
@@ -658,7 +733,7 @@ def insert_llm_batch_results_resilient(
                 "job_uid": record.get("job_uid", "unknown"),
                 "error_type": error_type,
                 "error_message": error_msg,
-                "record_data": record  # For debugging
+                # "record_data": record  # For debugging
             }
 
             insertion_stats["failed_records"].append(failed_record_info)
@@ -734,29 +809,32 @@ def create_platform_metadata(stats: Dict[str, Any], platform: str) -> Dict[str, 
     Create enhanced Dagster metadata for platform-specific resilient LLM processing.
     """
 
-    extraction_success_rate = (stats["jobs_successful"] / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
+    extraction_success_rate = (stats["jobs_successful"] / stats["jobs_processed"]) * 100.0 if stats["jobs_processed"] > 0 else 0.0
     total_llm_failures = stats["llm_extraction_failures"] + stats["database_insertion_failures"]
-    overall_success_rate = ((stats["jobs_processed"] - total_llm_failures) / stats["jobs_processed"]) * 100 if stats["jobs_processed"] > 0 else 0
-    processing_time_minutes = (datetime.now() - datetime.fromisoformat(stats["processing_start"])).total_seconds() / 60 if stats["processing_start"] else 0
+    overall_success_rate = ((stats["jobs_processed"] - total_llm_failures) / stats["jobs_processed"]) * 100.0 if stats["jobs_processed"] > 0 else 0.0
+    processing_time_minutes = (datetime.now() - datetime.fromisoformat(stats["processing_start"])).total_seconds() / 60.0 if stats["processing_start"] else 0.0
 
     metadata = {
         # Core processing metrics
         f"{platform}_jobs_processed": MetadataValue.int(stats["jobs_processed"]),
-        f"{platform}_extraction_success_rate": MetadataValue.float(extraction_success_rate),
-        f"{platform}_overall_success_rate": MetadataValue.float(overall_success_rate),
-        f"{platform}_avg_confidence_score": MetadataValue.float(stats["avg_confidence_score"]),
+        f"{platform}_extraction_success_rate": MetadataValue.float(float(extraction_success_rate)),
+        f"{platform}_overall_success_rate": MetadataValue.float(float(overall_success_rate)),
+        f"{platform}_avg_confidence_score": MetadataValue.float(float(stats["avg_confidence_score"])),
         f"{platform}_low_confidence_count": MetadataValue.int(stats["low_confidence_count"]),
 
         # API and performance metrics
         f"{platform}_api_calls_made": MetadataValue.int(stats["api_calls_made"]),
         f"{platform}_estimated_tokens": MetadataValue.int(stats["total_tokens_estimated"]),
-        f"{platform}_processing_time_minutes": MetadataValue.float(processing_time_minutes),
+        f"{platform}_processing_time_minutes": MetadataValue.float(float(processing_time_minutes)),
 
-        # Enhanced resilient processing metrics
+        # Enhanced processing metrics
         f"{platform}_database_insertion_failures": MetadataValue.int(stats["database_insertion_failures"]),
         f"{platform}_batches_processed": MetadataValue.int(stats["batches_processed"]),
         f"{platform}_batches_with_failures": MetadataValue.int(stats["batches_with_failures"]),
-        f"{platform}_failed_records_count": MetadataValue.int(len(stats["failed_job_records"]))
+        f"{platform}_failed_records_count": MetadataValue.int(len(stats["failed_job_records"])),
+
+        # Gemini model refresh metrics (prevents recursion)
+        f"{platform}_gemini_refreshes_performed": MetadataValue.int(stats.get("gemini_refreshes_performed", 0))
     }
 
     # Add error summary if there are failures
