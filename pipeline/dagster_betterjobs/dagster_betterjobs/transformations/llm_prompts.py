@@ -14,7 +14,7 @@ class JobExtractionPrompts:
     """
     Collection of prompt templates for extracting structured job information.
 
-    Designed for gemini-2.5-flash-preview-05-20 model with JSON response format.
+    Designed for gemini-2.5-flash-lite-preview-06-17 model with JSON response format.
     """
 
     @staticmethod

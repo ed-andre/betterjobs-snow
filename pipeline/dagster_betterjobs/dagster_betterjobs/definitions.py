@@ -97,7 +97,7 @@ resources = {
     ),
     "gemini": GeminiResource(
         api_key=EnvVar("GEMINI_API_KEY"),
-        generative_model_name="gemini-2.5-flash-preview-05-20",
+        generative_model_name="gemini-2.5-flash-lite-preview-06-17",
     ),
     "openai": OpenAIResource(
         api_key=EnvVar("OPENAI_API_KEY"),

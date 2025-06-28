@@ -347,7 +347,7 @@ GROUP BY detected_language, location_standardized;
 # Already configured in definitions.py
 "gemini": GeminiResource(
     api_key=EnvVar("GEMINI_API_KEY"),
-    generative_model_name="gemini-2.5-flash-preview-05-20",
+    generative_model_name="gemini-2.5-flash-lite-preview-06-17",
 ),
 ```
 
@@ -471,7 +471,7 @@ from typing import Dict, List
 def process_jobs_with_gemini(context, jobs_df, gemini_resource) -> pd.DataFrame:
     """Process jobs using Gemini with proper batching and error handling"""
 
-    batch_size = 15  # Optimal batch size for gemini-2.5-flash-preview-05-20
+    batch_size = 15  # Optimal batch size for gemini-2.5-flash-lite-preview-06-17
     delay_between_batches = 1.0  # Rate limiting
 
     for i in range(0, len(jobs_df), batch_size):
@@ -1306,7 +1306,7 @@ FUNDING_STAGE → NULL (not available in raw data)
 **Objective**: Implement AI-powered information extraction from job descriptions using the existing Gemini resource to enrich STAGE layer data with structured information.
 
 **Existing Gemini Integration**: Gemini is already configured and proven functional in the decommissioned `retry_failed_company_urls.py` asset, providing:
-- `GeminiResource` with model `gemini-2.5-flash-preview-05-20`
+- `GeminiResource` with model `gemini-2.5-flash-lite-preview-06-17`
 - Batch processing with rate limiting (15 records/batch, 1-2s delays)
 - JSON response parsing with retry logic and error handling
 - Comprehensive logging and monitoring
