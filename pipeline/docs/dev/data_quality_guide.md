@@ -54,6 +54,12 @@ BETTERJOBS_DB.STAGE.LLM_QUALITY_METRICS_HISTORY       -- Historical metrics for 
 BETTERJOBS_DB.STAGE.LLM_MANUAL_REVIEW_QUEUE           -- Items requiring human review
 BETTERJOBS_DB.STAGE.LLM_COVERAGE_ANALYSIS             -- Coverage analysis results
 BETTERJOBS_DB.STAGE.LLM_CONFIDENCE_ANALYSIS           -- Confidence score analysis
+
+-- Bridge tables for relationship analysis
+BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE                 -- Job-salary relationships with review flags
+
+-- Review queue views for troubleshooting
+BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE             -- Salary items flagged for review
 ```
 
 ## Finding Data Quality Issues
@@ -300,6 +306,46 @@ ORDER BY DATA_SOURCE, AVG_CONFIDENCE_IN_BUCKET;
 */
 ```
 
+### 5. Salary Data Quality Issues
+
+Review salary data issues using the dedicated review queue view:
+
+```sql
+-- Quick overview of salary items flagged for review
+SELECT
+    COUNT(*) as total_salary_items_needing_review,
+    AVG(SALARY_CONFIDENCE) as avg_confidence
+FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE;
+
+-- Sample problematic salary entries from source data for investigation
+SELECT
+    ju.JOB_UID,
+    ju.JOB_TITLE_CLEAN,
+    ju.COMPANY_ID,
+    LEFT(ju.JOB_DESCRIPTION_CLEAN, 100) as job_description_sample,
+    jle.SALARY_MIN,
+    jle.SALARY_MAX,
+    jle.SALARY_PERIOD,
+    jle.SALARY_CURRENCY,
+    jle.SALARY_CONFIDENCE,
+    CASE
+        WHEN jle.SALARY_CONFIDENCE < 0.4 THEN 'Very low confidence'
+        WHEN jle.SALARY_MIN IS NULL AND jle.SALARY_MAX IS NULL THEN 'No salary data'
+        WHEN jle.SALARY_MIN > jle.SALARY_MAX THEN 'Min > Max logic error'
+        WHEN jle.SALARY_CURRENCY NOT IN ('USD', 'US', 'DOLLAR', 'DOLLARS') THEN 'Non-USD currency'
+        ELSE 'Other extraction issue'
+    END as issue_type
+FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+INNER JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle ON ju.JOB_UID = jle.JOB_UID
+WHERE jle.SALARY_CONFIDENCE < 0.5
+   OR (jle.SALARY_MIN IS NULL AND jle.SALARY_MAX IS NULL)
+   OR jle.SALARY_MIN > jle.SALARY_MAX
+ORDER BY jle.SALARY_CONFIDENCE ASC
+LIMIT 20;
+```
+
+**Note**: The `Z_REVIEW_SALARY_QUEUE` view contains all salary items that have been automatically flagged for review during the normalization process. Use this view as your primary tool for salary data quality review.
+
 ## Understanding Quality Metrics
 
 ### Key Performance Indicators (KPIs)
@@ -308,6 +354,7 @@ ORDER BY DATA_SOURCE, AVG_CONFIDENCE_IN_BUCKET;
 - **Skills Coverage**: Percentage of jobs with normalized skills (Target: ≥85%)
 - **Keywords Coverage**: Percentage of jobs with normalized keywords (Target: ≥80%)
 - **Locations Coverage**: Percentage of jobs with normalized locations (Target: ≥75%)
+- **Salary Coverage**: Percentage of jobs with normalized salary data (Target: ≥60%)
 
 #### Quality KPIs
 - **High Confidence Rate**: Percentage of relationships with confidence ≥0.7 (Target: ≥80%)
@@ -459,6 +506,35 @@ GROUP BY ln.LOCATION_ID, ln.LOCATION_NAME, ln.CITY, ln.STATE_PROVINCE, ln.COUNTR
          ln.LOCATION_TYPE, ln.ORIGINAL_VARIANTS, ln.CONFIDENCE_SCORE, ln.FREQUENCY_COUNT;
 ```
 
+**Salary Review:**
+```sql
+-- Use the dedicated salary review queue view for items flagged for review
+SELECT * FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE
+ORDER BY SALARY_CONFIDENCE ASC
+LIMIT 10;
+
+-- For specific job salary investigation, get details from source tables
+SELECT
+    ju.JOB_UID,
+    ju.JOB_TITLE_CLEAN,
+    ju.COMPANY_ID,
+    jle.SALARY_MIN,
+    jle.SALARY_MAX,
+    jle.SALARY_PERIOD,
+    jle.SALARY_CURRENCY,
+    jle.SALARY_CONFIDENCE,
+    sn.SALARY_RANGE_NAME,
+    sn.SALARY_MIN_ANNUAL_USD,
+    sn.SALARY_MAX_ANNUAL_USD,
+    jsb.NEEDS_REVIEW,
+    jsb.VALIDATION_STATUS
+FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+INNER JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle ON ju.JOB_UID = jle.JOB_UID
+LEFT JOIN BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb ON ju.JOB_UID = jsb.JOB_UID
+LEFT JOIN BETTERJOBS_DB.STAGE.SALARY_NORMALIZED sn ON jsb.SALARY_ID = sn.SALARY_ID
+WHERE ju.JOB_UID = 'specific_job_uid_to_investigate';
+```
+
 #### Step 3: Complete the Review
 ```sql
 -- Complete review with decision (replace with appropriate values)
@@ -599,7 +675,158 @@ INSERT INTO BETTERJOBS_DB.STAGE.LOCATION_STANDARDIZATION_RULES (
 );
 ```
 
-### 4. Refreshing Data After Corrections
+### 4. Correcting Salary Standardization
+
+#### Resolving Items in Review Queue
+After investigating salary issues from `Z_REVIEW_SALARY_QUEUE`, mark items as resolved:
+
+```sql
+-- Mark salary item as resolved after manual review
+UPDATE BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE
+SET
+    NEEDS_REVIEW = FALSE,
+    VALIDATION_STATUS = 'validated',
+    REVIEWED_BY = 'your_username',
+    REVIEW_NOTES = 'Verified salary range is accurate based on job description and market data',
+    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
+WHERE BRIDGE_ID = 'bridge_id_reviewed';
+
+-- Batch update for multiple similar items
+UPDATE BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE
+SET
+    NEEDS_REVIEW = FALSE,
+    VALIDATION_STATUS = 'validated',
+    REVIEWED_BY = 'your_username',
+    REVIEW_NOTES = 'Batch validated: salary ranges within expected bounds for role level',
+    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
+WHERE BRIDGE_ID IN (
+    SELECT BRIDGE_ID
+    FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE zsrq
+    JOIN BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb ON zsrq.JOB_UID = jsb.JOB_UID
+    WHERE zsrq.SALARY_CONFIDENCE >= 0.8  -- High confidence items that just need review flag cleared
+);
+```
+
+#### Correcting Source Data Issues
+For salary extraction problems, use available fields and document issues separately:
+
+```sql
+-- Flag problematic salary extractions for LLM reprocessing
+UPDATE BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+SET
+    LLM_NEEDS_MANUAL_REVIEW = TRUE,
+    VALIDATION_STATUS = 'needs_correction',
+    LAST_UPDATED = CURRENT_TIMESTAMP
+WHERE SALARY_MIN > SALARY_MAX
+   OR SALARY_CONFIDENCE < 0.3;
+
+-- Document detailed salary parsing issues in validation results table
+INSERT INTO BETTERJOBS_DB.STAGE.LLM_QUALITY_VALIDATION_RESULTS (
+    VALIDATION_ID,
+    VALIDATION_CATEGORY,
+    ISSUE_TYPE,
+    SEVERITY,
+    DESCRIPTION,
+    SAMPLE_DATA,
+    RECOMMENDED_ACTION,
+    STATUS,
+    CREATED_TIMESTAMP
+)
+SELECT
+    'SAL_' || SUBSTR(SHA2(JOB_UID), 1, 12) as VALIDATION_ID,
+    'salary_extraction' as VALIDATION_CATEGORY,
+    CASE
+        WHEN SALARY_MIN > SALARY_MAX THEN 'inverted_range'
+        WHEN SALARY_CONFIDENCE < 0.3 THEN 'low_confidence_extraction'
+        WHEN SALARY_MIN IS NULL AND SALARY_MAX IS NULL THEN 'no_salary_extracted'
+        ELSE 'extraction_anomaly'
+    END as ISSUE_TYPE,
+    'MEDIUM' as SEVERITY,
+    CASE
+        WHEN SALARY_MIN > SALARY_MAX THEN 'Salary min/max values appear inverted'
+        WHEN SALARY_CONFIDENCE < 0.3 THEN 'Very low confidence salary extraction'
+        WHEN SALARY_MIN IS NULL AND SALARY_MAX IS NULL THEN 'No salary data extracted from job description'
+        ELSE 'Salary extraction anomaly detected'
+    END as DESCRIPTION,
+    OBJECT_CONSTRUCT(
+        'job_uid', JOB_UID,
+        'salary_min', SALARY_MIN,
+        'salary_max', SALARY_MAX,
+        'salary_confidence', SALARY_CONFIDENCE,
+        'salary_currency', SALARY_CURRENCY,
+        'salary_period', SALARY_PERIOD
+    ) as SAMPLE_DATA,
+    'Review LLM extraction prompts and retrain model for this pattern' as RECOMMENDED_ACTION,
+    'ACTIVE' as STATUS,
+    CURRENT_TIMESTAMP as CREATED_TIMESTAMP
+FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+WHERE (SALARY_MIN > SALARY_MAX OR SALARY_CONFIDENCE < 0.3)
+  AND LLM_NEEDS_MANUAL_REVIEW = TRUE;
+```
+
+#### Updating Normalization Rules
+For systematic salary normalization issues:
+
+```sql
+-- Fix outlier detection thresholds if too restrictive
+UPDATE BETTERJOBS_DB.STAGE.SALARY_NORMALIZED
+SET
+    OUTLIER_FLAG = FALSE,
+    MANUAL_REVIEW_FLAG = FALSE,
+    CONFIDENCE_SCORE = 0.9,
+    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
+WHERE SALARY_MIN_ANNUAL_USD BETWEEN 400000 AND 2000000  -- High level tech roles legitimate range
+  AND OUTLIER_FLAG = TRUE;
+
+-- Correct currency conversion issues
+UPDATE BETTERJOBS_DB.STAGE.SALARY_NORMALIZED
+SET
+    SALARY_MIN_ANNUAL_USD = SALARY_MIN_ORIGINAL * 1.0,  -- Already USD, no conversion needed
+    SALARY_MAX_ANNUAL_USD = SALARY_MAX_ORIGINAL * 1.0,
+    NORMALIZATION_FACTOR = 1.0,
+    CONFIDENCE_SCORE = 1.0,
+    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
+WHERE SALARY_CURRENCY_ORIGINAL IN ('USD', 'US', 'DOLLAR', 'DOLLARS')
+  AND NORMALIZATION_FACTOR != 1.0;
+```
+
+#### Common Salary Correction Workflows
+
+**Workflow 1: False Positive Reviews**
+```sql
+-- Items incorrectly flagged for review (high confidence but flagged due to outlier detection)
+UPDATE BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb
+SET
+    NEEDS_REVIEW = FALSE,
+    VALIDATION_STATUS = 'auto_validated',
+    REVIEW_NOTES = 'Auto-cleared: high confidence salary within market range',
+    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
+FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE zsrq
+WHERE jsb.JOB_UID = zsrq.JOB_UID
+  AND zsrq.SALARY_CONFIDENCE >= 0.9
+  AND zsrq.SALARY_MIN_ANNUAL_USD BETWEEN 30000 AND 400000  -- Reasonable range
+  AND zsrq.SALARY_MAX_ANNUAL_USD BETWEEN 35000 AND 2000000;
+```
+
+**Workflow 2: Legitimate Issues Requiring Correction**
+```sql
+-- Mark items that need actual correction (not just review flag clearing)
+UPDATE BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE
+SET
+    NEEDS_REVIEW = TRUE,
+    VALIDATION_STATUS = 'needs_correction',
+    REVIEW_NOTES = 'Confirmed issue: salary range extraction error, needs LLM reprocessing',
+    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
+WHERE BRIDGE_ID IN (
+    SELECT jsb.BRIDGE_ID
+    FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE zsrq
+    JOIN BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb ON zsrq.JOB_UID = jsb.JOB_UID
+    WHERE zsrq.SALARY_CONFIDENCE < 0.5
+       OR zsrq.SALARY_MIN > zsrq.SALARY_MAX
+);
+```
+
+### 5. Refreshing Data After Corrections
 
 After making corrections, trigger asset re-processing:
 
@@ -694,6 +921,7 @@ ORDER BY week_start DESC, METRIC_ID;
 - Individual low-confidence items
 - Minor standardization inconsistencies
 - Process optimization opportunities
+- Salary data anomalies in the Z_REVIEW_SALARY_QUEUE
 
 ### 3. Documentation Standards
 
@@ -784,6 +1012,46 @@ ORDER BY location_variants DESC;
 - Merge duplicate location entries
 - Improve location parsing logic
 
+#### Issue: Poor Salary Data Quality
+**Symptoms**: High volume of items in Z_REVIEW_SALARY_QUEUE or low salary coverage
+**Investigation**:
+```sql
+-- Check overall salary extraction issues in source data
+SELECT
+    'No Salary Data' as issue_type,
+    COUNT(*) as issue_count
+FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+WHERE SALARY_MIN IS NULL AND SALARY_MAX IS NULL
+
+UNION ALL
+
+SELECT
+    'Low Confidence (<0.5)' as issue_type,
+    COUNT(*) as issue_count
+FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+WHERE SALARY_CONFIDENCE < 0.5
+
+UNION ALL
+
+SELECT
+    'Logic Error (Min > Max)' as issue_type,
+    COUNT(*) as issue_count
+FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED
+WHERE SALARY_MIN > SALARY_MAX
+
+UNION ALL
+
+SELECT
+    'Items in Review Queue' as issue_type,
+    COUNT(*) as issue_count
+FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE;
+```
+**Solutions**:
+- Review LLM salary extraction prompts and confidence scoring
+- Check salary range normalization logic in stage_salary_normalized
+- Validate currency conversion rates and period calculations
+- Add specific salary parsing rules for common formats
+
 ### Performance Issues
 
 #### Slow Quality Validation
@@ -826,7 +1094,11 @@ FROM BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE jkb
 UNION ALL
 SELECT 'Locations', COUNT(DISTINCT jlb.JOB_UID),
        (COUNT(DISTINCT jlb.JOB_UID)::FLOAT / (SELECT COUNT(*) FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED)) * 100
-FROM BETTERJOBS_DB.STAGE.JOB_LOCATIONS_BRIDGE jlb;
+FROM BETTERJOBS_DB.STAGE.JOB_LOCATIONS_BRIDGE jlb
+UNION ALL
+SELECT 'Salary', COUNT(DISTINCT jsb.JOB_UID),
+       (COUNT(DISTINCT jsb.JOB_UID)::FLOAT / (SELECT COUNT(*) FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED)) * 100
+FROM BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb;
 ```
 
 ### Data Quality Dashboard Query

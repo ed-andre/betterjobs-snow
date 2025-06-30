@@ -285,7 +285,7 @@ def stage_salary_normalized(context: AssetExecutionContext, snowflake: Snowflake
 
                 -- Outlier detection (statistical boundaries)
                 CASE
-                    WHEN SALARY_MIN_ANNUAL > 500000 OR SALARY_MAX_ANNUAL > 500000 THEN TRUE  -- Over $500K
+                    WHEN SALARY_MIN_ANNUAL > 2000000 OR SALARY_MAX_ANNUAL > 2000000 THEN TRUE  -- Over $2M
                     WHEN SALARY_MIN_ANNUAL < 15000 OR SALARY_MAX_ANNUAL < 15000 THEN TRUE    -- Under $15K
                     WHEN SALARY_MAX_ANNUAL / SALARY_MIN_ANNUAL > 3 THEN TRUE                 -- Range too wide
                     ELSE FALSE
