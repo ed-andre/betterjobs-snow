@@ -5,8 +5,8 @@ from .jobs import (
     # supabase_transport_job,
     # discovery_and_transport_job
 )
-from .assets.bamboohr_jobs_discovery import alpha_partitions
 from datetime import datetime
+from dagster_betterjobs.partitions import company_alpha_partitions as alpha_partitions
 
 # @schedule(
 #     cron_schedule="0 0 * * *",  # Run daily at midnight

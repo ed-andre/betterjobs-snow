@@ -27,15 +27,16 @@ from dagster import (
     Definitions,
     static_partitioned_config
 )
-from dagster_betterjobs.assets.bamboohr_jobs_discovery import alpha_partitions as bamboo_partitions_def
-from dagster_betterjobs.assets.greenhouse_jobs_discovery import alpha_partitions as greenhouse_partitions_def
-from dagster_betterjobs.assets.workday_jobs_discovery import alpha_partitions as workday_partitions_def
-from dagster_betterjobs.assets.smartrecruiters_jobs_discovery import alpha_partitions as smartrecruiters_partitions_def
-from dagster_betterjobs.assets.icims_jobs_discovery import alpha_partitions as icims_partitions_def
+from dagster_betterjobs.partitions import company_alpha_partitions
 import os
 
-# Use bamboo_partitions_def for alpha_partitions
-alpha_partitions = bamboo_partitions_def
+# All discovery assets now use the same universal partitions
+alpha_partitions = company_alpha_partitions
+bamboo_partitions_def = company_alpha_partitions
+greenhouse_partitions_def = company_alpha_partitions
+workday_partitions_def = company_alpha_partitions
+smartrecruiters_partitions_def = company_alpha_partitions
+icims_partitions_def = company_alpha_partitions  # need to refactor icims once implemented
 
 # Create partitioned configs for each platform
 @static_partitioned_config(partition_keys=bamboo_partitions_def.get_partition_keys())

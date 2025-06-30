@@ -9,7 +9,7 @@ import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 from dagster import (
     asset, AssetExecutionContext, Config, get_dagster_logger,
-    MetadataValue, AssetMaterialization, StaticPartitionsDefinition,
+    MetadataValue, AssetMaterialization,
     Definitions, define_asset_job
 )
 
@@ -18,16 +18,13 @@ from dagster_betterjobs.transformations.dynamic_lookback import (
     DynamicLookbackConfig,
     get_batch_lookback_periods
 )
+from dagster_betterjobs.partitions import (
+    company_alpha_partitions,
+    build_discovery_company_filter
+)
 from ..utils.schema_utils import ensure_object_exists
 
 logger = get_dagster_logger()
-
-# Partition companies alphabetically A-Z + numeric + other
-alpha_partitions = StaticPartitionsDefinition([
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
-    "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
-    "0-9", "other"
-])
 
 class SmartRecruitersJobsDiscoveryConfig(Config):
     """Configuration parameters for SmartRecruiters job discovery."""
@@ -53,7 +50,7 @@ class SmartRecruitersJobsDiscoveryConfig(Config):
     kinds={"API", "snowflake", "python"},
     required_resource_keys={"snowflake"},
     deps=["snowflake_master_company_urls"],
-    partitions_def=alpha_partitions
+    partitions_def=company_alpha_partitions
 )
 def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, config: SmartRecruitersJobsDiscoveryConfig) -> Dict:
     """
@@ -116,13 +113,8 @@ def smartrecruiters_company_jobs_discovery(context: AssetExecutionContext, confi
 
     context.log.info(f"Using checkpoint file: {checkpoint_file}")
 
-    # Build query for companies in current partition
-    if partition_key == "0-9":
-        letter_filter = "AND SUBSTRING(company_name, 1, 1) BETWEEN '0' AND '9'"
-    elif partition_key == "other":
-        letter_filter = "AND NOT (SUBSTRING(company_name, 1, 1) BETWEEN 'A' AND 'Z' OR SUBSTRING(company_name, 1, 1) BETWEEN 'a' AND 'z' OR SUBSTRING(company_name, 1, 1) BETWEEN '0' AND '9')"
-    else:
-        letter_filter = f"AND (company_name LIKE '{partition_key}%' OR company_name LIKE '{partition_key.lower()}%')"
+    # Build query for companies in current partition using universal filter
+    letter_filter = f"AND {build_discovery_company_filter(partition_key, 'company_name')}"
 
     query = f"""
     SELECT company_id, company_name, company_industry, career_url, ats_url
