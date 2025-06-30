@@ -305,8 +305,10 @@ def upsert_platform_data_to_snowflake(
             import pandas as pd
             platform_df_fixed['partition_date'] = pd.to_datetime(platform_df_fixed['partition_date']).dt.date
 
-        # Create temporary table for staging data
-        temp_table_name = f"temp_{platform}_jobs_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Create temporary table for staging data with unique identifier
+        import uuid
+        unique_id = str(uuid.uuid4()).replace('-', '')[:8]  # 8 chars for readability
+        temp_table_name = f"temp_{platform}_jobs_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{unique_id}"
 
         context.log.info(f"[{platform}] Uploading {len(platform_df)} jobs via temporary table")
 
