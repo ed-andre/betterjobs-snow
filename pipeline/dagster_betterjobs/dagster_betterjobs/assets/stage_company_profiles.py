@@ -178,7 +178,7 @@ def stage_company_profiles(
     """
     Transform raw company profiles to STAGE layer format.
 
-    This asset performs transformations from RAW.raw_company_profiles to STAGE.company_profiles:
+    This asset performs transformations from RAW.company_profiles to STAGE.company_profiles:
     - PROFILE_ID preserved for lineage tracking (BUG-014 fix)
     - COMPANY_ID generated using deterministic generate_company_id() function for consistency across pipeline
     - Company name standardization and cleaning
@@ -213,19 +213,19 @@ def stage_company_profiles(
         # This ensures consistent company_id generation across pipeline tables
         load_query = """
         SELECT DISTINCT
-            rcp.profile_id,
-            rcp.company_name,
-            rcp.company_industry,
-            rcp.employee_count_range,
-            rcp.city,
-            rcp.ingested_at,
+            cp.profile_id,
+            cp.company_name,
+            cp.company_industry,
+            cp.employee_count_range,
+            cp.city,
+            cp.ingested_at,
             mcu.platform
-        FROM raw_company_profiles rcp
+        FROM company_profiles cp
         LEFT JOIN master_company_urls mcu
-            ON TRIM(UPPER(rcp.company_name)) = TRIM(UPPER(mcu.company_name))
-        WHERE rcp.company_name IS NOT NULL
-        AND TRIM(rcp.company_name) != ''
-        ORDER BY rcp.ingested_at DESC
+            ON TRIM(UPPER(cp.company_name)) = TRIM(UPPER(mcu.company_name))
+        WHERE cp.company_name IS NOT NULL
+        AND TRIM(cp.company_name) != ''
+        ORDER BY cp.ingested_at DESC
         """
 
         cursor.execute(load_query)
