@@ -21,6 +21,7 @@ from dagster import (
     FreshnessPolicy
 )
 from dagster_snowflake import SnowflakeResource
+from ...utils.schema_utils import ensure_object_exists, execute_sql_file
 
 
 class LocationStandardizationConfig(Config):
@@ -54,63 +55,22 @@ def stage_llm_locations_raw_extraction(
 
     context.log.info("Starting location raw extraction process")
 
-    # Create the raw extraction view
-    create_view_sql = """
-    CREATE OR REPLACE VIEW BETTERJOBS_DB.STAGE.LOCATIONS_RAW_EXTRACTION AS
-    WITH OFFICE_LOCATIONS_EXPLODED AS (
-        -- Extract office locations from VARIANT array
-        SELECT
-            jle.JOB_UID,
-            'office_locations' as LOCATION_SOURCE,
-            'office' as LOCATION_TYPE,
-            TRIM(LOWER(LOCATION.VALUE::STRING)) as LOCATION_NAME_RAW,
-            LOCATION.VALUE::STRING as LOCATION_NAME_ORIGINAL
-        FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
-        LATERAL FLATTEN(input => jle.OFFICE_LOCATIONS) LOCATION
-        WHERE jle.OFFICE_LOCATIONS IS NOT NULL
-          AND IS_ARRAY(jle.OFFICE_LOCATIONS)
-          AND ARRAY_SIZE(jle.OFFICE_LOCATIONS) > 0
-          AND LOCATION.VALUE IS NOT NULL
-          AND LENGTH(TRIM(LOCATION.VALUE::STRING)) > 1
-          AND LOWER(TRIM(LOCATION.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '', 'unknown')
-    ),
-
-    BASE_LOCATIONS AS (
-        -- Include basic location from jobs_unified
-        SELECT
-            ju.JOB_UID,
-            'location_standardized' as LOCATION_SOURCE,
-            'standard' as LOCATION_TYPE,
-            TRIM(LOWER(ju.LOCATION_STANDARDIZED)) as LOCATION_NAME_RAW,
-            ju.LOCATION_STANDARDIZED as LOCATION_NAME_ORIGINAL
-                FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
-        WHERE ju.LOCATION_STANDARDIZED IS NOT NULL
-          AND LENGTH(TRIM(ju.LOCATION_STANDARDIZED)) > 1
-          AND LOWER(TRIM(ju.LOCATION_STANDARDIZED)) NOT IN ('null', 'none', 'n/a', '', 'no location found', 'unknown')
-    )
-
-    SELECT * FROM OFFICE_LOCATIONS_EXPLODED
-    UNION ALL
-    SELECT * FROM BASE_LOCATIONS;
-    """
-
+    # Ensure the raw extraction view exists using schema-as-code
     try:
+        view_name = ensure_object_exists("views/stage_locations_raw_extraction.sql", snowflake, context)
+        context.log.info(f"✅ SCHEMA-AS-CODE: {view_name} view ready")
+
         with snowflake.get_connection() as conn:
-            # Create the view
-            cursor = conn.cursor()
-            cursor.execute(create_view_sql)
-            cursor.close()
-            context.log.info("Successfully created LOCATIONS_RAW_EXTRACTION view")
 
             # Get extraction statistics
-            stats_sql = """
+            stats_sql = f"""
             SELECT
                 LOCATION_SOURCE,
                 LOCATION_TYPE,
                 COUNT(*) as RECORD_COUNT,
                 COUNT(DISTINCT LOCATION_NAME_RAW) as UNIQUE_LOCATIONS,
                 COUNT(DISTINCT JOB_UID) as JOBS_WITH_LOCATIONS
-            FROM BETTERJOBS_DB.STAGE.LOCATIONS_RAW_EXTRACTION
+            FROM {view_name}
             GROUP BY LOCATION_SOURCE, LOCATION_TYPE
             ORDER BY RECORD_COUNT DESC;
             """
@@ -170,14 +130,18 @@ def stage_countries_mapping(
     Note: Data is loaded from SQL configuration file insert_countries_mapping.sql
     """
 
-    context.log.info("Checking countries mapping")
+    context.log.info("Setting up countries mapping")
 
     try:
+        # Ensure countries mapping table exists using schema-as-code
+        table_name = ensure_object_exists("tables/stage_countries_mapping.sql", snowflake, context)
+        context.log.info(f"✅ SCHEMA-AS-CODE: {table_name} table ready")
+
         with snowflake.get_connection() as conn:
-            # Check if countries table exists and has data
-            check_sql = """
+            # Check if countries table has data
+            check_sql = f"""
             SELECT COUNT(*) as COUNTRY_COUNT
-            FROM BETTERJOBS_DB.STAGE.COUNTRIES_MAPPING;
+            FROM {table_name};
             """
 
             cursor = conn.cursor()
@@ -186,24 +150,40 @@ def stage_countries_mapping(
             cursor.close()
 
             if country_count == 0:
-                context.log.warning("No countries mapping found - data needs to be loaded from SQL file")
-                context.log.info("Please run: pipeline/sql/llm_standardization/insert_countries_mapping.sql")
+                context.log.info("🔧 POPULATING: Loading countries mapping data from SQL file")
 
-                return {
-                    "status": "warning",
-                    "country_count": 0,
-                    "message": "Countries data needs to be loaded from SQL configuration file"
-                }
+                # Execute the data population script
+                from pathlib import Path
+                project_root = Path(__file__).resolve().parents[5]
+                data_population_file = project_root / "pipeline" / "sql" / "data_population" / "insert_countries_mapping.sql"
+
+                result = execute_sql_file(snowflake, str(data_population_file), context)
+
+                if result["status"] == "error":
+                    context.log.error(f"Failed to populate countries data: {result['error']}")
+                    return {
+                        "status": "error",
+                        "country_count": 0,
+                        "message": f"Failed to load countries data: {result['error']}"
+                    }
+
+                context.log.info("✅ POPULATED: Successfully loaded countries mapping data")
+
+                # Re-check count after population
+                cursor = conn.cursor()
+                cursor.execute(check_sql)
+                country_count = cursor.fetchone()[0]
+                cursor.close()
 
             # Get country statistics
-            stats_sql = """
+            stats_sql = f"""
             SELECT
                 COUNT(*) as TOTAL_COUNTRIES,
                 COUNT(DISTINCT COUNTRY_NAME_COMMON) as UNIQUE_COMMON_NAMES,
                 COUNT(DISTINCT COUNTRY_CODE_ISO2) as UNIQUE_ISO2_CODES,
                 COUNT(CASE WHEN IS_MAJOR_TECH_HUB THEN 1 END) as TECH_HUB_COUNTRIES,
                 COUNT(DISTINCT REGION) as REGIONS
-            FROM BETTERJOBS_DB.STAGE.COUNTRIES_MAPPING;
+            FROM {table_name};
             """
 
             cursor = conn.cursor()
@@ -211,8 +191,8 @@ def stage_countries_mapping(
             stats = dict(zip([desc[0] for desc in cursor.description], cursor.fetchone()))
             cursor.close()
 
-            # Verify lookup views exist
-            views_check_sql = """
+            # Verify lookup views exist (these may be created by other assets)
+            views_check_sql = f"""
             SELECT
                 (SELECT COUNT(*) FROM BETTERJOBS_DB.STAGE.COUNTRIES_LOOKUP) as COUNTRIES_LOOKUP_COUNT,
                 (SELECT COUNT(*) FROM BETTERJOBS_DB.STAGE.LOCATION_PARSING_LOOKUP) as PARSING_LOOKUP_COUNT;
@@ -265,14 +245,18 @@ def stage_us_states_mapping(
     Note: Data is loaded from SQL configuration file insert_us_states_mapping.sql
     """
 
-    context.log.info("Checking US states mapping")
+    context.log.info("Setting up US states mapping")
 
     try:
+        # Ensure US states mapping table exists using schema-as-code
+        table_name = ensure_object_exists("tables/stage_us_states_mapping.sql", snowflake, context)
+        context.log.info(f"✅ SCHEMA-AS-CODE: {table_name} table ready")
+
         with snowflake.get_connection() as conn:
-            # Check if states table exists and has data
-            check_sql = """
+            # Check if states table has data
+            check_sql = f"""
             SELECT COUNT(*) as STATE_COUNT
-            FROM BETTERJOBS_DB.STAGE.US_STATES_MAPPING;
+            FROM {table_name};
             """
 
             cursor = conn.cursor()
@@ -281,23 +265,39 @@ def stage_us_states_mapping(
             cursor.close()
 
             if state_count == 0:
-                context.log.warning("No US states mapping found - data needs to be loaded from SQL file")
-                context.log.info("Please run: pipeline/sql/llm_standardization/insert_us_states_mapping.sql")
+                context.log.info("🔧 POPULATING: Loading US states mapping data from SQL file")
 
-                return {
-                    "status": "warning",
-                    "state_count": 0,
-                    "message": "US states data needs to be loaded from SQL configuration file"
-                }
+                # Execute the data population script
+                from pathlib import Path
+                project_root = Path(__file__).resolve().parents[5]
+                data_population_file = project_root / "pipeline" / "sql" / "data_population" / "insert_us_states_mapping.sql"
+
+                result = execute_sql_file(snowflake, str(data_population_file), context)
+
+                if result["status"] == "error":
+                    context.log.error(f"Failed to populate US states data: {result['error']}")
+                    return {
+                        "status": "error",
+                        "state_count": 0,
+                        "message": f"Failed to load US states data: {result['error']}"
+                    }
+
+                context.log.info("✅ POPULATED: Successfully loaded US states mapping data")
+
+                # Re-check count after population
+                cursor = conn.cursor()
+                cursor.execute(check_sql)
+                state_count = cursor.fetchone()[0]
+                cursor.close()
 
             # Get state statistics
-            stats_sql = """
+            stats_sql = f"""
             SELECT
                 COUNT(*) as TOTAL_STATES,
                 COUNT(DISTINCT STATE_NAME_FULL) as UNIQUE_FULL_NAMES,
                 COUNT(DISTINCT STATE_ABBREVIATION) as UNIQUE_ABBREVIATIONS,
                 COUNT(DISTINCT COUNTRY) as COUNTRIES
-            FROM BETTERJOBS_DB.STAGE.US_STATES_MAPPING;
+            FROM {table_name};
             """
 
             cursor = conn.cursor()
@@ -357,14 +357,18 @@ def stage_location_standardization_rules(
     Note: Rules are loaded from SQL configuration file insert_location_standardization_rules.sql
     """
 
-    context.log.info("Checking location standardization rules")
+    context.log.info("Setting up location standardization rules")
 
     try:
+        # Ensure location standardization rules table exists using schema-as-code
+        table_name = ensure_object_exists("tables/stage_location_standardization_rules.sql", snowflake, context)
+        context.log.info(f"✅ SCHEMA-AS-CODE: {table_name} table ready")
+
         with snowflake.get_connection() as conn:
-            # Check if rules table exists and has data
-            check_sql = """
+            # Check if rules table has data
+            check_sql = f"""
             SELECT COUNT(*) as RULE_COUNT
-            FROM BETTERJOBS_DB.STAGE.LOCATION_STANDARDIZATION_RULES;
+            FROM {table_name};
             """
 
             cursor = conn.cursor()
@@ -373,23 +377,39 @@ def stage_location_standardization_rules(
             cursor.close()
 
             if rule_count == 0:
-                context.log.warning("No location standardization rules found - rules need to be loaded from SQL file")
-                context.log.info("Please run: pipeline/sql/llm_standardization/insert_location_standardization_rules.sql")
+                context.log.info("🔧 POPULATING: Loading location standardization rules from SQL file")
 
-                return {
-                    "status": "warning",
-                    "rule_count": 0,
-                    "message": "Rules need to be loaded from SQL configuration file"
-                }
+                # Execute the data population script
+                from pathlib import Path
+                project_root = Path(__file__).resolve().parents[5]
+                data_population_file = project_root / "pipeline" / "sql" / "data_population" / "insert_location_standardization_rules.sql"
+
+                result = execute_sql_file(snowflake, str(data_population_file), context)
+
+                if result["status"] == "error":
+                    context.log.error(f"Failed to populate location standardization rules: {result['error']}")
+                    return {
+                        "status": "error",
+                        "rule_count": 0,
+                        "message": f"Failed to load location standardization rules: {result['error']}"
+                    }
+
+                context.log.info("✅ POPULATED: Successfully loaded location standardization rules")
+
+                # Re-check count after population
+                cursor = conn.cursor()
+                cursor.execute(check_sql)
+                rule_count = cursor.fetchone()[0]
+                cursor.close()
 
             # Get rule statistics
-            stats_sql = """
+            stats_sql = f"""
             SELECT
                 RULE_TYPE,
                 LOCATION_TYPE,
                 COUNT(*) as RULE_COUNT,
                 AVG(CONFIDENCE_SCORE) as AVG_CONFIDENCE
-            FROM BETTERJOBS_DB.STAGE.LOCATION_STANDARDIZATION_RULES
+            FROM {table_name}
             GROUP BY RULE_TYPE, LOCATION_TYPE
             ORDER BY RULE_COUNT DESC;
             """
@@ -442,12 +462,16 @@ def stage_locations_normalized(
 
     context.log.info("Starting location normalization process")
 
+    # Ensure locations normalized table exists using schema-as-code
+    table_name = ensure_object_exists("tables/stage_locations_normalized.sql", snowflake, context)
+    context.log.info(f"✅ SCHEMA-AS-CODE: {table_name} table ready")
+
     # Clear existing data
-    clear_sql = "DELETE FROM BETTERJOBS_DB.STAGE.LOCATIONS_NORMALIZED;"
+    clear_sql = f"DELETE FROM {table_name};"
 
     # Populate normalized locations
-    populate_sql = """
-    INSERT INTO BETTERJOBS_DB.STAGE.LOCATIONS_NORMALIZED (
+    populate_sql = f"""
+    INSERT INTO {table_name} (
         LOCATION_ID,
         LOCATION_NAME,
         LOCATION_NAME_CLEAN,
@@ -624,12 +648,12 @@ def stage_locations_normalized(
             context.log.info("Populating normalized locations")
             cursor = conn.cursor()
             # Replace parameters in SQL
-            final_sql = populate_sql.replace(':min_frequency', '2').replace(':confidence_threshold', '0.7')
+            final_sql = populate_sql.replace(':min_frequency', '1').replace(':confidence_threshold', '0.5')
             cursor.execute(final_sql)
             cursor.close()
 
             # Get statistics
-            stats_sql = """
+            stats_sql = f"""
             SELECT
                 COUNT(*) as TOTAL_LOCATIONS,
                 COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.8 THEN 1 END) as HIGH_CONFIDENCE_LOCATIONS,
@@ -639,7 +663,7 @@ def stage_locations_normalized(
                 COUNT(CASE WHEN IS_REMOTE_FRIENDLY THEN 1 END) as REMOTE_FRIENDLY_LOCATIONS,
                 AVG(CONFIDENCE_SCORE) as AVG_CONFIDENCE,
                 AVG(FREQUENCY_COUNT) as AVG_FREQUENCY
-            FROM BETTERJOBS_DB.STAGE.LOCATIONS_NORMALIZED;
+            FROM {table_name};
             """
 
             cursor = conn.cursor()
@@ -694,12 +718,16 @@ def stage_job_locations_bridge(
 
     context.log.info("Starting job-location bridge creation")
 
+    # Ensure job locations bridge table exists using schema-as-code
+    bridge_table_name = ensure_object_exists("tables/stage_job_locations_bridge.sql", snowflake, context)
+    context.log.info(f"✅ SCHEMA-AS-CODE: {bridge_table_name} table ready")
+
     # Clear existing data
-    clear_sql = "DELETE FROM BETTERJOBS_DB.STAGE.JOB_LOCATIONS_BRIDGE;"
+    clear_sql = f"DELETE FROM {bridge_table_name};"
 
     # Populate bridge table
-    populate_sql = """
-    INSERT INTO BETTERJOBS_DB.STAGE.JOB_LOCATIONS_BRIDGE (
+    populate_sql = f"""
+    INSERT INTO {bridge_table_name} (
         BRIDGE_ID,
         JOB_UID,
         LOCATION_ID,
@@ -792,12 +820,12 @@ def stage_job_locations_bridge(
             context.log.info("Populating job-location bridge")
             cursor = conn.cursor()
             # Replace parameters in SQL
-            final_sql = populate_sql.replace(':confidence_threshold', '0.7')
+            final_sql = populate_sql.replace(':confidence_threshold', '0.5')
             cursor.execute(final_sql)
             cursor.close()
 
             # Get statistics
-            stats_sql = """
+            stats_sql = f"""
             SELECT
                 COUNT(*) as TOTAL_RELATIONSHIPS,
                 COUNT(DISTINCT JOB_UID) as JOBS_WITH_LOCATIONS,
@@ -805,7 +833,7 @@ def stage_job_locations_bridge(
                 COUNT(CASE WHEN OVERALL_CONFIDENCE >= 0.8 THEN 1 END) as HIGH_CONFIDENCE_RELATIONSHIPS,
                 COUNT(CASE WHEN NEEDS_REVIEW THEN 1 END) as NEEDS_REVIEW,
                 AVG(OVERALL_CONFIDENCE) as AVG_CONFIDENCE
-            FROM BETTERJOBS_DB.STAGE.JOB_LOCATIONS_BRIDGE;
+            FROM {bridge_table_name};
             """
 
             cursor = conn.cursor()
@@ -814,12 +842,12 @@ def stage_job_locations_bridge(
             cursor.close()
 
             # Get breakdown by source and facility type
-            breakdown_sql = """
+            breakdown_sql = f"""
             SELECT
                 LOCATION_SOURCE,
                 WORK_ARRANGEMENT,
                 COUNT(*) as RELATIONSHIP_COUNT
-            FROM BETTERJOBS_DB.STAGE.JOB_LOCATIONS_BRIDGE
+            FROM {bridge_table_name}
             GROUP BY LOCATION_SOURCE, WORK_ARRANGEMENT
             ORDER BY RELATIONSHIP_COUNT DESC;
             """

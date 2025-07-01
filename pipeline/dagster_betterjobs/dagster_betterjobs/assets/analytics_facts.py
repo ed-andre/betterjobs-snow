@@ -181,7 +181,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 
                 -- Location dimension lookup (fixed: use correct column name)
                 LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_LOCATION dl
-                    ON jd.LOCATION_STANDARDIZED = dl.LOCATION_NAME
+                    ON LOWER(jd.LOCATION_STANDARDIZED) = LOWER(dl.LOCATION_NAME) -- BUG-020: All FACT_JOB_POSTINGS Records Show LOCATION_KEY as LOC_UNKNOWN
 
                 -- Job family dimension lookup (complete match to prevent duplicates)
                 LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_JOB_FAMILY djf
