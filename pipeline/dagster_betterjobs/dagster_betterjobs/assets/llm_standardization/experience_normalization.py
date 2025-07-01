@@ -416,7 +416,7 @@ def stage_experience_normalized(context: AssetExecutionContext, snowflake: Snowf
           AND ere.TECHNOLOGY_NAME IS NOT NULL
           AND TRY_CAST(ere.EXPERIENCE_VALUE::STRING AS INTEGER) > 0
         GROUP BY ere.TECHNOLOGY_NAME
-        HAVING COUNT(DISTINCT ere.JOB_UID) >= 2  -- Only include tech with 2+ job mentions
+        HAVING COUNT(DISTINCT ere.JOB_UID) >= 1  -- Only include tech with 1+ job mentions
         """)
 
         tech_count = cursor.rowcount

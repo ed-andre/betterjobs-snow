@@ -24,6 +24,7 @@ import json
 import pandas as pd
 from typing import Dict, Any, List
 from datetime import datetime
+from pathlib import Path
 
 from dagster import (
     asset,
@@ -32,17 +33,22 @@ from dagster import (
 )
 
 from dagster_betterjobs.resources import SnowflakeResource
+from dagster_betterjobs.utils.schema_utils import ensure_object_exists, execute_sql_file
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[5]  # Go up 6 levels to project root
 
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
-    description="Extract and flatten keywords from LLM VARIANT columns",
+    description="Extract and flatten keywords from LLM VARIANT columns using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
     Extract all keywords from VARIANT columns and flatten into workable format.
+
+    Uses schema-as-code approach with canonical view definition from SQL file.
 
     Processes:
     - industry_keywords: Business domain and industry classification terms from arrays
@@ -62,65 +68,27 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
         "industry_keywords_count": 0,
         "role_type_keywords_count": 0,
         "unique_jobs_processed": 0,
-        "extraction_errors": 0
+        "extraction_errors": 0,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔍 Starting LLM keywords raw extraction...")
+        context.log.info("🔍 Starting LLM keywords raw extraction with schema-as-code...")
 
-        # Create or replace the raw extraction view
-        extraction_sql = """
-        CREATE OR REPLACE VIEW BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION AS
-        WITH INDUSTRY_KEYWORDS_EXPLODED AS (
-            -- Extract industry classification keywords from array
-            SELECT
-                jle.JOB_UID,
-                'industry_keywords' as KEYWORD_SOURCE,
-                'industry' as KEYWORD_TYPE,
-                TRIM(LOWER(KEYWORD.VALUE::STRING)) as KEYWORD_TEXT_RAW,
-                KEYWORD.VALUE::STRING as KEYWORD_TEXT_ORIGINAL
-            FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
-            LATERAL FLATTEN(input => jle.INDUSTRY_KEYWORDS) KEYWORD
-            WHERE jle.INDUSTRY_KEYWORDS IS NOT NULL
-              AND IS_ARRAY(jle.INDUSTRY_KEYWORDS)
-              AND ARRAY_SIZE(jle.INDUSTRY_KEYWORDS) > 0
-              AND KEYWORD.VALUE IS NOT NULL
-              AND LENGTH(TRIM(KEYWORD.VALUE::STRING)) > 1
-              AND LOWER(TRIM(KEYWORD.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '')
-        ),
-
-        ROLE_TYPE_EXPLODED AS (
-            -- Extract role type from single string value (not an array)
-            SELECT
-                jle.JOB_UID,
-                'role_type' as KEYWORD_SOURCE,
-                'role_type' as KEYWORD_TYPE,
-                TRIM(LOWER(jle.ROLE_TYPE)) as KEYWORD_TEXT_RAW,
-                jle.ROLE_TYPE as KEYWORD_TEXT_ORIGINAL
-            FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle
-            WHERE jle.ROLE_TYPE IS NOT NULL
-              AND LENGTH(TRIM(jle.ROLE_TYPE)) > 1
-              AND LOWER(TRIM(jle.ROLE_TYPE)) NOT IN ('null', 'none', 'n/a', '')
-        )
-
-        SELECT * FROM INDUSTRY_KEYWORDS_EXPLODED
-        UNION ALL
-        SELECT * FROM ROLE_TYPE_EXPLODED
-        """
-
-        cursor.execute(extraction_sql)
-        context.log.info("✅ Created KEYWORDS_RAW_EXTRACTION view")
+        # 🔧 SCHEMA-AS-CODE: Ensure view exists using canonical SQL file
+        view_name = ensure_object_exists("views/stage_keywords_raw_extraction.sql", snowflake, context)
+        context.log.info(f"✅ Keywords raw extraction view ready: {view_name}")
 
         # Get extraction statistics
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_keywords,
             COUNT(DISTINCT JOB_UID) as unique_jobs,
             COUNT(CASE WHEN KEYWORD_SOURCE = 'industry_keywords' THEN 1 END) as industry_count,
             COUNT(CASE WHEN KEYWORD_SOURCE = 'role_type' THEN 1 END) as role_type_count
-        FROM BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION
+        FROM {view_name}
         """)
 
         result = cursor.fetchone()
@@ -133,9 +101,9 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
             })
 
         # Sample some data for validation
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT KEYWORD_SOURCE, KEYWORD_TYPE, KEYWORD_TEXT_ORIGINAL, COUNT(*) as frequency
-        FROM BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION
+        FROM {view_name}
         GROUP BY KEYWORD_SOURCE, KEYWORD_TYPE, KEYWORD_TEXT_ORIGINAL
         ORDER BY frequency DESC
         LIMIT 20
@@ -147,11 +115,12 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
             stats["top_keywords_sample"] = [dict(zip(columns, row)) for row in sample_data]
 
         context.log.info(f"""
-        🎯 Keywords Raw Extraction Complete:
+        🎯 Keywords Raw Extraction Complete (Schema-as-Code):
         • Total Keywords Extracted: {stats['keywords_extracted']:,}
         • Unique Jobs Processed: {stats['unique_jobs_processed']:,}
         • Industry Keywords: {stats['industry_keywords_count']:,}
         • Role Type Keywords: {stats['role_type_keywords_count']:,}
+        • View: {view_name}
         """)
 
         # Add metadata for Dagster UI
@@ -160,6 +129,8 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
             "unique_jobs_processed": MetadataValue.int(stats["unique_jobs_processed"]),
             "industry_keywords_count": MetadataValue.int(stats["industry_keywords_count"]),
             "role_type_keywords_count": MetadataValue.int(stats["role_type_keywords_count"]),
+            "schema_as_code": MetadataValue.bool(True),
+            "view_name": MetadataValue.text(view_name),
             "top_keywords_sample": MetadataValue.json(stats.get("top_keywords_sample", []))
         })
 
@@ -177,13 +148,15 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
 
 
 @asset(
-    description="Maintain keyword standardization rules and aliases",
+    description="Maintain keyword standardization rules and aliases using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_keywords_standardization_rules(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
     Create and maintain comprehensive keyword standardization rules.
+
+    Uses schema-as-code approach with canonical table definition from SQL file.
 
     Features:
     - Industry keyword standardization (FinTech -> Financial Technology)
@@ -199,44 +172,50 @@ def stage_keywords_standardization_rules(context: AssetExecutionContext, snowfla
     stats = {
         "update_timestamp": datetime.now().isoformat(),
         "rules_loaded": 0,
-        "rules_errors": 0
+        "rules_errors": 0,
+        "data_populated": False,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔧 Setting up keyword standardization rules...")
+        context.log.info("🔧 Setting up keyword standardization rules with schema-as-code...")
 
-        # Create keyword standardization rules table if not exists
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES (
-            RULE_ID STRING PRIMARY KEY,
-            PATTERN STRING NOT NULL,                         -- Pattern to match (regex or exact)
-            STANDARDIZED_TEXT STRING NOT NULL,               -- Standard form
-            KEYWORD_TYPE STRING NOT NULL,                    -- industry, role_type, company_stage, etc.
-            KEYWORD_CATEGORY STRING,                         -- specific category within type
-            CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
-            RULE_TYPE STRING DEFAULT 'exact_match',          -- exact_match, regex_pattern, fuzzy_match
-            IS_ACTIVE BOOLEAN DEFAULT TRUE,
-            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-        ) CLUSTER BY (KEYWORD_TYPE, IS_ACTIVE)
-        """
+        # 🔧 SCHEMA-AS-CODE: Ensure table exists using canonical SQL file
+        table_name = ensure_object_exists("tables/stage_keyword_standardization_rules.sql", snowflake, context)
+        context.log.info(f"✅ Keyword standardization rules table ready: {table_name}")
 
-        cursor.execute(create_table_sql)
-        context.log.info("✅ Created/verified KEYWORD_STANDARDIZATION_RULES table")
+        # Always reload data to ensure latest rules from SQL file
+        context.log.info("🔄 Clearing existing data and reloading keyword standardization rules...")
 
-        # Load standardization rules from SQL file
-        # This will be populated from the SQL configuration files
-        context.log.info("📋 Keyword standardization rules table ready for configuration")
+        # Clear existing data
+        cursor.execute(f"DELETE FROM {table_name}")
+        context.log.info("🗑️ Cleared existing keyword standardization rules")
+
+        # Execute data population script using standardized utility
+        insert_file_path = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_keyword_standardization_rules.sql"
+
+        if insert_file_path.exists():
+            result = execute_sql_file(snowflake, str(insert_file_path), context)
+
+            if result["status"] == "success":
+                context.log.info(f"✅ Successfully executed keyword standardization rules data population")
+                stats["data_populated"] = True
+            else:
+                context.log.error(f"❌ Failed to populate keyword standardization rules: {result.get('error', 'Unknown error')}")
+                stats["data_populated"] = False
+        else:
+            context.log.warning(f"Data population file not found: {insert_file_path}")
+            stats["data_populated"] = False
 
         # Get current rule count
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_rules,
             COUNT(CASE WHEN IS_ACTIVE THEN 1 END) as active_rules,
             COUNT(DISTINCT KEYWORD_TYPE) as types_covered
-        FROM BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES
+        FROM {table_name}
         """)
 
         result = cursor.fetchone()
@@ -248,17 +227,22 @@ def stage_keywords_standardization_rules(context: AssetExecutionContext, snowfla
             })
 
         context.log.info(f"""
-        🎯 Keyword Standardization Rules Status:
+        🎯 Keyword Standardization Rules Status (Schema-as-Code):
         • Total Rules: {stats['rules_loaded']:,}
         • Active Rules: {stats.get('active_rules', 0):,}
         • Types Covered: {stats.get('types_covered', 0):,}
+        • Table: {table_name}
+        • Data Populated: {stats['data_populated']}
         """)
 
         # Add metadata for Dagster UI
         context.add_output_metadata({
             "rules_loaded": MetadataValue.int(stats["rules_loaded"]),
             "active_rules": MetadataValue.int(stats.get("active_rules", 0)),
-            "types_covered": MetadataValue.int(stats.get("types_covered", 0))
+            "types_covered": MetadataValue.int(stats.get("types_covered", 0)),
+            "schema_as_code": MetadataValue.bool(True),
+            "table_name": MetadataValue.text(table_name),
+            "data_populated": MetadataValue.bool(stats["data_populated"])
         })
 
         return stats
@@ -275,13 +259,15 @@ def stage_keywords_standardization_rules(context: AssetExecutionContext, snowfla
 
 
 @asset(
-    description="Manage keyword type and category classifications",
+    description="Manage keyword type and category classifications with data population",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_keyword_type_mapping(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
     Create and maintain keyword type and category classifications.
+
+    Uses schema-as-code approach with canonical table definition and data population.
 
     Classification Categories:
     - Industry Types: technology, healthcare, finance, retail, manufacturing
@@ -297,45 +283,51 @@ def stage_keyword_type_mapping(context: AssetExecutionContext, snowflake: Snowfl
     stats = {
         "update_timestamp": datetime.now().isoformat(),
         "mappings_loaded": 0,
-        "mapping_errors": 0
+        "mapping_errors": 0,
+        "data_populated": False,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🗂️ Setting up keyword type mappings...")
+        context.log.info("🗂️ Setting up keyword type mappings with schema-as-code...")
 
-        # Create keyword type mapping table if not exists
-        create_table_sql = """
-        CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING (
-            MAPPING_ID STRING PRIMARY KEY,
-            KEYWORD_TEXT STRING NOT NULL,                    -- Keyword to classify
-            KEYWORD_TYPE STRING NOT NULL,                    -- industry, role_type, company_stage, etc.
-            KEYWORD_CATEGORY STRING NOT NULL,                -- specific category within type
-            CATEGORY_DESCRIPTION STRING,                     -- Human-readable description
-            CONFIDENCE_SCORE FLOAT DEFAULT 1.0,             -- Confidence in classification
-            BUSINESS_RELEVANCE STRING DEFAULT 'medium',     -- high, medium, low
-            IS_ACTIVE BOOLEAN DEFAULT TRUE,
-            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-        ) CLUSTER BY (KEYWORD_TYPE, IS_ACTIVE)
-        """
+        # 🔧 SCHEMA-AS-CODE: Ensure table exists using canonical SQL file
+        table_name = ensure_object_exists("tables/stage_keyword_type_mapping.sql", snowflake, context)
+        context.log.info(f"✅ Keyword type mapping table ready: {table_name}")
 
-        cursor.execute(create_table_sql)
-        context.log.info("✅ Created/verified KEYWORD_TYPE_MAPPING table")
+        # Always reload data to ensure latest mappings from SQL file
+        context.log.info("🔄 Clearing existing data and reloading keyword type mappings...")
 
-        # Load type mappings from SQL file
-        # This will be populated from the SQL configuration files
-        context.log.info("📋 Keyword type mapping table ready for configuration")
+        # Clear existing data
+        cursor.execute(f"DELETE FROM {table_name}")
+        context.log.info("🗑️ Cleared existing keyword type mappings")
+
+        # Execute data population script using standardized utility
+        insert_file_path = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_keyword_type_mappings.sql"
+
+        if insert_file_path.exists():
+            result = execute_sql_file(snowflake, str(insert_file_path), context)
+
+            if result["status"] == "success":
+                context.log.info(f"✅ Successfully executed keyword type mappings data population")
+                stats["data_populated"] = True
+            else:
+                context.log.error(f"❌ Failed to populate keyword type mappings: {result.get('error', 'Unknown error')}")
+                stats["data_populated"] = False
+        else:
+            context.log.warning(f"Data population file not found: {insert_file_path}")
+            stats["data_populated"] = False
 
         # Get current mapping count
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_mappings,
             COUNT(CASE WHEN IS_ACTIVE THEN 1 END) as active_mappings,
             COUNT(DISTINCT KEYWORD_TYPE) as types_defined,
             COUNT(DISTINCT KEYWORD_CATEGORY) as categories_defined
-        FROM BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING
+        FROM {table_name}
         """)
 
         result = cursor.fetchone()
@@ -348,11 +340,13 @@ def stage_keyword_type_mapping(context: AssetExecutionContext, snowflake: Snowfl
             })
 
         context.log.info(f"""
-        🎯 Keyword Type Mapping Status:
+        🎯 Keyword Type Mapping Status (Schema-as-Code):
         • Total Mappings: {stats['mappings_loaded']:,}
         • Active Mappings: {stats.get('active_mappings', 0):,}
         • Types Defined: {stats.get('types_defined', 0):,}
         • Categories Defined: {stats.get('categories_defined', 0):,}
+        • Table: {table_name}
+        • Data Populated: {stats['data_populated']}
         """)
 
         # Add metadata for Dagster UI
@@ -360,7 +354,10 @@ def stage_keyword_type_mapping(context: AssetExecutionContext, snowflake: Snowfl
             "mappings_loaded": MetadataValue.int(stats["mappings_loaded"]),
             "active_mappings": MetadataValue.int(stats.get("active_mappings", 0)),
             "types_defined": MetadataValue.int(stats.get("types_defined", 0)),
-            "categories_defined": MetadataValue.int(stats.get("categories_defined", 0))
+            "categories_defined": MetadataValue.int(stats.get("categories_defined", 0)),
+            "schema_as_code": MetadataValue.bool(True),
+            "table_name": MetadataValue.text(table_name),
+            "data_populated": MetadataValue.bool(stats["data_populated"])
         })
 
         return stats
@@ -378,13 +375,15 @@ def stage_keyword_type_mapping(context: AssetExecutionContext, snowflake: Snowfl
 
 @asset(
     deps=["stage_llm_keywords_raw_extraction", "stage_keywords_standardization_rules", "stage_keyword_type_mapping"],
-    description="Create normalized keywords master table with market intelligence",
+    description="Create normalized keywords master table with market intelligence using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_keywords_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
     Apply standardization rules and create keywords master table.
+
+    Uses schema-as-code approach for table creation and dependency management.
 
     Processing:
     - Apply standardization rules with confidence scoring
@@ -406,21 +405,30 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         "role_type_keywords": 0,
         "high_confidence_keywords": 0,
         "low_confidence_keywords": 0,
-        "processing_errors": 0
+        "processing_errors": 0,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔄 Starting keywords normalization process...")
+        context.log.info("🔄 Starting keywords normalization process with schema-as-code...")
+
+        # 🔧 SCHEMA-AS-CODE: Ensure all required objects exist
+        normalized_table = ensure_object_exists("tables/stage_keywords_normalized.sql", snowflake, context)
+        extraction_view = ensure_object_exists("views/stage_keywords_raw_extraction.sql", snowflake, context)
+        rules_table = ensure_object_exists("tables/stage_keyword_standardization_rules.sql", snowflake, context)
+        mapping_table = ensure_object_exists("tables/stage_keyword_type_mapping.sql", snowflake, context)
+
+        context.log.info(f"✅ All keyword normalization objects ready")
 
         # Clear existing normalized data to rebuild
-        cursor.execute("DELETE FROM BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED")
+        cursor.execute(f"DELETE FROM {normalized_table}")
         context.log.info("🗑️ Cleared existing KEYWORDS_NORMALIZED data")
 
         # Normalize and populate keywords
-        normalization_sql = """
-        INSERT INTO BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED (
+        normalization_sql = f"""
+        INSERT INTO {normalized_table} (
             KEYWORD_ID,
             KEYWORD_TEXT,
             KEYWORD_TEXT_CLEAN,
@@ -457,15 +465,15 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
                 -- Business relevance
                 MAX(COALESCE(ktm.BUSINESS_RELEVANCE, 'medium')) as business_relevance
 
-            FROM BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION kre
+            FROM {extraction_view} kre
 
             -- Left join with standardization rules
-            LEFT JOIN BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES ksr
+            LEFT JOIN {rules_table} ksr
                 ON LOWER(kre.KEYWORD_TEXT_RAW) = LOWER(ksr.PATTERN)
                 AND ksr.IS_ACTIVE = TRUE
 
             -- Left join with type mappings
-            LEFT JOIN BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING ktm
+            LEFT JOIN {mapping_table} ktm
                 ON LOWER(kre.KEYWORD_TEXT_RAW) = LOWER(ktm.KEYWORD_TEXT)
                 AND ktm.IS_ACTIVE = TRUE
 
@@ -504,7 +512,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         context.log.info(f"✅ Inserted {keywords_inserted:,} normalized keywords")
 
         # Get normalization statistics
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_keywords,
             COUNT(CASE WHEN KEYWORD_TYPE = 'industry' THEN 1 END) as industry_count,
@@ -513,7 +521,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             COUNT(CASE WHEN CONFIDENCE_SCORE < 0.5 THEN 1 END) as low_confidence,
             AVG(CONFIDENCE_SCORE) as avg_confidence,
             AVG(FREQUENCY_COUNT) as avg_frequency
-        FROM BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED
+        FROM {normalized_table}
         """)
 
         result = cursor.fetchone()
@@ -529,9 +537,9 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             })
 
         # Sample normalized keywords for validation
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT KEYWORD_TYPE, KEYWORD_TEXT, FREQUENCY_COUNT, CONFIDENCE_SCORE
-        FROM BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED
+        FROM {normalized_table}
         ORDER BY FREQUENCY_COUNT DESC
         LIMIT 15
         """)
@@ -542,7 +550,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             stats["top_normalized_keywords"] = [dict(zip(columns, row)) for row in sample_data]
 
         context.log.info(f"""
-        🎯 Keywords Normalization Complete:
+        🎯 Keywords Normalization Complete (Schema-as-Code):
         • Keywords Normalized: {stats['keywords_normalized']:,}
         • Industry Keywords: {stats['industry_keywords']:,}
         • Role Type Keywords: {stats['role_type_keywords']:,}
@@ -550,6 +558,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         • Low Confidence: {stats['low_confidence_keywords']:,}
         • Average Confidence: {stats.get('avg_confidence_score', 0):.3f}
         • Average Frequency: {stats.get('avg_frequency', 0):.1f}
+        • Table: {normalized_table}
         """)
 
         # Add metadata for Dagster UI
@@ -561,6 +570,8 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             "low_confidence_keywords": MetadataValue.int(stats["low_confidence_keywords"]),
             "avg_confidence_score": MetadataValue.float(stats.get("avg_confidence_score", 0.0)),
             "avg_frequency": MetadataValue.float(stats.get("avg_frequency", 0.0)),
+            "schema_as_code": MetadataValue.bool(True),
+            "normalized_table": MetadataValue.text(normalized_table),
             "top_normalized_keywords": MetadataValue.json(stats.get("top_normalized_keywords", []))
         })
 
@@ -579,13 +590,15 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
 
 @asset(
     deps=["stage_keywords_normalized", "stage_jobs_unified"],
-    description="Create job-keyword relationships with context tracking",
+    description="Create job-keyword relationships with context tracking using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
     Map jobs to normalized keywords with rich context.
+
+    Uses schema-as-code approach for table creation and dependency management.
 
     Features:
     - Source tracking (industry_keywords vs role_type_keywords)
@@ -605,21 +618,30 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
         "role_type_relationships": 0,
         "high_confidence_relationships": 0,
         "unique_jobs_with_keywords": 0,
-        "processing_errors": 0
+        "processing_errors": 0,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔗 Starting job-keywords bridge creation...")
+        context.log.info("🔗 Starting job-keywords bridge creation with schema-as-code...")
+
+        # 🔧 SCHEMA-AS-CODE: Ensure all required objects exist
+        bridge_table = ensure_object_exists("tables/stage_job_keywords_bridge.sql", snowflake, context)
+        extraction_view = ensure_object_exists("views/stage_keywords_raw_extraction.sql", snowflake, context)
+        normalized_table = ensure_object_exists("tables/stage_keywords_normalized.sql", snowflake, context)
+        rules_table = ensure_object_exists("tables/stage_keyword_standardization_rules.sql", snowflake, context)
+
+        context.log.info(f"✅ All job-keywords bridge objects ready")
 
         # Clear existing bridge data to rebuild
-        cursor.execute("DELETE FROM BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE")
+        cursor.execute(f"DELETE FROM {bridge_table}")
         context.log.info("🗑️ Cleared existing JOB_KEYWORDS_BRIDGE data")
 
         # Create job-keyword relationships - Following skills bridge pattern
-        bridge_sql = """
-        INSERT INTO BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE (
+        bridge_sql = f"""
+        INSERT INTO {bridge_table} (
             BRIDGE_ID,
             JOB_UID,
             KEYWORD_ID,
@@ -640,10 +662,10 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
                 COALESCE(lle.LLM_OVERALL_CONFIDENCE, 0.8) as extraction_confidence,
                 kn.CONFIDENCE_SCORE as standardization_confidence,
                 kr.PATTERN as matched_pattern
-            FROM BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION kre
-            JOIN BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES kr
+            FROM {extraction_view} kre
+            JOIN {rules_table} kr
                 ON LOWER(kre.KEYWORD_TEXT_RAW) = LOWER(kr.PATTERN)
-            JOIN BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED kn
+            JOIN {normalized_table} kn
                 ON kn.KEYWORD_TEXT = kr.STANDARDIZED_TEXT
                 AND kn.KEYWORD_TYPE = kre.KEYWORD_TYPE
             LEFT JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED lle
@@ -663,15 +685,15 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
                 COALESCE(lle.LLM_OVERALL_CONFIDENCE, 0.8) as extraction_confidence,
                 kn.CONFIDENCE_SCORE as standardization_confidence,
                 NULL as matched_pattern
-            FROM BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION kre
-            JOIN BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED kn
+            FROM {extraction_view} kre
+            JOIN {normalized_table} kn
                 ON kn.KEYWORD_TEXT = kre.KEYWORD_TEXT_ORIGINAL
                 AND kn.KEYWORD_TYPE = kre.KEYWORD_TYPE
             LEFT JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED lle
                 ON kre.JOB_UID = lle.JOB_UID
             JOIN BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
                 ON kre.JOB_UID = ju.JOB_UID
-            LEFT JOIN BETTERJOBS_DB.STAGE.KEYWORD_STANDARDIZATION_RULES kr
+            LEFT JOIN {rules_table} kr
                 ON LOWER(kre.KEYWORD_TEXT_RAW) = LOWER(kr.PATTERN)
             WHERE ju.IS_ENGLISH = TRUE
               AND kr.PATTERN IS NULL  -- Only get non-standardized matches
@@ -695,7 +717,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
         context.log.info(f"✅ Created {relationships_created:,} job-keyword relationships")
 
         # Get bridge statistics
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_relationships,
             COUNT(CASE WHEN KEYWORD_SOURCE = 'industry_keywords' THEN 1 END) as industry_relationships,
@@ -703,7 +725,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
             COUNT(CASE WHEN OVERALL_CONFIDENCE >= 0.8 THEN 1 END) as high_confidence,
             COUNT(DISTINCT JOB_UID) as unique_jobs,
             AVG(OVERALL_CONFIDENCE) as avg_confidence
-        FROM BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE
+        FROM {bridge_table}
         """)
 
         result = cursor.fetchone()
@@ -718,13 +740,13 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
             })
 
         # Calculate coverage metrics
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(DISTINCT ju.JOB_UID) as total_jobs,
             COUNT(DISTINCT jkb.JOB_UID) as jobs_with_keywords,
             ROUND((COUNT(DISTINCT jkb.JOB_UID)::FLOAT / COUNT(DISTINCT ju.JOB_UID)) * 100, 2) as coverage_percentage
         FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
-        LEFT JOIN BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE jkb ON ju.JOB_UID = jkb.JOB_UID
+        LEFT JOIN {bridge_table} jkb ON ju.JOB_UID = jkb.JOB_UID
         """)
 
         coverage_result = cursor.fetchone()
@@ -735,14 +757,14 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
             })
 
         # Sample relationships for validation
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             kn.KEYWORD_TYPE,
             kn.KEYWORD_TEXT,
             COUNT(*) as job_count,
             AVG(jkb.OVERALL_CONFIDENCE) as avg_confidence
-        FROM BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE jkb
-        JOIN BETTERJOBS_DB.STAGE.KEYWORDS_NORMALIZED kn ON jkb.KEYWORD_ID = kn.KEYWORD_ID
+        FROM {bridge_table} jkb
+        JOIN {normalized_table} kn ON jkb.KEYWORD_ID = kn.KEYWORD_ID
         GROUP BY kn.KEYWORD_TYPE, kn.KEYWORD_TEXT
         ORDER BY job_count DESC
         LIMIT 15
@@ -754,7 +776,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
             stats["top_keyword_relationships"] = [dict(zip(columns, row)) for row in sample_data]
 
         context.log.info(f"""
-        🎯 Job-Keywords Bridge Complete:
+        🎯 Job-Keywords Bridge Complete (Schema-as-Code):
         • Relationships Created: {stats['relationships_created']:,}
         • Industry Relationships: {stats['industry_relationships']:,}
         • Role Type Relationships: {stats['role_type_relationships']:,}
@@ -762,6 +784,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
         • Jobs with Keywords: {stats['unique_jobs_with_keywords']:,}
         • Coverage: {stats.get('coverage_percentage', 0):.1f}%
         • Average Confidence: {stats.get('avg_confidence_score', 0):.3f}
+        • Bridge Table: {bridge_table}
         """)
 
         # Add metadata for Dagster UI
@@ -773,6 +796,8 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
             "unique_jobs_with_keywords": MetadataValue.int(stats["unique_jobs_with_keywords"]),
             "coverage_percentage": MetadataValue.float(stats.get("coverage_percentage", 0.0)),
             "avg_confidence_score": MetadataValue.float(stats.get("avg_confidence_score", 0.0)),
+            "schema_as_code": MetadataValue.bool(True),
+            "bridge_table": MetadataValue.text(bridge_table),
             "top_keyword_relationships": MetadataValue.json(stats.get("top_keyword_relationships", []))
         })
 

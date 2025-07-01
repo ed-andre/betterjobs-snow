@@ -178,6 +178,113 @@ INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
 ('ktm_099', 'devops', 'function_type', 'engineering', 'DevOps and infrastructure', 1.0, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
 ('ktm_100', 'security', 'function_type', 'security', 'Security and compliance roles', 1.0, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
+-- Government and Public Sector Mappings
+-- ===================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_101', 'government', 'industry', 'government_public_sector', 'Government and public administration', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_102', 'public sector', 'industry', 'government_public_sector', 'Public sector organizations', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_103', 'public service', 'industry', 'government_public_sector', 'Public service entities', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_104', 'defense', 'industry', 'government_public_sector', 'Defense and military sector', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_105', 'military', 'industry', 'government_public_sector', 'Military services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_106', 'law enforcement', 'industry', 'government_public_sector', 'Law enforcement agencies', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_107', 'public safety', 'industry', 'government_public_sector', 'Public safety services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Transportation and Logistics Mappings
+-- =====================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_108', 'transportation', 'industry', 'transportation_logistics', 'Transportation services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_109', 'logistics', 'industry', 'transportation_logistics', 'Logistics and supply chain', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_110', 'supply chain', 'industry', 'transportation_logistics', 'Supply chain management', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_111', 'aviation', 'industry', 'transportation_logistics', 'Aviation and aerospace', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_112', 'shipping', 'industry', 'transportation_logistics', 'Shipping and freight', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_113', 'trucking', 'industry', 'transportation_logistics', 'Trucking and road transport', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_114', 'maritime', 'industry', 'transportation_logistics', 'Maritime and sea transport', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Energy and Utilities Mappings
+-- =============================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_115', 'energy', 'industry', 'energy_utilities', 'Energy sector', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_116', 'utilities', 'industry', 'energy_utilities', 'Public utilities', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_117', 'renewable energy', 'industry', 'energy_utilities', 'Renewable energy sources', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_118', 'oil & gas', 'industry', 'energy_utilities', 'Oil and gas industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_119', 'solar', 'industry', 'energy_utilities', 'Solar energy', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_120', 'wind energy', 'industry', 'energy_utilities', 'Wind energy', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_121', 'power generation', 'industry', 'energy_utilities', 'Power generation', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Construction, Real Estate & Skilled Trades Mappings
+-- ===================================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_122', 'construction', 'industry', 'construction_real_estate', 'Construction industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_123', 'real estate', 'industry', 'construction_real_estate', 'Real estate services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_124', 'architecture', 'industry', 'construction_real_estate', 'Architecture and design', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_125', 'civil engineering', 'industry', 'construction_real_estate', 'Civil engineering', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_126', 'hvac', 'industry', 'skilled_trades', 'HVAC services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_127', 'plumbing', 'industry', 'skilled_trades', 'Plumbing services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_128', 'electrical', 'industry', 'skilled_trades', 'Electrical services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Manufacturing and Industrial Mappings
+-- =====================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_129', 'manufacturing', 'industry', 'manufacturing_industrial', 'Manufacturing sector', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_130', 'industrial', 'industry', 'manufacturing_industrial', 'Industrial sector', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_131', 'automotive', 'industry', 'manufacturing_industrial', 'Automotive industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_132', 'aerospace', 'industry', 'manufacturing_industrial', 'Aerospace industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_133', 'chemicals', 'industry', 'manufacturing_industrial', 'Chemical manufacturing', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_134', 'electronics', 'industry', 'manufacturing_industrial', 'Electronics manufacturing', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Hospitality & Tourism Mappings
+-- ================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_135', 'hospitality', 'industry', 'hospitality_tourism', 'Hospitality industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_136', 'tourism', 'industry', 'hospitality_tourism', 'Tourism industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_137', 'food service', 'industry', 'hospitality_tourism', 'Food and beverage services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_138', 'restaurant', 'industry', 'hospitality_tourism', 'Restaurant industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_139', 'hotel', 'industry', 'hospitality_tourism', 'Hotel and lodging', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Professional Services Mappings
+-- ================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_140', 'professional services', 'industry', 'professional_services', 'Professional services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_141', 'consulting', 'industry', 'professional_services', 'Consulting services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_142', 'legal', 'industry', 'professional_services', 'Legal services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_143', 'accounting', 'industry', 'professional_services', 'Accounting services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_144', 'human resources', 'industry', 'professional_services', 'Human resources services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_145', 'recruitment', 'industry', 'professional_services', 'Recruitment and staffing', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Media & Entertainment Mappings (extending existing)
+-- ====================================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_146', 'broadcasting', 'industry', 'media', 'Broadcasting and media production', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_147', 'publishing', 'industry', 'media', 'Publishing industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_148', 'film', 'industry', 'media', 'Film production', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_149', 'music', 'industry', 'media', 'Music industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Health, Wellness & Fitness Mappings
+-- =====================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_150', 'wellness', 'industry', 'health_wellness', 'Health and wellness services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_151', 'fitness', 'industry', 'health_wellness', 'Fitness industry', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_152', 'mental health', 'industry', 'health_wellness', 'Mental health services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_153', 'nutrition', 'industry', 'health_wellness', 'Nutrition and dietary services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_154', 'personal care', 'industry', 'health_wellness', 'Personal care products and services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Agriculture Mappings
+-- ====================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_155', 'agriculture', 'industry', 'agriculture', 'Agriculture and farming', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_156', 'farming', 'industry', 'agriculture', 'Farming and crop production', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_157', 'horticulture', 'industry', 'agriculture', 'Horticulture services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_158', 'livestock', 'industry', 'agriculture', 'Livestock and animal farming', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Non-Profit & Social Services Mappings
+-- =======================================
+INSERT INTO BETTERJOBS_DB.STAGE.KEYWORD_TYPE_MAPPING VALUES
+('ktm_159', 'nonprofit', 'industry', 'non_profit', 'Non-profit organizations', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_160', 'social services', 'industry', 'non_profit', 'Social services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_161', 'philanthropy', 'industry', 'non_profit', 'Philanthropic organizations', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_162', 'charity', 'industry', 'non_profit', 'Charitable organizations', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('ktm_163', 'community services', 'industry', 'non_profit', 'Community support services', 0.9, 'high', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
 -- Summary Information
 SELECT
     'Keyword Type Mappings Loaded' as status,

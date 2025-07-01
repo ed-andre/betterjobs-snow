@@ -14,6 +14,7 @@ Phase 3 Assets:
 
 from typing import Dict, Any, List
 import json
+from pathlib import Path
 from dagster import (
     asset,
     AssetExecutionContext,
@@ -23,6 +24,8 @@ from dagster import (
 from dagster_snowflake import SnowflakeResource
 from ...utils.schema_utils import ensure_object_exists, execute_sql_file
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[5]
 
 class LocationStandardizationConfig(Config):
     """Configuration for location standardization processing"""
@@ -153,9 +156,7 @@ def stage_countries_mapping(
                 context.log.info("🔧 POPULATING: Loading countries mapping data from SQL file")
 
                 # Execute the data population script
-                from pathlib import Path
-                project_root = Path(__file__).resolve().parents[5]
-                data_population_file = project_root / "pipeline" / "sql" / "data_population" / "insert_countries_mapping.sql"
+                data_population_file = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_countries_mapping.sql"
 
                 result = execute_sql_file(snowflake, str(data_population_file), context)
 
@@ -268,9 +269,7 @@ def stage_us_states_mapping(
                 context.log.info("🔧 POPULATING: Loading US states mapping data from SQL file")
 
                 # Execute the data population script
-                from pathlib import Path
-                project_root = Path(__file__).resolve().parents[5]
-                data_population_file = project_root / "pipeline" / "sql" / "data_population" / "insert_us_states_mapping.sql"
+                data_population_file = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_us_states_mapping.sql"
 
                 result = execute_sql_file(snowflake, str(data_population_file), context)
 
@@ -380,9 +379,7 @@ def stage_location_standardization_rules(
                 context.log.info("🔧 POPULATING: Loading location standardization rules from SQL file")
 
                 # Execute the data population script
-                from pathlib import Path
-                project_root = Path(__file__).resolve().parents[5]
-                data_population_file = project_root / "pipeline" / "sql" / "data_population" / "insert_location_standardization_rules.sql"
+                data_population_file = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_location_standardization_rules.sql"
 
                 result = execute_sql_file(snowflake, str(data_population_file), context)
 
@@ -766,8 +763,6 @@ def stage_job_locations_bridge(
             WHEN ln.LOCATION_TYPE = 'remote' THEN 'remote'
             ELSE 'on_site'  -- default
         END as work_arrangement,
-
-
 
         -- Confidence scoring
         0.9 as extraction_confidence,  -- High confidence for LLM extracted data
