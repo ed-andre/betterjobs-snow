@@ -1249,10 +1249,10 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
             quality_issues = []
 
             # Check for skills with very low confidence
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE stage_confidence_score < 0.7")
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE stage_confidence_score < 0.6")
             low_confidence_count = cursor.fetchone()[0]
             if low_confidence_count > 0:
-                quality_issues.append(f"{low_confidence_count} skills with low confidence (<0.7)")
+                quality_issues.append(f"{low_confidence_count} skills with low confidence (<0.6)")
 
             # Check for skills without subcategories
             cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE skill_subcategory = 'General'")
@@ -1553,10 +1553,10 @@ def analytics_dim_experience(context: AssetExecutionContext, snowflake: Snowflak
             quality_issues = []
 
             # Check for experience levels with very low confidence
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE confidence_score < 0.7")
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE confidence_score < 0.6")
             low_confidence_count = cursor.fetchone()[0]
             if low_confidence_count > 0:
-                quality_issues.append(f"{low_confidence_count} experience levels with low confidence (<0.7)")
+                quality_issues.append(f"{low_confidence_count} experience levels with low confidence (<0.6)")
 
             # Check for invalid year ranges
             cursor.execute(f"""

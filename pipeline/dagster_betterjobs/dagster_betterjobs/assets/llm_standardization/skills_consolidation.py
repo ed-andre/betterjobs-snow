@@ -16,6 +16,7 @@ import pandas as pd
 from typing import Dict, Any, List
 from datetime import datetime
 from pathlib import Path
+import hashlib
 
 from dagster import (
     asset,
@@ -211,8 +212,18 @@ def stage_skills_consolidated(context: AssetExecutionContext, snowflake: Snowfla
         # Prepare staging data with consolidation metadata
         staging_data = []
         for canonical_name, consolidated_skill in consolidated_skills.items():
-            # Generate unique consolidated skill ID
-            consolidated_skill_id = f"consolidated_skill_{hash(canonical_name) % 100000:05d}"
+            # Generate deterministic, collision-resistant consolidated skill ID
+            # Hash is based on canonical name lower-cased and trimmed for stability
+            canonical_key = canonical_name.strip().lower()
+            skill_hash = hashlib.sha256(canonical_key.encode("utf-8")).hexdigest()[:12]
+            consolidated_skill_id = f"CSK_{skill_hash}"
+
+            # In rare event of collision (extremely unlikely with 12-char SHA-256),
+            # ensure uniqueness within current run by appending incremental suffix.
+            while any(r[0] == consolidated_skill_id for r in staging_data):
+                # Append last 2 chars from full hash length until unique
+                skill_hash += hashlib.sha256((canonical_key + skill_hash).encode("utf-8")).hexdigest()[:2]
+                consolidated_skill_id = f"CSK_{skill_hash}"
 
             # Determine consolidation method
             original_variant_count = len(consolidated_skill.original_variants)
