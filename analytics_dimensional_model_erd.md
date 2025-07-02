@@ -160,7 +160,6 @@ erDiagram
         string location_key FK
         string job_family_key FK
         string platform_key FK
-        string keyword_key FK
         string salary_key FK
         string job_uid "Degenerate Dimension"
         string job_title "Degenerate Dimension"
@@ -197,6 +196,20 @@ erDiagram
         boolean is_primary_requirement
         float extraction_confidence
         string technology_context
+        string processing_method
+        timestamp created_timestamp
+    }
+
+    JOB_KEYWORDS_BRIDGE {
+        string keywords_bridge_key PK
+        string job_posting_key FK
+        string keyword_key FK
+        float keyword_weight
+        boolean is_primary_keyword
+        integer keyword_position
+        float extraction_confidence
+        string keyword_type
+        string keyword_category
         string processing_method
         timestamp created_timestamp
     }
@@ -320,12 +333,13 @@ erDiagram
     FACT_JOB_POSTINGS ||--o{ DIM_LOCATION : "located_in"
     FACT_JOB_POSTINGS ||--o{ DIM_JOB_FAMILY : "categorized_as"
     FACT_JOB_POSTINGS ||--o{ DIM_PLATFORM : "sourced_from"
-    FACT_JOB_POSTINGS ||--o{ DIM_KEYWORDS : "tagged_with_primary_keyword"
     FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_range"
 
     %% Bridge table relationships
     FACT_JOB_POSTINGS ||--o{ JOB_EXPERIENCE_BRIDGE : "has_experience_requirements"
     JOB_EXPERIENCE_BRIDGE }o--|| DIM_EXPERIENCE : "maps_to_experience"
+    FACT_JOB_POSTINGS ||--o{ JOB_KEYWORDS_BRIDGE : "has_keyword_requirements"
+    JOB_KEYWORDS_BRIDGE }o--|| DIM_KEYWORDS : "maps_to_keyword"
 
     %% Skills Fact Table Relationships
     FACT_SKILLS_DEMAND_WEEKLY ||--o{ DIM_SKILLS : "analyzes_skill"
@@ -348,8 +362,7 @@ erDiagram
     %% Salary Bridge Relationship (Many-to-Many through STAGE layer)
     FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_via_bridge"
 
-    %% Keywords Bridge Relationship (Many-to-Many through STAGE layer)
-    FACT_JOB_POSTINGS ||--o{ DIM_KEYWORDS : "tagged_with_keywords_via_bridge"
+    
 ```
 
 ## Key Design Features
@@ -369,8 +382,8 @@ erDiagram
 ### Key Relationships
 1. **Job Postings ↔ Skills**: Many-to-many relationship through `STAGE.JOB_SKILLS_BRIDGE`
 2. **Job Postings ↔ Salary**: Many-to-many relationship through `STAGE.JOB_SALARY_BRIDGE`
-3. **Job Postings ↔ Experience**: Many-to-many relationship through `STAGE.JOB_EXPERIENCE_BRIDGE`
-4. **Job Postings ↔ Keywords**: Many-to-many relationship through `STAGE.JOB_KEYWORDS_BRIDGE`
+3. **Job Postings ↔ Experience**: Many-to-many relationship through `ANALYTICS.JOB_EXPERIENCE_BRIDGE`
+4. **Job Postings ↔ Keywords**: Many-to-many relationship through `ANALYTICS.JOB_KEYWORDS_BRIDGE`
 5. **Company SCD Type 2**: Historical tracking of company changes over time
 6. **Time-based Partitioning**: All fact tables partitioned by date for performance
 

@@ -22,7 +22,6 @@ This document tracks planned enhancements and architectural improvements for the
 
     - ENHANCEMENT-025: SQL-as-Files for Database Platform Migration (Snowflake to BigQuery)
     - ENHANCEMENT-026: Analytics Skills Bridge - Enable Multi-Skill Job Analysis
-    - ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
 
 - **IN PROGRESS**
 
@@ -33,6 +32,7 @@ This document tracks planned enhancements and architectural improvements for the
     - ENHANCEMENT-022: Salary Normalization Pipeline - Critical Data Quality Fix
     - ENHANCEMENT-023 Intelligent Skills Variant Consolidation - Linguistic-Based Pluralization
     - ENHANCEMENT-024 Analytics Job Experience Bridge - Resolve Many-to-Many Duplication
+    - ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
     - ENHANCEMENT-028: Schema Drift Detection Asset - Automated View Validation
     - ENHANCEMENT-029: Hash-Based View Update Management - Schema-as-Code Evolution
     - ENHANCEMENT-030: Infrastructure Setup Assets - Proper Error Handling and Failure Propagation
@@ -1799,11 +1799,12 @@ HAVING COUNT(CASE WHEN is_primary_skill THEN 1 END) != 1;  -- Should return 0 ro
 
 ## ENHANCEMENT-027: Analytics Keywords Bridge - Enable Multi-Keyword Job Analysis
 
-**Status:** 📋 **Planned**
+**Status:** ✅ **Complete**
 **Priority:** High
 **Component:** Analytics Layer - Dimensional Modeling
 **Date Planned:** 2025-06-24 (Post-Enhancement 026 completion)
-**Estimated Effort:** 1.5 days
+**Date Completed:** 2025-07-02
+**Actual Effort:** 1.5 days
 **Business Impact:** Medium-High - Enables comprehensive keyword analysis without losing data
 
 ### Problem Statement
@@ -2041,9 +2042,9 @@ ORDER BY posting_month DESC, keyword_usage_count DESC;
 
 2. **Keyword Weighting Strategy**:
    - High confidence (≥0.9): Weight 1.0
-   - Medium confidence (0.7-0.89): Weight 0.8
-   - Lower confidence: Weight 0.6
-   - Below 0.6: Excluded from bridge
+   - Medium confidence (=0.51-0.89): Weight 0.8
+   - Lower confidence: Weight 0.5
+   - Below 0.5: Excluded from bridge
 
 3. **Quality Filtering**:
    - Include keywords with confidence ≥0.6

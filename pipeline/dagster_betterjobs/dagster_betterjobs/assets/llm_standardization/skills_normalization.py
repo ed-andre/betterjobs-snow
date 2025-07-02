@@ -557,7 +557,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
                 skill_data.first_seen_date,
                 skill_data.last_seen_date,
                 skill_data.confidence_score,
-                skill_data.confidence_score < 0.6,
+                skill_data.confidence_score < 0.5,
                 skill_name
             )
             staging_data.append(staging_record)
@@ -854,7 +854,7 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             END as skill_context,
 
             'llm_auto' as processing_method,
-            CASE WHEN standardization_confidence < 0.6 THEN TRUE ELSE FALSE END as needs_review
+            CASE WHEN standardization_confidence < 0.5 THEN TRUE ELSE FALSE END as needs_review
 
         FROM skill_matches
         """

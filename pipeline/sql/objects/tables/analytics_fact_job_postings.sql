@@ -8,7 +8,6 @@ CREATE TABLE ANALYTICS.FACT_JOB_POSTINGS (
     LOCATION_KEY STRING,
     JOB_FAMILY_KEY STRING,
     PLATFORM_KEY STRING,
-    KEYWORD_KEY STRING,                  -- FK to DIM_KEYWORDS (primary keyword for job)
     SALARY_KEY STRING,                   -- FK to DIM_SALARY (normalized salary data)
 
     -- Degenerate Dimensions

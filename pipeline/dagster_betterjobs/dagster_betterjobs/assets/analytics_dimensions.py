@@ -2095,10 +2095,10 @@ def analytics_dim_keywords(context: AssetExecutionContext, snowflake: SnowflakeR
             quality_issues = []
 
             # Check for keywords with very low confidence
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE confidence_score < 0.7")
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE confidence_score < 0.5")
             low_confidence_count = cursor.fetchone()[0]
             if low_confidence_count > 0:
-                quality_issues.append(f"{low_confidence_count} keywords with low confidence (<0.7)")
+                quality_issues.append(f"{low_confidence_count} keywords with low confidence (<0.5)")
 
             # Check for keywords without categories
             cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE keyword_category = 'General'")

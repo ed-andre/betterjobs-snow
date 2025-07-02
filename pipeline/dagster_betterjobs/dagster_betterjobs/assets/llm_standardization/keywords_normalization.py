@@ -86,6 +86,7 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
         SELECT
             COUNT(*) as total_keywords,
             COUNT(DISTINCT JOB_UID) as unique_jobs,
+            COUNT(CASE WHEN KEYWORD_SOURCE = 'primary_keywords' THEN 1 END) as primary_count,
             COUNT(CASE WHEN KEYWORD_SOURCE = 'industry_keywords' THEN 1 END) as industry_count,
             COUNT(CASE WHEN KEYWORD_SOURCE = 'role_type' THEN 1 END) as role_type_count
         FROM {view_name}
@@ -96,8 +97,9 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
             stats.update({
                 "keywords_extracted": result[0],
                 "unique_jobs_processed": result[1],
-                "industry_keywords_count": result[2],
-                "role_type_keywords_count": result[3]
+                "primary_keywords_count": result[2],
+                "industry_keywords_count": result[3],
+                "role_type_keywords_count": result[4]
             })
 
         # Sample some data for validation
@@ -118,6 +120,7 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
         🎯 Keywords Raw Extraction Complete (Schema-as-Code):
         • Total Keywords Extracted: {stats['keywords_extracted']:,}
         • Unique Jobs Processed: {stats['unique_jobs_processed']:,}
+        • Primary Keywords: {stats['primary_keywords_count']:,}
         • Industry Keywords: {stats['industry_keywords_count']:,}
         • Role Type Keywords: {stats['role_type_keywords_count']:,}
         • View: {view_name}
@@ -127,6 +130,7 @@ def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake:
         context.add_output_metadata({
             "keywords_extracted": MetadataValue.int(stats["keywords_extracted"]),
             "unique_jobs_processed": MetadataValue.int(stats["unique_jobs_processed"]),
+            "primary_keywords_count": MetadataValue.int(stats["primary_keywords_count"]),
             "industry_keywords_count": MetadataValue.int(stats["industry_keywords_count"]),
             "role_type_keywords_count": MetadataValue.int(stats["role_type_keywords_count"]),
             "schema_as_code": MetadataValue.bool(True),
@@ -401,6 +405,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
     stats = {
         "processing_timestamp": datetime.now().isoformat(),
         "keywords_normalized": 0,
+        "primary_keywords": 0,
         "industry_keywords": 0,
         "role_type_keywords": 0,
         "high_confidence_keywords": 0,
@@ -480,7 +485,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             WHERE LENGTH(kre.KEYWORD_TEXT_RAW) >= 2  -- Filter out single characters
 
             GROUP BY 1, 2, 3
-            HAVING COUNT(*) >= 2  -- Only include keywords appearing at least twice
+            HAVING COUNT(*) >= 1  -- Keeping all keywords for now even if they appear only once
         )
 
         SELECT
@@ -515,6 +520,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         cursor.execute(f"""
         SELECT
             COUNT(*) as total_keywords,
+            COUNT(CASE WHEN KEYWORD_TYPE = 'primary' THEN 1 END) as primary_count,
             COUNT(CASE WHEN KEYWORD_TYPE = 'industry' THEN 1 END) as industry_count,
             COUNT(CASE WHEN KEYWORD_TYPE = 'role_type' THEN 1 END) as role_type_count,
             COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.8 THEN 1 END) as high_confidence,
@@ -529,13 +535,14 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         if result:
             stats.update({
                 "keywords_normalized": result[0],
-                "industry_keywords": result[1],
-                "role_type_keywords": result[2],
-                "high_confidence_keywords": result[3],
-                "medium_confidence_keywords": result[4],
-                "low_confidence_keywords": result[5],
-                "avg_confidence_score": float(result[6]) if result[6] else 0.0,
-                "avg_frequency": float(result[7]) if result[7] else 0.0
+                "primary_keywords": result[1],
+                "industry_keywords": result[2],
+                "role_type_keywords": result[3],
+                "high_confidence_keywords": result[4],
+                "medium_confidence_keywords": result[5],
+                "low_confidence_keywords": result[6],
+                "avg_confidence_score": float(result[7]) if result[7] else 0.0,
+                "avg_frequency": float(result[8]) if result[8] else 0.0
             })
 
         # Sample normalized keywords for validation
@@ -554,6 +561,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         context.log.info(f"""
         🎯 Keywords Normalization Complete (Schema-as-Code):
         • Keywords Normalized: {stats['keywords_normalized']:,}
+        • Primary Keywords: {stats['primary_keywords']:,}
         • Industry Keywords: {stats['industry_keywords']:,}
         • Role Type Keywords: {stats['role_type_keywords']:,}
         • High Confidence: {stats['high_confidence_keywords']:,}
@@ -567,6 +575,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         # Add metadata for Dagster UI
         context.add_output_metadata({
             "keywords_normalized": MetadataValue.int(stats["keywords_normalized"]),
+            "primary_keywords": MetadataValue.int(stats["primary_keywords"]),
             "industry_keywords": MetadataValue.int(stats["industry_keywords"]),
             "role_type_keywords": MetadataValue.int(stats["role_type_keywords"]),
             "high_confidence_keywords": MetadataValue.int(stats["high_confidence_keywords"]),
@@ -617,6 +626,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
     stats = {
         "processing_timestamp": datetime.now().isoformat(),
         "relationships_created": 0,
+        "primary_relationships": 0,
         "industry_relationships": 0,
         "role_type_relationships": 0,
         "high_confidence_relationships": 0,
@@ -723,6 +733,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
         cursor.execute(f"""
         SELECT
             COUNT(*) as total_relationships,
+            COUNT(CASE WHEN KEYWORD_SOURCE = 'primary_keywords' THEN 1 END) as primary_relationships,
             COUNT(CASE WHEN KEYWORD_SOURCE = 'industry_keywords' THEN 1 END) as industry_relationships,
             COUNT(CASE WHEN KEYWORD_SOURCE = 'role_type' THEN 1 END) as role_type_relationships,
             COUNT(CASE WHEN OVERALL_CONFIDENCE >= 0.8 THEN 1 END) as high_confidence,
@@ -735,11 +746,12 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
         if result:
             stats.update({
                 "relationships_created": result[0],
-                "industry_relationships": result[1],
-                "role_type_relationships": result[2],
-                "high_confidence_relationships": result[3],
-                "unique_jobs_with_keywords": result[4],
-                "avg_confidence_score": float(result[5]) if result[5] else 0.0
+                "primary_relationships": result[1],
+                "industry_relationships": result[2],
+                "role_type_relationships": result[3],
+                "high_confidence_relationships": result[4],
+                "unique_jobs_with_keywords": result[5],
+                "avg_confidence_score": float(result[6]) if result[6] else 0.0
             })
 
         # Calculate coverage metrics
@@ -781,6 +793,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
         context.log.info(f"""
         🎯 Job-Keywords Bridge Complete (Schema-as-Code):
         • Relationships Created: {stats['relationships_created']:,}
+        • Primary Relationships: {stats['primary_relationships']:,}
         • Industry Relationships: {stats['industry_relationships']:,}
         • Role Type Relationships: {stats['role_type_relationships']:,}
         • High Confidence: {stats['high_confidence_relationships']:,}
@@ -793,6 +806,7 @@ def stage_job_keywords_bridge(context: AssetExecutionContext, snowflake: Snowfla
         # Add metadata for Dagster UI
         context.add_output_metadata({
             "relationships_created": MetadataValue.int(stats["relationships_created"]),
+            "primary_relationships": MetadataValue.int(stats["primary_relationships"]),
             "industry_relationships": MetadataValue.int(stats["industry_relationships"]),
             "role_type_relationships": MetadataValue.int(stats["role_type_relationships"]),
             "high_confidence_relationships": MetadataValue.int(stats["high_confidence_relationships"]),

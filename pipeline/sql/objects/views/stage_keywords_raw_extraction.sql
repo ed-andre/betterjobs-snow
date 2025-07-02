@@ -5,7 +5,25 @@ CREATE VIEW IF NOT EXISTS BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION(
 	KEYWORD_TEXT_RAW,
 	KEYWORD_TEXT_ORIGINAL
 ) as
-        WITH INDUSTRY_KEYWORDS_EXPLODED AS (
+        WITH PRIMARY_KEYWORDS_EXPLODED AS (
+            -- Extract primary keywords from array
+            SELECT
+                jle.JOB_UID,
+                'primary_keywords' as KEYWORD_SOURCE,
+                'primary' as KEYWORD_TYPE,
+                TRIM(LOWER(KEYWORD.VALUE::STRING)) as KEYWORD_TEXT_RAW,
+                KEYWORD.VALUE::STRING as KEYWORD_TEXT_ORIGINAL
+            FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
+            LATERAL FLATTEN(input => jle.PRIMARY_KEYWORDS) KEYWORD
+            WHERE jle.PRIMARY_KEYWORDS IS NOT NULL
+              AND IS_ARRAY(jle.PRIMARY_KEYWORDS)
+              AND ARRAY_SIZE(jle.PRIMARY_KEYWORDS) > 0
+              AND KEYWORD.VALUE IS NOT NULL
+              AND LENGTH(TRIM(KEYWORD.VALUE::STRING)) > 1
+              AND LOWER(TRIM(KEYWORD.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '')
+        ),
+
+        INDUSTRY_KEYWORDS_EXPLODED AS (
             -- Extract industry classification keywords from array
             SELECT
                 jle.JOB_UID,
@@ -37,6 +55,8 @@ CREATE VIEW IF NOT EXISTS BETTERJOBS_DB.STAGE.KEYWORDS_RAW_EXTRACTION(
               AND LOWER(TRIM(jle.ROLE_TYPE)) NOT IN ('null', 'none', 'n/a', '')
         )
 
+        SELECT * FROM PRIMARY_KEYWORDS_EXPLODED
+        UNION ALL
         SELECT * FROM INDUSTRY_KEYWORDS_EXPLODED
         UNION ALL
         SELECT * FROM ROLE_TYPE_EXPLODED;
