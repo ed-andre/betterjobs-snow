@@ -21,12 +21,16 @@ This document tracks planned enhancements and architectural improvements for the
 
 - **OPEN**
 
+    - None
+
 - **IN PROGRESS**
 
-  - **COMPLETED**
+    - None
 
+- **COMPLETED**
+
+    - ENHANCEMENT-034: Remove PRIMARY_KEYWORDS from Skill Normalization Process
     - ENHANCEMENT-033: Refactor Discovery Assets to Use Universal Partitions Module
-
     - ENHANCEMENT-031: Partition LLM Enrichment Assets for Improved Performance and Scalability
     - ENHANCEMENT-032: Enrich Job Search Results with LLM-Processed Data
 
@@ -503,52 +507,6 @@ def stage_jobs_llm_enriched_coordinator(
 
     finally:
         conn.close()
-
-def aggregate_partition_statistics(conn, context: AssetExecutionContext) -> Dict[str, Any]:
-    """Aggregate statistics from all platform partitions."""
-    cursor = conn.cursor()
-
-    try:
-        # Get platform-level aggregation
-        platforms = ["bamboohr", "greenhouse", "workday", "smartrecruiters"]
-        platform_stats = {}
-
-        for platform in platforms:
-            cursor.execute(f"""
-            SELECT
-                COUNT(*) as total_jobs,
-                COUNT(DISTINCT j.COMPANY_ID) as companies_processed,
-                AVG(llm.LLM_OVERALL_CONFIDENCE) as avg_confidence,
-                COUNT(CASE WHEN llm.LLM_NEEDS_MANUAL_REVIEW THEN 1 END) as needs_review_count
-            FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED j
-            INNER JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED llm ON j.JOB_UID = llm.JOB_UID
-            WHERE j.PLATFORM = '{platform}'
-                AND llm.LLM_PROCESSING_TIMESTAMP >= CURRENT_DATE()
-            """)
-
-            result = cursor.fetchone()
-            if result:
-                platform_stats[platform] = {
-                    "total_jobs": result[0],
-                    "companies_processed": result[1],
-                    "avg_confidence": float(result[2]) if result[2] else 0.0,
-                    "needs_review_count": result[3]
-                }
-
-        # Calculate cross-platform totals
-        total_stats = {
-            "total_jobs_enriched": sum(stats["total_jobs"] for stats in platform_stats.values()),
-            "total_companies_processed": sum(stats["companies_processed"] for stats in platform_stats.values()),
-            "overall_avg_confidence": sum(stats["avg_confidence"] for stats in platform_stats.values()) / len(platforms),
-            "total_needs_review": sum(stats["needs_review_count"] for stats in platform_stats.values()),
-            "platform_breakdown": platform_stats
-        }
-
-        context.log.info(f"📊 Aggregated {total_stats['total_jobs_enriched']} enriched jobs across {len(platforms)} platforms")
-        return total_stats
-
-    finally:
-        cursor.close()
 ```
 
 **Step 3.2: Enhanced Monitoring and Metadata**
@@ -1798,4 +1756,390 @@ def test_refactored_assets_identical_behavior():
 - 🔄 **Universal Consistency**: Identical partition behavior across discovery and LLM assets
 - 🛠️ **Single Source of Truth**: All partition logic managed in one place (`partitions.py`)
 - 📈 **Maintainability**: Future partition updates only need to be made in one location
+
+---
+
+## ENHANCEMENT-034: Remove PRIMARY_KEYWORDS from Skill Normalization Process
+
+**Status:** ✅ **Completed**
+**Priority:** Medium
+**Component:** Skills Normalization Pipeline (`stage_skills_raw_extraction.sql` and `skills_normalization.py`)
+**Date Planned:** 2025-07-02
+**Date Completed:** 2025-07-02
+**Estimated Effort:** 0.5 days
+**Actual Effort:** 0.5 days
+**Business Impact:** Medium - Improve data separation and reduce processing overhead
+
+### Problem Statement
+**Data Processing Overlap**: The skills normalization process currently includes `PRIMARY_KEYWORDS` extraction and processing, which creates unnecessary duplication since keywords are now properly handled by the dedicated keyword normalization pipeline.
+
+**Current Issues**:
+- `stage_skills_raw_extraction.sql` extracts `PRIMARY_KEYWORDS` as skills with category 'keyword'
+- `stage_skills_normalized` asset processes keywords alongside technical and soft skills
+- `stage_job_skills_bridge` creates relationships between jobs and keywords as skills
+- Duplicate processing creates confusion between skills and keywords in analytics
+- Unnecessary computational overhead from processing the same data twice
+
+**Evidence of Duplication**:
+```sql
+-- In stage_skills_raw_extraction.sql (lines 45-55):
+PRIMARY_KEYWORDS_EXPLODED AS (
+    -- Extract primary keywords as skills
+    SELECT
+        jle.JOB_UID,
+        'primary_keywords' as SKILL_SOURCE,
+        'keyword' as SKILL_CATEGORY,  -- Treating keywords as skills
+        TRIM(LOWER(KEYWORD.VALUE::STRING)) as SKILL_NAME_RAW,
+        KEYWORD.VALUE::STRING as SKILL_NAME_ORIGINAL
+    FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
+    LATERAL FLATTEN(input => jle.PRIMARY_KEYWORDS) KEYWORD
+    WHERE jle.PRIMARY_KEYWORDS IS NOT NULL
+      AND KEYWORD.VALUE IS NOT NULL
+      AND LENGTH(TRIM(KEYWORD.VALUE::STRING)) > 1
+      AND LOWER(TRIM(KEYWORD.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '')
+)
+```
+
+**Parallel Keyword Processing**:
+- `stage_keywords_raw_extraction.sql` already extracts `PRIMARY_KEYWORDS` properly
+- `stage_keywords_normalized` asset handles keyword standardization
+- `stage_job_keywords_bridge` creates proper job-keyword relationships
+- Keywords are now properly categorized and analyzed in the keyword pipeline
+
+### Business Justification
+- **Data Separation**: Clear distinction between skills (technical/soft) and keywords (job themes/context)
+- **Processing Efficiency**: Eliminate duplicate processing of the same LLM data
+- **Analytics Clarity**: Prevent confusion between skills and keywords in reporting
+- **Maintenance Simplification**: Reduce complexity in skills normalization pipeline
+- **Resource Optimization**: Reduce computational overhead and storage requirements
+- **Data Quality**: Ensure skills pipeline focuses only on actual skills data
+
+### Technical Approach
+
+**Scope of Changes**:
+1. **Remove PRIMARY_KEYWORDS from `stage_skills_raw_extraction.sql`**
+2. **Update `stage_skills_normalized` asset to exclude keyword processing**
+3. **Update `stage_job_skills_bridge` to exclude keyword relationships**
+4. **Clean up any keyword-related statistics and metadata**
+
+**Data Flow Impact**:
+```
+BEFORE:
+JOBS_LLM_ENRICHED → SKILLS_RAW_EXTRACTION (technical + soft + keywords)
+                  → KEYWORDS_RAW_EXTRACTION (keywords only)
+                  → DUPLICATE PROCESSING
+
+AFTER:
+JOBS_LLM_ENRICHED → SKILLS_RAW_EXTRACTION (technical + soft only)
+                  → KEYWORDS_RAW_EXTRACTION (keywords only)
+                  → CLEAN SEPARATION
+```
+
+### Implementation Plan
+
+#### **Phase 1: Update Skills Raw Extraction View (Day 1 - Morning)**
+
+**Step 1.1: Remove PRIMARY_KEYWORDS_EXPLODED CTE**
+```sql
+-- File: pipeline/sql/objects/views/stage_skills_raw_extraction.sql
+
+-- REMOVE this entire CTE:
+-- PRIMARY_KEYWORDS_EXPLODED AS (
+--     -- Extract primary keywords as skills
+--     SELECT
+--         jle.JOB_UID,
+--         'primary_keywords' as SKILL_SOURCE,
+--         'keyword' as SKILL_CATEGORY,
+--         TRIM(LOWER(KEYWORD.VALUE::STRING)) as SKILL_NAME_RAW,
+--         KEYWORD.VALUE::STRING as SKILL_NAME_ORIGINAL
+--     FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
+--     LATERAL FLATTEN(input => jle.PRIMARY_KEYWORDS) KEYWORD
+--     WHERE jle.PRIMARY_KEYWORDS IS NOT NULL
+--       AND KEYWORD.VALUE IS NOT NULL
+--       AND LENGTH(TRIM(KEYWORD.VALUE::STRING)) > 1
+--       AND LOWER(TRIM(KEYWORD.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '')
+-- )
+
+-- UPDATE the final SELECT to remove PRIMARY_KEYWORDS_EXPLODED:
+SELECT * FROM TECHNICAL_SKILLS_EXPLODED
+UNION ALL
+SELECT * FROM SOFT_SKILLS_EXPLODED
+-- REMOVE: UNION ALL SELECT * FROM PRIMARY_KEYWORDS_EXPLODED
+```
+
+**Step 1.2: Update View Documentation**
+```sql
+-- Update view comment to reflect new scope
+COMMENT ON VIEW BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION IS
+'Extract technical and soft skills from LLM VARIANT columns.
+Keywords are handled separately in KEYWORDS_RAW_EXTRACTION view.';
+```
+
+#### **Phase 2: Update Skills Normalization Asset (Day 1 - Afternoon)**
+
+**Step 2.1: Remove Keyword-Related Statistics**
+```python
+# File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py
+
+# In stage_llm_skills_raw_extraction asset:
+stats = {
+    "extraction_timestamp": datetime.now().isoformat(),
+    "skills_extracted": 0,
+    "technical_skills_count": 0,
+    "soft_skills_count": 0,
+    # REMOVE: "primary_keywords_count": 0,
+    "unique_jobs_processed": 0,
+    "extraction_errors": 0
+}
+
+# Update statistics query:
+cursor.execute("""
+SELECT
+    COUNT(*) as total_skills,
+    COUNT(DISTINCT JOB_UID) as unique_jobs,
+    COUNT(CASE WHEN SKILL_SOURCE = 'technical_skills' THEN 1 END) as technical_count,
+    COUNT(CASE WHEN SKILL_SOURCE = 'soft_skills' THEN 1 END) as soft_count
+    # REMOVE: COUNT(CASE WHEN SKILL_SOURCE = 'primary_keywords' THEN 1 END) as keywords_count
+FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
+""")
+
+# Update result processing:
+if result:
+    stats.update({
+        "skills_extracted": result[0],
+        "unique_jobs_processed": result[1],
+        "technical_skills_count": result[2],
+        "soft_skills_count": result[3]
+        # REMOVE: "primary_keywords_count": result[4]
+    })
+```
+
+**Step 2.2: Update Logging Messages**
+```python
+context.log.info(f"""
+🎯 Skills Raw Extraction Complete:
+• Total Skills Extracted: {stats['skills_extracted']:,}
+• Unique Jobs Processed: {stats['unique_jobs_processed']:,}
+• Technical Skills: {stats['technical_skills_count']:,}
+• Soft Skills: {stats['soft_skills_count']:,}
+# REMOVE: • Primary Keywords: {stats['primary_keywords_count']:,}
+""")
+
+# Update metadata:
+context.add_output_metadata({
+    "skills_extracted": MetadataValue.int(stats["skills_extracted"]),
+    "unique_jobs_processed": MetadataValue.int(stats["unique_jobs_processed"]),
+    "technical_skills_count": MetadataValue.int(stats["technical_skills_count"]),
+    "soft_skills_count": MetadataValue.int(stats["soft_skills_count"])
+    # REMOVE: "primary_keywords_count": MetadataValue.int(stats["primary_keywords_count"]),
+})
+```
+
+#### **Phase 3: Update Job Skills Bridge Asset (Day 1 - Afternoon)**
+
+**Step 3.1: Remove Keyword Source Processing**
+```python
+# In stage_job_skills_bridge asset:
+
+# Update skill context inference:
+CASE
+    WHEN SKILL_SOURCE = 'technical_skills' THEN 'required'
+    WHEN SKILL_SOURCE = 'soft_skills' THEN 'preferred'
+    # REMOVE: WHEN SKILL_SOURCE = 'primary_keywords' THEN 'context'
+    ELSE 'unknown'
+END as skill_context
+```
+
+**Step 3.2: Update Source Breakdown Statistics**
+```python
+# Update source breakdown query to exclude keywords:
+cursor.execute("""
+SELECT
+    SKILL_SOURCE,
+    COUNT(*) as relationship_count,
+    COUNT(DISTINCT JOB_UID) as jobs_count,
+    AVG(OVERALL_CONFIDENCE) as avg_confidence
+FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+WHERE SKILL_SOURCE IN ('technical_skills', 'soft_skills')  # ADD FILTER
+GROUP BY SKILL_SOURCE
+ORDER BY relationship_count DESC
+""")
+```
+
+#### **Phase 4: Data Cleanup and Validation (Day 1 - Evening)**
+
+**Step 4.1: Clean Existing Data**
+```sql
+-- Remove any existing keyword relationships from bridge table
+DELETE FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+WHERE SKILL_SOURCE = 'primary_keywords';
+
+-- Remove any keyword skills from normalized table
+DELETE FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED
+WHERE SKILL_CATEGORY = 'keyword';
+```
+
+**Step 4.2: Validation Queries**
+```sql
+-- Verify no keywords remain in skills pipeline
+SELECT COUNT(*) as remaining_keywords
+FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
+WHERE SKILL_SOURCE = 'primary_keywords';
+
+-- Verify skills pipeline only contains actual skills
+SELECT SKILL_SOURCE, COUNT(*) as count
+FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
+GROUP BY SKILL_SOURCE
+ORDER BY count DESC;
+
+-- Verify keywords are properly handled in keyword pipeline
+SELECT COUNT(*) as keyword_relationships
+FROM BETTERJOBS_DB.STAGE.JOB_KEYWORDS_BRIDGE;
+```
+
+#### **Phase 5: Testing and Documentation (Day 2 - Morning)**
+
+**Step 5.1: Create Test Cases**
+```python
+def test_skills_extraction_excludes_keywords():
+    """Test that skills extraction no longer includes keywords."""
+    # Verify PRIMARY_KEYWORDS_EXPLODED CTE is removed
+    # Verify final SELECT doesn't include keyword data
+    pass
+
+def test_skills_normalization_focus():
+    """Test that skills normalization focuses only on technical and soft skills."""
+    # Verify statistics don't include keyword counts
+    # Verify processing only handles skill data
+    pass
+
+def test_bridge_relationships_clean():
+    """Test that job-skills bridge only contains skill relationships."""
+    # Verify no keyword relationships in bridge table
+    # Verify source breakdown only shows skills
+    pass
+```
+
+**Step 5.2: Update Documentation**
+```markdown
+# Update README or relevant documentation:
+
+## Skills Normalization Pipeline
+The skills normalization pipeline processes:
+- **Technical Skills**: Programming languages, frameworks, tools, databases, etc.
+- **Soft Skills**: Communication, leadership, problem-solving, etc.
+
+**Note**: Keywords are handled separately in the keyword normalization pipeline.
+```
+
+### Success Criteria
+
+**Functional Requirements**:
+- ✅ **Clean Separation**: Skills pipeline only processes technical and soft skills
+- ✅ **No Duplication**: Keywords processed only in keyword pipeline
+- ✅ **Data Integrity**: No data loss from skills or keywords
+- ✅ **Performance Improvement**: Reduced processing overhead
+
+**Data Quality Requirements**:
+- ✅ **Zero Keywords in Skills**: No keyword data in skills extraction or normalization
+- ✅ **Complete Keyword Coverage**: All keywords properly handled in keyword pipeline
+- ✅ **Accurate Statistics**: Skills statistics reflect only actual skills data
+- ✅ **Clean Bridge Tables**: Job-skills bridge contains only skill relationships
+
+**Performance Requirements**:
+- ✅ **Reduced Processing Time**: Faster skills normalization without keyword overhead
+- ✅ **Lower Storage Usage**: Reduced duplicate data storage
+- ✅ **Simplified Queries**: Cleaner SQL without keyword filtering logic
+
+### Risk Mitigation
+
+**Data Loss Risk**:
+- **Validation**: Ensure keywords are properly handled in keyword pipeline before removal
+- **Backup**: Keep original code in version control for rollback if needed
+- **Testing**: Comprehensive testing to verify no data loss
+
+**Processing Disruption**:
+- **Gradual Rollback**: Can quickly revert changes if issues arise
+- **Monitoring**: Monitor pipeline performance after changes
+- **Validation**: Verify downstream analytics continue to work
+
+**Analytics Impact**:
+- **Documentation**: Clear documentation of changes for analytics users
+- **Migration Guide**: Provide guidance for updating any dependent queries
+- **Testing**: Test analytics queries that might reference keyword skills
+
+### Files to be Modified
+
+**Primary Changes**:
+- `pipeline/sql/objects/views/stage_skills_raw_extraction.sql` - Remove PRIMARY_KEYWORDS_EXPLODED CTE
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py` - Update statistics and logging
+
+**Supporting Changes**:
+- Update any documentation referencing skills including keywords
+- Update test files to reflect new scope
+- Update analytics queries that might reference keyword skills
+
+### Expected Benefits
+
+**Immediate Benefits** (Day 1 post-implementation):
+- 🧹 **Cleaner Data**: Clear separation between skills and keywords
+- ⚡ **Faster Processing**: Reduced computational overhead
+- 🔍 **Simplified Logic**: Easier to understand and maintain
+
+**Short-term Benefits** (Week 1):
+- 📊 **Accurate Analytics**: Skills metrics reflect only actual skills
+- 🛠️ **Easier Maintenance**: Simpler pipeline with focused responsibilities
+- 📈 **Better Performance**: Reduced processing time and storage usage
+
+**Long-term Benefits** (Month 1+):
+- 🏗️ **Architectural Clarity**: Clear data pipeline responsibilities
+- 💰 **Resource Optimization**: More efficient use of computational resources
+- 📚 **Knowledge Transfer**: Easier onboarding with clear data separation
+
+### Dependencies
+
+**Prerequisites**:
+- ✅ **Keyword Pipeline Complete**: Keyword normalization must be fully operational
+- ✅ **Data Validation**: Verify keywords are properly handled before removal
+- ✅ **Analytics Review**: Ensure no analytics depend on keyword skills
+
+**Post-Implementation**:
+- **Monitoring**: Monitor pipeline performance and data quality
+- **Documentation**: Update all relevant documentation
+- **Training**: Inform team of changes and new data separation
+
+### Implementation Summary
+
+**ENHANCEMENT-034 COMPLETED** ✅ **2025-07-02**:
+
+**Changes Implemented**:
+- ✅ **Skills Raw Extraction View**: Removed `PRIMARY_KEYWORDS_EXPLODED` CTE from `stage_skills_raw_extraction.sql`
+- ✅ **Skills Normalization Asset**: Updated `stage_llm_skills_raw_extraction` to exclude keyword processing
+- ✅ **Job Skills Bridge Asset**: Removed keyword source handling from `stage_job_skills_bridge`
+- ✅ **Data Cleanup Script**: Created `cleanup_keywords_from_skills.sql` for existing data cleanup
+- ✅ **Statistics and Logging**: Removed keyword-related statistics and metadata from all assets
+
+**Key Modifications**:
+1. **View Definition**: Removed 15 lines of keyword extraction logic from skills view
+2. **Asset Processing**: Eliminated keyword counting and processing from skills pipeline
+3. **Bridge Relationships**: Removed keyword context inference and source filtering
+4. **Data Cleanup**: Provided script to remove existing keyword data from skills tables
+
+**Benefits Achieved**:
+- 🧹 **Clean Data Separation**: Skills pipeline now focuses only on technical and soft skills
+- ⚡ **Reduced Processing Overhead**: Eliminated duplicate keyword processing
+- 🔍 **Simplified Logic**: Cleaner, more focused skills normalization pipeline
+- 📊 **Accurate Analytics**: Skills metrics now reflect only actual skills data
+- 🛠️ **Easier Maintenance**: Simpler pipeline with clear responsibilities
+
+**Data Flow Impact**:
+```
+BEFORE: JOBS_LLM_ENRICHED → SKILLS_RAW_EXTRACTION (technical + soft + keywords)
+AFTER:  JOBS_LLM_ENRICHED → SKILLS_RAW_EXTRACTION (technical + soft only)
+        JOBS_LLM_ENRICHED → KEYWORDS_RAW_EXTRACTION (keywords only)
+```
+
+**Verification**: Keywords continue to be properly handled in the dedicated keyword normalization pipeline through `stage_keywords_raw_extraction.sql` and related keyword assets.
+
+---
 

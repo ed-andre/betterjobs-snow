@@ -17,6 +17,7 @@ import json
 import pandas as pd
 from typing import Dict, Any, List
 from datetime import datetime
+from pathlib import Path
 
 from dagster import (
     asset,
@@ -31,11 +32,15 @@ from dagster_betterjobs.utils.skill_consolidation import (
     consolidate_skill_variants,
     get_consolidation_summary
 )
+from dagster_betterjobs.utils.schema_utils import ensure_object_exists, execute_sql_file
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[5]  # Go up 6 levels to project root
 
 
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
-    description="Extract and flatten skills from LLM VARIANT columns",
+    description="Extract and flatten skills from LLM VARIANT columns using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
@@ -43,10 +48,13 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
     """
     Extract all skills from VARIANT columns and flatten into workable format.
 
+    Uses schema-as-code approach with canonical view definition from SQL file.
+
     Processes:
     - technical_skills: Flattens nested JSON by category
     - soft_skills: Extracts array values
-    - primary_keywords: Treats as skills for standardization
+
+    Note: PRIMARY_KEYWORDS are handled separately in keywords normalization pipeline.
 
     Output: Raw skills with source tracking and confidence scores
     """
@@ -59,89 +67,28 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
         "skills_extracted": 0,
         "technical_skills_count": 0,
         "soft_skills_count": 0,
-        "primary_keywords_count": 0,
         "unique_jobs_processed": 0,
-        "extraction_errors": 0
+        "extraction_errors": 0,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔍 Starting LLM skills raw extraction...")
+        context.log.info("🔍 Starting LLM skills raw extraction with schema-as-code...")
 
-        # Create or replace the raw extraction view
-        extraction_sql = """
-        CREATE OR REPLACE VIEW BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION AS
-        WITH         TECHNICAL_SKILLS_EXPLODED AS (
-            -- Extract technical skills by category
-            SELECT
-                jle.JOB_UID,
-                'technical_skills' as SKILL_SOURCE,
-                SKILL_CATEGORY.KEY::STRING as SKILL_CATEGORY,
-                TRIM(LOWER(SKILL_NAME.VALUE::STRING)) as SKILL_NAME_RAW,
-                SKILL_NAME.VALUE::STRING as SKILL_NAME_ORIGINAL
-            FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
-            LATERAL FLATTEN(input => jle.TECHNICAL_SKILLS) SKILL_CATEGORY,
-            LATERAL FLATTEN(input => SKILL_CATEGORY.VALUE) SKILL_NAME
-            WHERE jle.TECHNICAL_SKILLS IS NOT NULL
-              AND SKILL_CATEGORY.VALUE IS NOT NULL
-              AND IS_ARRAY(SKILL_CATEGORY.VALUE)
-              AND ARRAY_SIZE(SKILL_CATEGORY.VALUE) > 0
-              AND LENGTH(TRIM(SKILL_NAME.VALUE::STRING)) > 1
-              AND LOWER(TRIM(SKILL_NAME.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '')
-        ),
-
-        SOFT_SKILLS_EXPLODED AS (
-            -- Extract soft skills
-            SELECT
-                jle.JOB_UID,
-                'soft_skills' as SKILL_SOURCE,
-                'soft' as SKILL_CATEGORY,
-                TRIM(LOWER(SKILL.VALUE::STRING)) as SKILL_NAME_RAW,
-                SKILL.VALUE::STRING as SKILL_NAME_ORIGINAL
-            FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
-            LATERAL FLATTEN(input => jle.SOFT_SKILLS) SKILL
-            WHERE jle.SOFT_SKILLS IS NOT NULL
-              AND SKILL.VALUE IS NOT NULL
-              AND LENGTH(TRIM(SKILL.VALUE::STRING)) > 1
-              AND LOWER(TRIM(SKILL.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '')
-        ),
-
-        PRIMARY_KEYWORDS_EXPLODED AS (
-            -- Extract primary keywords as skills
-            SELECT
-                jle.JOB_UID,
-                'primary_keywords' as SKILL_SOURCE,
-                'keyword' as SKILL_CATEGORY,
-                TRIM(LOWER(KEYWORD.VALUE::STRING)) as SKILL_NAME_RAW,
-                KEYWORD.VALUE::STRING as SKILL_NAME_ORIGINAL
-            FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle,
-            LATERAL FLATTEN(input => jle.PRIMARY_KEYWORDS) KEYWORD
-            WHERE jle.PRIMARY_KEYWORDS IS NOT NULL
-              AND KEYWORD.VALUE IS NOT NULL
-              AND LENGTH(TRIM(KEYWORD.VALUE::STRING)) > 1
-              AND LOWER(TRIM(KEYWORD.VALUE::STRING)) NOT IN ('null', 'none', 'n/a', '')
-        )
-
-        SELECT * FROM TECHNICAL_SKILLS_EXPLODED
-        UNION ALL
-        SELECT * FROM SOFT_SKILLS_EXPLODED
-        UNION ALL
-        SELECT * FROM PRIMARY_KEYWORDS_EXPLODED
-        """
-
-        cursor.execute(extraction_sql)
-        context.log.info("✅ Created SKILLS_RAW_EXTRACTION view")
+        # 🔧 SCHEMA-AS-CODE: Ensure view exists using canonical SQL file
+        view_name = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
+        context.log.info(f"✅ Skills raw extraction view ready: {view_name}")
 
         # Get extraction statistics
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_skills,
             COUNT(DISTINCT JOB_UID) as unique_jobs,
             COUNT(CASE WHEN SKILL_SOURCE = 'technical_skills' THEN 1 END) as technical_count,
-            COUNT(CASE WHEN SKILL_SOURCE = 'soft_skills' THEN 1 END) as soft_count,
-            COUNT(CASE WHEN SKILL_SOURCE = 'primary_keywords' THEN 1 END) as keywords_count
-        FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
+            COUNT(CASE WHEN SKILL_SOURCE = 'soft_skills' THEN 1 END) as soft_count
+        FROM {view_name}
         """)
 
         result = cursor.fetchone()
@@ -150,14 +97,13 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
                 "skills_extracted": result[0],
                 "unique_jobs_processed": result[1],
                 "technical_skills_count": result[2],
-                "soft_skills_count": result[3],
-                "primary_keywords_count": result[4]
+                "soft_skills_count": result[3]
             })
 
         # Sample some data for validation
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT SKILL_SOURCE, SKILL_CATEGORY, SKILL_NAME_ORIGINAL, COUNT(*) as frequency
-        FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
+        FROM {view_name}
         GROUP BY SKILL_SOURCE, SKILL_CATEGORY, SKILL_NAME_ORIGINAL
         ORDER BY frequency DESC
         LIMIT 20
@@ -169,12 +115,12 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
             stats["top_skills_sample"] = [dict(zip(columns, row)) for row in sample_data]
 
         context.log.info(f"""
-        🎯 Skills Raw Extraction Complete:
+        🎯 Skills Raw Extraction Complete (Schema-as-Code):
         • Total Skills Extracted: {stats['skills_extracted']:,}
         • Unique Jobs Processed: {stats['unique_jobs_processed']:,}
         • Technical Skills: {stats['technical_skills_count']:,}
         • Soft Skills: {stats['soft_skills_count']:,}
-        • Primary Keywords: {stats['primary_keywords_count']:,}
+        • View: {view_name}
         """)
 
         # Add metadata for Dagster UI
@@ -183,7 +129,8 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
             "unique_jobs_processed": MetadataValue.int(stats["unique_jobs_processed"]),
             "technical_skills_count": MetadataValue.int(stats["technical_skills_count"]),
             "soft_skills_count": MetadataValue.int(stats["soft_skills_count"]),
-            "primary_keywords_count": MetadataValue.int(stats["primary_keywords_count"]),
+            "schema_as_code": MetadataValue.bool(True),
+            "view_name": MetadataValue.text(view_name),
             "top_skills_sample": MetadataValue.json(stats.get("top_skills_sample", []))
         })
 
@@ -201,17 +148,22 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
 
 
 @asset(
-    description="Maintain skill standardization rules and aliases",
+    description="Maintain skill standardization rules and aliases using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Ensure skill standardization rules table exists and has basic rules.
+    Create and maintain comprehensive skill standardization rules.
 
-    Note: Rules should be managed via separate migration scripts or database initialization,
-    not hardcoded in this asset. This asset only ensures the table exists and validates
-    that some rules are present.
+    Uses schema-as-code approach with canonical table definition from SQL file.
+
+    Features:
+    - Technical skill standardization (e.g., JS -> JavaScript)
+    - Soft skill normalization (e.g., communication -> Communication Skills)
+    - Common abbreviation expansions
+    - Confidence scoring based on pattern matching
+    - Manual override support
     """
 
     conn = snowflake.get_connection()
@@ -222,56 +174,51 @@ def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake
         "total_rules_found": 0,
         "categories_covered": 0,
         "high_confidence_rules": 0,
-        "rules_table_created": False
+        "rules_table_created": False,
+        "data_populated": False,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("📋 Checking skill standardization rules...")
+        context.log.info("🔧 Setting up skill standardization rules with schema-as-code...")
 
-        # Create standardization rules table if it doesn't exist
-        create_rules_table_sql = """
-        CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES (
-            RULE_ID STRING PRIMARY KEY,
-            PATTERN STRING,                                 -- Pattern to match (regex or exact)
-            STANDARDIZED_NAME STRING,                       -- Standard form
-            SKILL_CATEGORY STRING,                          -- Correct category
-            SKILL_SUBCATEGORY STRING,                       -- Correct subcategory
-            CONFIDENCE_SCORE FLOAT DEFAULT 1.0,
-            RULE_TYPE STRING DEFAULT 'exact_match',         -- exact_match, regex_pattern, fuzzy_match
-            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-        ) CLUSTER BY (SKILL_CATEGORY, PATTERN)
-        """
-
-        cursor.execute(create_rules_table_sql)
+        # 🔧 SCHEMA-AS-CODE: Ensure table exists using canonical SQL file
+        table_name = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
+        context.log.info(f"✅ Skill standardization rules table ready: {table_name}")
         stats["rules_table_created"] = True
-        context.log.info("✅ Ensured SKILL_STANDARDIZATION_RULES table exists")
 
-        # Check if rules exist
-        cursor.execute("SELECT COUNT(*) FROM BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES")
-        rule_count = cursor.fetchone()[0]
+        # Always reload data to ensure latest rules from SQL file
+        context.log.info("🔄 Clearing existing data and reloading skill standardization rules...")
 
-        if rule_count == 0:
-            context.log.warning("""
-            ⚠️  No standardization rules found in SKILL_STANDARDIZATION_RULES table.
+        # Clear existing data
+        cursor.execute(f"DELETE FROM {table_name}")
+        context.log.info("🗑️ Cleared existing skill standardization rules")
 
-            Please run the setup script to populate initial rules:
-            pipeline/sql/llm_standardization/insert_skill_standardization_rules.sql
+        # Execute data population script using standardized utility
+        insert_file_path = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_skill_standardization_rules.sql"
 
-            Or execute the INSERT statement provided in the documentation.
-            """)
+        if insert_file_path.exists():
+            result = execute_sql_file(snowflake, str(insert_file_path), context)
+
+            if result["status"] == "success":
+                context.log.info(f"✅ Successfully executed skill standardization rules data population")
+                stats["data_populated"] = True
+            else:
+                context.log.error(f"❌ Failed to populate skill standardization rules: {result.get('error', 'Unknown error')}")
+                stats["data_populated"] = False
         else:
-            context.log.info(f"✅ Found {rule_count} existing standardization rules")
+            context.log.warning(f"Data population file not found: {insert_file_path}")
+            stats["data_populated"] = False
 
         # Get statistics on existing rules
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_rules,
             COUNT(DISTINCT SKILL_CATEGORY) as categories,
             COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.9 THEN 1 END) as high_confidence
-        FROM BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES
+        FROM {table_name}
         """)
 
         result = cursor.fetchone()
@@ -283,10 +230,12 @@ def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake
             })
 
         context.log.info(f"""
-        📋 Skill Standardization Rules Status:
+        📋 Skill Standardization Rules Status (Schema-as-Code):
         • Total Rules Found: {stats['total_rules_found']}
         • Categories Covered: {stats['categories_covered']}
         • High Confidence Rules: {stats['high_confidence_rules']}
+        • Table: {table_name}
+        • Data Populated: {stats['data_populated']}
         """)
 
         # Add metadata
@@ -294,7 +243,10 @@ def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake
             "total_rules_found": MetadataValue.int(stats["total_rules_found"]),
             "categories_covered": MetadataValue.int(stats["categories_covered"]),
             "high_confidence_rules": MetadataValue.int(stats["high_confidence_rules"]),
-            "rules_table_created": MetadataValue.bool(stats["rules_table_created"])
+            "rules_table_created": MetadataValue.bool(stats["rules_table_created"]),
+            "schema_as_code": MetadataValue.bool(True),
+            "table_name": MetadataValue.text(table_name),
+            "data_populated": MetadataValue.bool(stats["data_populated"])
         })
 
         return stats
@@ -311,13 +263,15 @@ def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake
 
 @asset(
     deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
-    description="Create normalized skills master table with market intelligence",
+    description="Create normalized skills master table with market intelligence using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
     Apply standardization rules and create skills master table.
+
+    Uses schema-as-code approach with canonical table definitions from SQL files.
 
     Processing:
     - Apply standardization rules with confidence scoring
@@ -337,110 +291,68 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         "high_confidence_skills": 0,
         "low_confidence_skills": 0,
         "unique_skill_categories": 0,
-        "avg_confidence_score": 0.0
+        "avg_confidence_score": 0.0,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🎯 Starting skills normalization...")
+        context.log.info("🎯 Starting skills normalization with schema-as-code...")
 
-        # Create skills normalized table
-        create_skills_table_sql = """
-        CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED (
-            SKILL_ID STRING PRIMARY KEY,
-            SKILL_NAME STRING NOT NULL,                    -- Standardized skill name
-            SKILL_NAME_CLEAN STRING NOT NULL,              -- Cleaned version for matching
-            SKILL_NAME_ORIGINAL STRING,                    -- Most common original variant
+        # 🔧 SCHEMA-AS-CODE: Ensure skills normalized table exists using canonical SQL file
+        skills_table_name = ensure_object_exists("tables/stage_skills_normalized.sql", snowflake, context)
+        context.log.info(f"✅ Skills normalized table ready: {skills_table_name}")
 
-            -- Skill Classification
-            SKILL_CATEGORY STRING NOT NULL,                -- languages, databases, cloud, frameworks, tools, soft
-            SKILL_SUBCATEGORY STRING,                      -- backend_language, nosql_database, public_cloud, etc.
-            SKILL_FAMILY STRING,                           -- development, data, devops, etc.
-            SKILL_TYPE STRING DEFAULT 'technical',         -- technical, soft, business, certification
+        # 🔧 SCHEMA-AS-CODE: Ensure skill family mapping table exists using canonical SQL file
+        family_mapping_table = ensure_object_exists("tables/stage_skill_family_mapping.sql", snowflake, context)
+        context.log.info(f"✅ Skill family mapping table ready: {family_mapping_table}")
 
-            -- Standardization & Deduplication
-            ORIGINAL_VARIANTS VARIANT,                     -- JSON array of all variations found
-            COMMON_ALIASES VARIANT,                        -- JSON array of known aliases (Dead column for now)
-            CANONICAL_FORM STRING,                         -- Preferred canonical name
+        # Always reload family mapping data to ensure latest mappings from SQL file
+        context.log.info("🔄 Clearing existing data and reloading skill family mappings...")
 
-            -- Market Data
-            FREQUENCY_COUNT INTEGER DEFAULT 0,             -- How often this skill appears
-            FIRST_SEEN_DATE DATE,                          -- When first detected
-            LAST_SEEN_DATE DATE,                           -- Most recent occurrence
-            TREND_DIRECTION STRING,                        -- rising, stable, declining
+        # Clear existing family mapping data
+        cursor.execute(f"DELETE FROM {family_mapping_table}")
+        context.log.info("🗑️ Cleared existing skill family mappings")
 
-            -- Quality & Confidence
-            CONFIDENCE_SCORE FLOAT DEFAULT 1.0,            -- Confidence in standardization
-            MANUAL_REVIEW_FLAG BOOLEAN DEFAULT FALSE,      -- Needs human review
-            APPROVED_BY_ADMIN BOOLEAN DEFAULT FALSE,       -- Admin approved
+        # Execute family mapping data population script
+        family_insert_file_path = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_skill_family_mappings.sql"
 
-            -- Audit Fields
-            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            CREATED_BY STRING DEFAULT 'system'
-        ) CLUSTER BY (SKILL_CATEGORY, SKILL_NAME)
-        """
+        if family_insert_file_path.exists():
+            result = execute_sql_file(snowflake, str(family_insert_file_path), context)
 
-        cursor.execute(create_skills_table_sql)
-        context.log.info("✅ Ensured SKILLS_NORMALIZED table exists")
-
-        # Check if skill family mapping table exists
-        cursor.execute("""
-        SELECT COUNT(*)
-        FROM INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = 'STAGE'
-          AND TABLE_NAME = 'SKILL_FAMILY_MAPPING'
-          AND TABLE_CATALOG = 'BETTERJOBS_DB'
-        """)
-
-        family_table_exists = cursor.fetchone()[0] > 0
-
-        # Create skill family mapping table if needed
-        create_family_mapping_sql = """
-        CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILL_FAMILY_MAPPING (
-            MAPPING_ID STRING PRIMARY KEY,
-            SKILL_CATEGORY STRING NOT NULL,             -- Category to map from
-            SKILL_FAMILY STRING NOT NULL,               -- Family to map to
-            FAMILY_DESCRIPTION STRING,                  -- Description of the family
-            PRIORITY INTEGER DEFAULT 1,                 -- Priority for overlapping mappings
-            IS_ACTIVE BOOLEAN DEFAULT TRUE,             -- Enable/disable mapping
-            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
-        ) CLUSTER BY (SKILL_CATEGORY, IS_ACTIVE)
-        """
-
-        cursor.execute(create_family_mapping_sql)
-
-        if family_table_exists:
-            context.log.info("✅ SKILL_FAMILY_MAPPING table already exists")
+            if result["status"] == "success":
+                context.log.info(f"✅ Successfully executed skill family mappings data population")
+            else:
+                context.log.error(f"❌ Failed to populate skill family mappings: {result.get('error', 'Unknown error')}")
         else:
-            context.log.info("✅ Created SKILL_FAMILY_MAPPING table")
+            context.log.warning(f"Family mapping data population file not found: {family_insert_file_path}")
 
-        # Check if family mappings exist
-        cursor.execute("SELECT COUNT(*) FROM BETTERJOBS_DB.STAGE.SKILL_FAMILY_MAPPING")
+        # Check if family mappings exist after population
+        cursor.execute(f"SELECT COUNT(*) FROM {family_mapping_table}")
         mapping_count = cursor.fetchone()[0]
 
         if mapping_count == 0:
-            context.log.warning("""
-            ⚠️  No skill family mappings found in SKILL_FAMILY_MAPPING table.
-
-            Please run the setup script to populate mappings:
-            pipeline/sql/llm_standardization/insert_skill_family_mappings.sql
-
+            context.log.warning(f"""
+            ⚠️  No skill family mappings found in {family_mapping_table}.
             Family mappings are required for proper skill categorization.
             """)
         else:
-            context.log.info(f"✅ Found {mapping_count} existing skill family mappings")
+            context.log.info(f"✅ Found {mapping_count} skill family mappings")
 
         # Clear existing data for fresh normalization
-        cursor.execute("DELETE FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED")
+        cursor.execute(f"DELETE FROM {skills_table_name}")
 
         # ENHANCEMENT-023: Intelligent Skills Variant Consolidation
         context.log.info("🔄 Starting skills consolidation process...")
 
         # Step 1: Get skills data for consolidation
-        pre_consolidation_sql = """
+        # Get skills view and other table names dynamically
+        skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
+        rules_table = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
+        unified_jobs_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
+
+        pre_consolidation_sql = f"""
         WITH skill_aggregation AS (
             SELECT
                 COALESCE(sr.STANDARDIZED_NAME, sre.SKILL_NAME_ORIGINAL) as skill_name,
@@ -449,7 +361,6 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
                 COALESCE(sfm.SKILL_FAMILY, 'general') as skill_family,
                 CASE
                     WHEN sre.SKILL_CATEGORY IN ('soft') THEN 'soft'
-                    WHEN sre.SKILL_CATEGORY IN ('keyword') THEN 'business'
                     ELSE 'technical'
                 END as skill_type,
                 ARRAY_AGG(DISTINCT sre.SKILL_NAME_ORIGINAL) as original_variants,
@@ -457,16 +368,16 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
                 MIN(ju.DATE_RETRIEVED::DATE) as first_seen_date,
                 MAX(ju.DATE_RETRIEVED::DATE) as last_seen_date,
                 AVG(COALESCE(sr.CONFIDENCE_SCORE, 0.5)) as confidence_score
-            FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION sre
-            LEFT JOIN BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES sr
+            FROM {skills_view} sre
+            LEFT JOIN {rules_table} sr
                 ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
-            LEFT JOIN BETTERJOBS_DB.STAGE.SKILL_FAMILY_MAPPING sfm
+            LEFT JOIN {family_mapping_table} sfm
                 ON sre.SKILL_CATEGORY = sfm.SKILL_CATEGORY AND sfm.IS_ACTIVE = TRUE
-            JOIN BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju ON sre.JOB_UID = ju.JOB_UID
+            JOIN {unified_jobs_table} ju ON sre.JOB_UID = ju.JOB_UID
             WHERE LENGTH(sre.SKILL_NAME_RAW) >= 2  -- Filter out single characters
               AND ju.IS_ENGLISH = TRUE            -- Only English jobs
             GROUP BY 1, 2, 3, 4, 5
-            HAVING COUNT(*) >= 2  -- Only include skills appearing at least twice
+            HAVING COUNT(*) >= 1  -- include all skills for now but should limit eventually to what shows up more than once
         )
         SELECT * FROM skill_aggregation
         ORDER BY frequency_count DESC
@@ -571,8 +482,8 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         context.log.info(f"✅ Bulk inserted {len(staging_data)} records into staging table")
 
         # Insert into final table with VARIANT conversion
-        final_insert_sql = """
-        INSERT INTO BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED (
+        final_insert_sql = f"""
+        INSERT INTO {skills_table_name} (
             SKILL_ID,
             SKILL_NAME,
             SKILL_NAME_CLEAN,
@@ -622,14 +533,14 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         })
 
         # Get normalization statistics
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_skills,
             COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.8 THEN 1 END) as high_confidence,
             COUNT(CASE WHEN CONFIDENCE_SCORE < 0.5 THEN 1 END) as low_confidence,
             COUNT(DISTINCT SKILL_CATEGORY) as unique_categories,
             AVG(CONFIDENCE_SCORE) as avg_confidence
-        FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED
+        FROM {skills_table_name}
         """)
 
         result = cursor.fetchone()
@@ -643,9 +554,9 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             })
 
         # Get category breakdown
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT SKILL_CATEGORY, COUNT(*) as skill_count
-        FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED
+        FROM {skills_table_name}
         GROUP BY SKILL_CATEGORY
         ORDER BY skill_count DESC
         """)
@@ -656,7 +567,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             stats["category_breakdown"] = [dict(zip(columns, row)) for row in category_results]
 
         context.log.info(f"""
-        🎯 Skills Normalization Complete:
+        🎯 Skills Normalization Complete (Schema-as-Code):
         • Skills Normalized: {stats['skills_normalized']:,}
         • High Confidence: {stats['high_confidence_skills']:,}
         • Low Confidence: {stats['low_confidence_skills']:,}
@@ -664,6 +575,8 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         • Average Confidence: {stats['avg_confidence_score']:.3f}
         • Consolidation Ratio: {stats.get('consolidation_ratio', 0):.2%}
         • Skills Merged: {stats.get('skills_merged', 0):,}
+        • Skills Table: {skills_table_name}
+        • Family Mapping Table: {family_mapping_table}
         """)
 
         # Add metadata including consolidation metrics
@@ -673,7 +586,10 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             "low_confidence_skills": MetadataValue.int(stats["low_confidence_skills"]),
             "unique_skill_categories": MetadataValue.int(stats["unique_skill_categories"]),
             "avg_confidence_score": MetadataValue.float(stats["avg_confidence_score"]),
-            "category_breakdown": MetadataValue.json(stats.get("category_breakdown", []))
+            "category_breakdown": MetadataValue.json(stats.get("category_breakdown", [])),
+            "schema_as_code": MetadataValue.bool(True),
+            "skills_table_name": MetadataValue.text(skills_table_name),
+            "family_mapping_table": MetadataValue.text(family_mapping_table)
         }
 
         # Add consolidation metrics if available
@@ -703,7 +619,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
 
 @asset(
     deps=["stage_skills_normalized", "stage_jobs_unified"],
-    description="Create job-skill relationships with context tracking",
+    description="Create job-skill relationships with context tracking using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
@@ -711,8 +627,10 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
     """
     Map jobs to normalized skills with rich context.
 
+    Uses schema-as-code approach with canonical table definition from SQL file.
+
     Features:
-    - Source tracking (technical_skills vs soft_skills vs keywords)
+    - Source tracking (technical_skills vs soft_skills)
     - Context classification (required vs preferred vs nice-to-have)
     - Experience level inference
     - Confidence scoring for skill-job associations
@@ -727,54 +645,32 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
         "unique_jobs_with_skills": 0,
         "unique_skills_used": 0,
         "avg_skills_per_job": 0.0,
-        "high_confidence_relationships": 0
+        "high_confidence_relationships": 0,
+        "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔗 Creating job-skills bridge relationships...")
+        context.log.info("🔗 Creating job-skills bridge relationships with schema-as-code...")
 
-        # Create job skills bridge table
-        create_bridge_table_sql = """
-        CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE (
-            BRIDGE_ID STRING PRIMARY KEY,
-            JOB_UID STRING NOT NULL,                       -- FK to JOBS_UNIFIED
-            SKILL_ID STRING NOT NULL,                      -- FK to SKILLS_NORMALIZED
+        # 🔧 SCHEMA-AS-CODE: Ensure bridge table exists using canonical SQL file
+        bridge_table_name = ensure_object_exists("tables/stage_job_skills_bridge.sql", snowflake, context)
+        context.log.info(f"✅ Job skills bridge table ready: {bridge_table_name}")
 
-            -- Source Information
-            SKILL_SOURCE STRING NOT NULL,                  -- 'technical_skills', 'soft_skills', 'primary_keywords'
-            SKILL_CATEGORY STRING NOT NULL,                -- Denormalized for performance
-            ORIGINAL_TEXT STRING,                          -- Original text from LLM
-
-            -- Confidence & Quality
-            EXTRACTION_CONFIDENCE FLOAT,                   -- LLM extraction confidence
-            STANDARDIZATION_CONFIDENCE FLOAT,              -- Skill matching confidence
-            OVERALL_CONFIDENCE FLOAT,                      -- Combined confidence score
-
-            -- Context
-            SKILL_CONTEXT STRING,                          -- required, preferred, nice-to-have
-
-
-            -- Processing Metadata
-            PROCESSING_METHOD STRING DEFAULT 'llm_auto',   -- llm_auto, manual_override, admin_correction
-            NEEDS_REVIEW BOOLEAN DEFAULT FALSE,
-
-            -- Audit Fields
-            CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-            CREATED_BY STRING DEFAULT 'system'
-        ) CLUSTER BY (JOB_UID, SKILL_CATEGORY)
-        """
-
-        cursor.execute(create_bridge_table_sql)
-        context.log.info("✅ Created JOB_SKILLS_BRIDGE table")
+        # Get required table names dynamically
+        skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
+        skills_normalized_table = ensure_object_exists("tables/stage_skills_normalized.sql", snowflake, context)
+        rules_table = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
+        jobs_llm_table = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", snowflake, context)
+        jobs_unified_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
 
         # Clear existing relationships for fresh creation
-        cursor.execute("DELETE FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE")
+        cursor.execute(f"DELETE FROM {bridge_table_name}")
 
         # Create job-skill relationships - Simplified approach
-        bridge_sql = """
-        INSERT INTO BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE (
+        bridge_sql = f"""
+        INSERT INTO {bridge_table_name} (
             BRIDGE_ID,
             JOB_UID,
             SKILL_ID,
@@ -799,14 +695,14 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
                 COALESCE(lle.LLM_OVERALL_CONFIDENCE, 0.7) as extraction_confidence,
                 sn.CONFIDENCE_SCORE as standardization_confidence,
                 sr.PATTERN as matched_pattern
-            FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION sre
-            JOIN BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES sr
+            FROM {skills_view} sre
+            JOIN {rules_table} sr
                 ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
-            JOIN BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED sn
+            JOIN {skills_normalized_table} sn
                 ON sn.SKILL_NAME = sr.STANDARDIZED_NAME
-            LEFT JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED lle
+            LEFT JOIN {jobs_llm_table} lle
                 ON sre.JOB_UID = lle.JOB_UID
-            JOIN BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+            JOIN {jobs_unified_table} ju
                 ON sre.JOB_UID = ju.JOB_UID
             WHERE ju.IS_ENGLISH = TRUE
 
@@ -822,14 +718,14 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
                 COALESCE(lle.LLM_OVERALL_CONFIDENCE, 0.7) as extraction_confidence,
                 sn.CONFIDENCE_SCORE as standardization_confidence,
                 NULL as matched_pattern
-            FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION sre
-            JOIN BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED sn
+            FROM {skills_view} sre
+            JOIN {skills_normalized_table} sn
                 ON sn.SKILL_NAME = sre.SKILL_NAME_ORIGINAL
-            LEFT JOIN BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED lle
+            LEFT JOIN {jobs_llm_table} lle
                 ON sre.JOB_UID = lle.JOB_UID
-            JOIN BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+            JOIN {jobs_unified_table} ju
                 ON sre.JOB_UID = ju.JOB_UID
-            LEFT JOIN BETTERJOBS_DB.STAGE.SKILL_STANDARDIZATION_RULES sr
+            LEFT JOIN {rules_table} sr
                 ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
             WHERE ju.IS_ENGLISH = TRUE
               AND sr.PATTERN IS NULL  -- Only get non-standardized matches
@@ -849,7 +745,6 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             CASE
                 WHEN SKILL_SOURCE = 'technical_skills' THEN 'required'
                 WHEN SKILL_SOURCE = 'soft_skills' THEN 'preferred'
-                WHEN SKILL_SOURCE = 'primary_keywords' THEN 'context'
                 ELSE 'unknown'
             END as skill_context,
 
@@ -862,13 +757,13 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
         cursor.execute(bridge_sql)
 
         # Get bridge statistics
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             COUNT(*) as total_relationships,
             COUNT(DISTINCT JOB_UID) as unique_jobs,
             COUNT(DISTINCT SKILL_ID) as unique_skills,
             COUNT(CASE WHEN OVERALL_CONFIDENCE >= 0.8 THEN 1 END) as high_confidence
-        FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+        FROM {bridge_table_name}
         """)
 
         result = cursor.fetchone()
@@ -881,11 +776,11 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             })
 
         # Calculate average skills per job separately
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT AVG(skill_count) as avg_skills_per_job
         FROM (
             SELECT JOB_UID, COUNT(*) as skill_count
-            FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+            FROM {bridge_table_name}
             GROUP BY JOB_UID
         ) job_skill_counts
         """)
@@ -895,13 +790,14 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             stats["avg_skills_per_job"] = float(avg_result[0])
 
         # Get source breakdown
-        cursor.execute("""
+        cursor.execute(f"""
         SELECT
             SKILL_SOURCE,
             COUNT(*) as relationship_count,
             COUNT(DISTINCT JOB_UID) as jobs_count,
             AVG(OVERALL_CONFIDENCE) as avg_confidence
-        FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+        FROM {bridge_table_name}
+        WHERE SKILL_SOURCE IN ('technical_skills', 'soft_skills')
         GROUP BY SKILL_SOURCE
         ORDER BY relationship_count DESC
         """)
@@ -913,16 +809,16 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
 
         # Add foreign key constraints (best effort - may fail if constraint already exists)
         try:
-            cursor.execute("""
-            ALTER TABLE BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+            cursor.execute(f"""
+            ALTER TABLE {bridge_table_name}
             ADD CONSTRAINT FK_JOB_SKILLS_JOB_UID
-            FOREIGN KEY (JOB_UID) REFERENCES BETTERJOBS_DB.STAGE.JOBS_UNIFIED(JOB_UID)
+            FOREIGN KEY (JOB_UID) REFERENCES {jobs_unified_table}(JOB_UID)
             """)
 
-            cursor.execute("""
-            ALTER TABLE BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE
+            cursor.execute(f"""
+            ALTER TABLE {bridge_table_name}
             ADD CONSTRAINT FK_JOB_SKILLS_SKILL_ID
-            FOREIGN KEY (SKILL_ID) REFERENCES BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED(SKILL_ID)
+            FOREIGN KEY (SKILL_ID) REFERENCES {skills_normalized_table}(SKILL_ID)
             """)
 
             context.log.info("✅ Added foreign key constraints")
@@ -931,12 +827,13 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             context.log.warning(f"Foreign key constraints may already exist: {fk_error}")
 
         context.log.info(f"""
-        🔗 Job-Skills Bridge Complete:
+        🔗 Job-Skills Bridge Complete (Schema-as-Code):
         • Total Relationships: {stats['total_relationships']:,}
         • Unique Jobs with Skills: {stats['unique_jobs_with_skills']:,}
         • Unique Skills Used: {stats['unique_skills_used']:,}
         • Average Skills per Job: {stats['avg_skills_per_job']:.1f}
         • High Confidence Relationships: {stats['high_confidence_relationships']:,}
+        • Bridge Table: {bridge_table_name}
         """)
 
         # Add metadata
@@ -946,7 +843,9 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             "unique_skills_used": MetadataValue.int(stats["unique_skills_used"]),
             "avg_skills_per_job": MetadataValue.float(stats["avg_skills_per_job"]),
             "high_confidence_relationships": MetadataValue.int(stats["high_confidence_relationships"]),
-            "source_breakdown": MetadataValue.json(stats.get("source_breakdown", []))
+            "source_breakdown": MetadataValue.json(stats.get("source_breakdown", [])),
+            "schema_as_code": MetadataValue.bool(True),
+            "bridge_table_name": MetadataValue.text(bridge_table_name)
         })
 
         return stats
