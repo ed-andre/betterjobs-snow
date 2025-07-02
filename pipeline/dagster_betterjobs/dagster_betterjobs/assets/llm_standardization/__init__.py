@@ -19,6 +19,10 @@ from .skills_normalization import (
     stage_job_skills_bridge
 )
 
+from .skills_consolidation import (
+    stage_skills_consolidated
+)
+
 from .keywords_normalization import (
     stage_llm_keywords_raw_extraction,
     stage_keywords_standardization_rules,
@@ -58,10 +62,11 @@ from .data_quality import (
 )
 
 __all__ = [
-    # Phase 1: Skills Normalization Assets
+    # Phase 1: Skills Normalization Assets (ENHANCEMENT-035: Separated consolidation)
     "stage_llm_skills_raw_extraction",
     "stage_skills_standardization_rules",
     "stage_skills_normalized",
+    "stage_skills_consolidated",
     "stage_job_skills_bridge",
 
     # Phase 2: Keywords Normalization Assets

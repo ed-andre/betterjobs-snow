@@ -40,6 +40,10 @@ from dagster_betterjobs.assets.llm_standardization.skills_normalization import (
     stage_job_skills_bridge
 )
 
+from dagster_betterjobs.assets.llm_standardization.skills_consolidation import (
+    stage_skills_consolidated
+)
+
 from dagster_betterjobs.assets.llm_standardization.keywords_normalization import (
     stage_llm_keywords_raw_extraction,
     stage_keywords_standardization_rules,
@@ -155,6 +159,7 @@ __all__ = [
     "stage_llm_skills_raw_extraction",
     "stage_skills_standardization_rules",
     "stage_skills_normalized",
+    "stage_skills_consolidated",
     "stage_job_skills_bridge",
     # LLM data standardization assets - Phase 2: Keywords
     "stage_llm_keywords_raw_extraction",

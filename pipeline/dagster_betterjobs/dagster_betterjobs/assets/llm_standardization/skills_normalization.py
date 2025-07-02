@@ -26,12 +26,7 @@ from dagster import (
 )
 
 from dagster_betterjobs.resources import SnowflakeResource
-from dagster_betterjobs.utils.skill_consolidation import (
-    SkillData,
-    ConsolidationConfig,
-    consolidate_skill_variants,
-    get_consolidation_summary
-)
+# Consolidation imports removed - moved to dedicated stage_skills_consolidated asset (ENHANCEMENT-035)
 from dagster_betterjobs.utils.schema_utils import ensure_object_exists, execute_sql_file
 
 
@@ -263,7 +258,7 @@ def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake
 
 @asset(
     deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
-    description="Create normalized skills master table with market intelligence using schema-as-code",
+    description="Apply standardization rules to create skills master table (standardization only) using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
@@ -271,15 +266,19 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
     """
     Apply standardization rules and create skills master table.
 
+    ENHANCEMENT-035: Simplified to handle standardization only.
+    Consolidation moved to dedicated stage_skills_consolidated asset.
+
     Uses schema-as-code approach with canonical table definitions from SQL files.
 
     Processing:
     - Apply standardization rules with confidence scoring
-    - Deduplicate skill variations
-    - Calculate frequency and trend metrics
+    - Calculate frequency and trend metrics from raw skills
+    - Preserve original LLM confidence scores
     - Flag low-confidence items for manual review
+    - NO consolidation logic (moved to separate asset)
 
-    Output: Clean skills master table for analytics
+    Output: Standardized skills master table (one record per unique skill)
     """
 
     conn = snowflake.get_connection()
@@ -343,146 +342,17 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         # Clear existing data for fresh normalization
         cursor.execute(f"DELETE FROM {skills_table_name}")
 
-        # ENHANCEMENT-023: Intelligent Skills Variant Consolidation
-        context.log.info("🔄 Starting skills consolidation process...")
+        # ENHANCEMENT-035: Simplified Skills Standardization (No Consolidation)
+        context.log.info("🔄 Starting skills standardization process (consolidation moved to separate asset)...")
 
-        # Step 1: Get skills data for consolidation
-        # Get skills view and other table names dynamically
+        # Get table names dynamically using schema-as-code
         skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
         rules_table = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
         unified_jobs_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
+        llm_enriched_table = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", snowflake, context)
 
-        pre_consolidation_sql = f"""
-        WITH skill_aggregation AS (
-            SELECT
-                COALESCE(sr.STANDARDIZED_NAME, sre.SKILL_NAME_ORIGINAL) as skill_name,
-                COALESCE(sr.SKILL_CATEGORY, sre.SKILL_CATEGORY) as skill_category,
-                COALESCE(sr.SKILL_SUBCATEGORY, 'uncategorized') as skill_subcategory,
-                COALESCE(sfm.SKILL_FAMILY, 'general') as skill_family,
-                CASE
-                    WHEN sre.SKILL_CATEGORY IN ('soft') THEN 'soft'
-                    ELSE 'technical'
-                END as skill_type,
-                ARRAY_AGG(DISTINCT sre.SKILL_NAME_ORIGINAL) as original_variants,
-                COUNT(*) as frequency_count,
-                MIN(ju.DATE_RETRIEVED::DATE) as first_seen_date,
-                MAX(ju.DATE_RETRIEVED::DATE) as last_seen_date,
-                AVG(COALESCE(sr.CONFIDENCE_SCORE, 0.5)) as confidence_score
-            FROM {skills_view} sre
-            LEFT JOIN {rules_table} sr
-                ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
-            LEFT JOIN {family_mapping_table} sfm
-                ON sre.SKILL_CATEGORY = sfm.SKILL_CATEGORY AND sfm.IS_ACTIVE = TRUE
-            JOIN {unified_jobs_table} ju ON sre.JOB_UID = ju.JOB_UID
-            WHERE LENGTH(sre.SKILL_NAME_RAW) >= 2  -- Filter out single characters
-              AND ju.IS_ENGLISH = TRUE            -- Only English jobs
-            GROUP BY 1, 2, 3, 4, 5
-            HAVING COUNT(*) >= 1  -- include all skills for now but should limit eventually to what shows up more than once
-        )
-        SELECT * FROM skill_aggregation
-        ORDER BY frequency_count DESC
-        """
-
-        cursor.execute(pre_consolidation_sql)
-        pre_consolidation_results = cursor.fetchall()
-
-        # Convert to SkillData objects for consolidation
-        original_skills = {}
-        for row in pre_consolidation_results:
-            skill_name = row[0]
-            skill_data = SkillData(
-                skill_name=skill_name,
-                skill_category=row[1],
-                skill_subcategory=row[2],
-                frequency_count=row[6],  # Fixed: frequency_count is at index 6
-                confidence_score=float(row[9]),  # Fixed: confidence_score is at index 9
-                original_variants=json.loads(row[5]) if isinstance(row[5], str) else row[5],  # Fixed: original_variants is at index 5
-                first_seen_date=str(row[7]) if row[7] else None,  # Fixed: first_seen_date is at index 7
-                last_seen_date=str(row[8]) if row[8] else None   # Fixed: last_seen_date is at index 8
-            )
-            original_skills[skill_name] = skill_data
-
-        context.log.info(f"📊 Pre-consolidation: {len(original_skills)} unique skills")
-
-        # Step 2: Apply consolidation
-        consolidation_config = ConsolidationConfig(
-            enabled=True,
-            preferred_form="singular",
-            min_frequency_threshold=2
-        )
-
-        consolidated_skills = consolidate_skill_variants(original_skills, consolidation_config)
-
-        # Step 3: Generate consolidation summary
-        consolidation_summary = get_consolidation_summary(original_skills, consolidated_skills)
-
-        context.log.info(f"""
-        ✅ Skills Consolidation Complete:
-        • Original Skills: {consolidation_summary['original_skill_count']:,}
-        • Consolidated Skills: {consolidation_summary['consolidated_skill_count']:,}
-        • Skills Merged: {consolidation_summary['skills_merged']:,}
-        • Consolidation Ratio: {consolidation_summary['consolidation_ratio']:.2%}
-        """)
-
-                        # Step 4: Bulk insert consolidated skills using staging approach
-        context.log.info("🔄 Starting bulk insert of consolidated skills...")
-
-        # Create temporary staging table
-        cursor.execute("""
-        CREATE OR REPLACE TEMPORARY TABLE SKILLS_STAGING (
-            SKILL_ID STRING,
-            SKILL_NAME STRING,
-            SKILL_NAME_CLEAN STRING,
-            SKILL_NAME_ORIGINAL STRING,
-            SKILL_CATEGORY STRING,
-            SKILL_SUBCATEGORY STRING,
-            SKILL_FAMILY STRING,
-            SKILL_TYPE STRING,
-            ORIGINAL_VARIANTS_JSON STRING,
-            FREQUENCY_COUNT INTEGER,
-            FIRST_SEEN_DATE DATE,
-            LAST_SEEN_DATE DATE,
-            CONFIDENCE_SCORE FLOAT,
-            MANUAL_REVIEW_FLAG BOOLEAN,
-            CANONICAL_FORM STRING
-        )
-        """)
-
-        # Prepare all data for bulk insert
-        staging_data = []
-        for skill_name, skill_data in consolidated_skills.items():
-            skill_id = f"skill_{hash(skill_name) % 100000:05d}"
-
-            staging_record = (
-                skill_id,
-                skill_name,
-                skill_name.lower().strip(),
-                skill_data.original_variants[0] if skill_data.original_variants else skill_name,
-                skill_data.skill_category,
-                skill_data.skill_subcategory,
-                'general',
-                'technical' if skill_data.skill_category not in ['soft', 'keyword'] else
-                'soft' if skill_data.skill_category == 'soft' else 'business',
-                json.dumps(skill_data.original_variants),  # Store as JSON string temporarily
-                skill_data.frequency_count,
-                skill_data.first_seen_date,
-                skill_data.last_seen_date,
-                skill_data.confidence_score,
-                skill_data.confidence_score < 0.5,
-                skill_name
-            )
-            staging_data.append(staging_record)
-
-        # Bulk insert into staging table
-        staging_insert_sql = """
-        INSERT INTO SKILLS_STAGING VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
-
-        cursor.executemany(staging_insert_sql, staging_data)
-        context.log.info(f"✅ Bulk inserted {len(staging_data)} records into staging table")
-
-        # Insert into final table with VARIANT conversion
-        final_insert_sql = f"""
+        # Direct standardization without consolidation
+        standardization_sql = f"""
         INSERT INTO {skills_table_name} (
             SKILL_ID,
             SKILL_NAME,
@@ -500,36 +370,61 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             MANUAL_REVIEW_FLAG,
             CANONICAL_FORM
         )
+        WITH standardized_skills AS (
+            SELECT
+                COALESCE(sr.STANDARDIZED_NAME, sre.SKILL_NAME_ORIGINAL) as skill_name,
+                COALESCE(sr.SKILL_CATEGORY, sre.SKILL_CATEGORY) as skill_category,
+                COALESCE(sr.SKILL_SUBCATEGORY, 'uncategorized') as skill_subcategory,
+                COALESCE(sfm.SKILL_FAMILY, 'general') as skill_family,
+                CASE
+                    WHEN sre.SKILL_CATEGORY IN ('soft') THEN 'soft'
+                    ELSE 'technical'
+                END as skill_type,
+                ARRAY_AGG(DISTINCT sre.SKILL_NAME_ORIGINAL) as original_variants,
+                COUNT(*) as frequency_count,
+                MIN(ju.DATE_RETRIEVED::DATE) as first_seen_date,
+                MAX(ju.DATE_RETRIEVED::DATE) as last_seen_date,
+                -- FIX: Preserve original LLM confidence scores instead of defaulting to 0.5
+                AVG(COALESCE(sr.CONFIDENCE_SCORE, lle.SKILLS_CONFIDENCE, 0.8)) as confidence_score
+            FROM {skills_view} sre
+            LEFT JOIN {rules_table} sr
+                ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
+            LEFT JOIN {family_mapping_table} sfm
+                ON sre.SKILL_CATEGORY = sfm.SKILL_CATEGORY AND sfm.IS_ACTIVE = TRUE
+            LEFT JOIN {llm_enriched_table} lle ON sre.JOB_UID = lle.JOB_UID
+            JOIN {unified_jobs_table} ju ON sre.JOB_UID = ju.JOB_UID
+            WHERE LENGTH(sre.SKILL_NAME_RAW) >= 2  -- Filter out single characters
+              AND ju.IS_ENGLISH = TRUE            -- Only English jobs
+            GROUP BY 1, 2, 3, 4, 5
+            HAVING COUNT(*) >= 1  -- Include all skills
+        )
         SELECT
-            SKILL_ID,
-            SKILL_NAME,
-            SKILL_NAME_CLEAN,
-            SKILL_NAME_ORIGINAL,
-            SKILL_CATEGORY,
-            SKILL_SUBCATEGORY,
-            SKILL_FAMILY,
-            SKILL_TYPE,
-            PARSE_JSON(ORIGINAL_VARIANTS_JSON) as ORIGINAL_VARIANTS,
-            FREQUENCY_COUNT,
-            FIRST_SEEN_DATE,
-            LAST_SEEN_DATE,
-            CONFIDENCE_SCORE,
-            MANUAL_REVIEW_FLAG,
-            CANONICAL_FORM
-        FROM SKILLS_STAGING
+            CONCAT('skill_', ROW_NUMBER() OVER (ORDER BY frequency_count DESC)) as skill_id,
+            skill_name,
+            LOWER(TRIM(skill_name)) as skill_name_clean,
+            original_variants[0]::STRING as skill_name_original,
+            skill_category,
+            skill_subcategory,
+            skill_family,
+            skill_type,
+            original_variants,
+            frequency_count,
+            first_seen_date,
+            last_seen_date,
+            confidence_score,
+            confidence_score < 0.5 as manual_review_flag,
+            skill_name as canonical_form  -- Same as skill_name for standardized skills
+        FROM standardized_skills
         """
 
-        cursor.execute(final_insert_sql)
-        context.log.info("✅ Bulk inserted all skills into final table with VARIANT conversion")
+        cursor.execute(standardization_sql)
+        context.log.info("✅ Successfully applied standardization rules and inserted skills")
 
-        # Update stats to include consolidation metrics
+        # Update stats to reflect standardization-only processing
         stats.update({
-            "consolidation_enabled": True,
-            "original_skill_count": consolidation_summary['original_skill_count'],
-            "consolidated_skill_count": consolidation_summary['consolidated_skill_count'],
-            "skills_merged": consolidation_summary['skills_merged'],
-            "consolidation_ratio": consolidation_summary['consolidation_ratio'],
-            "merge_examples": consolidation_summary['merge_examples']
+            "consolidation_enabled": False,
+            "standardization_only": True,
+            "processing_method": "direct_sql_standardization"
         })
 
         # Get normalization statistics
@@ -567,19 +462,19 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             stats["category_breakdown"] = [dict(zip(columns, row)) for row in category_results]
 
         context.log.info(f"""
-        🎯 Skills Normalization Complete (Schema-as-Code):
-        • Skills Normalized: {stats['skills_normalized']:,}
+        🎯 Skills Standardization Complete (Schema-as-Code) - ENHANCEMENT-035:
+        • Skills Standardized: {stats['skills_normalized']:,}
         • High Confidence: {stats['high_confidence_skills']:,}
         • Low Confidence: {stats['low_confidence_skills']:,}
         • Unique Categories: {stats['unique_skill_categories']}
         • Average Confidence: {stats['avg_confidence_score']:.3f}
-        • Consolidation Ratio: {stats.get('consolidation_ratio', 0):.2%}
-        • Skills Merged: {stats.get('skills_merged', 0):,}
+        • Processing Method: {stats.get('processing_method', 'standardization')}
         • Skills Table: {skills_table_name}
         • Family Mapping Table: {family_mapping_table}
+        • Note: Consolidation moved to dedicated stage_skills_consolidated asset
         """)
 
-        # Add metadata including consolidation metrics
+        # Add metadata for standardization-only processing
         metadata = {
             "skills_normalized": MetadataValue.int(stats["skills_normalized"]),
             "high_confidence_skills": MetadataValue.int(stats["high_confidence_skills"]),
@@ -589,19 +484,12 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             "category_breakdown": MetadataValue.json(stats.get("category_breakdown", [])),
             "schema_as_code": MetadataValue.bool(True),
             "skills_table_name": MetadataValue.text(skills_table_name),
-            "family_mapping_table": MetadataValue.text(family_mapping_table)
+            "family_mapping_table": MetadataValue.text(family_mapping_table),
+            "standardization_only": MetadataValue.bool(True),
+            "processing_method": MetadataValue.text(stats.get("processing_method", "direct_sql_standardization")),
+            "enhancement_035": MetadataValue.bool(True),  # Flag for tracking this enhancement
+            "consolidation_enabled": MetadataValue.bool(False)
         }
-
-        # Add consolidation metrics if available
-        if stats.get("consolidation_enabled"):
-            metadata.update({
-                "consolidation_enabled": MetadataValue.bool(True),
-                "original_skill_count": MetadataValue.int(stats.get("original_skill_count", 0)),
-                "consolidated_skill_count": MetadataValue.int(stats.get("consolidated_skill_count", 0)),
-                "skills_merged": MetadataValue.int(stats.get("skills_merged", 0)),
-                "consolidation_ratio": MetadataValue.float(stats.get("consolidation_ratio", 0)),
-                "merge_examples": MetadataValue.json(stats.get("merge_examples", []))
-            })
 
         context.add_output_metadata(metadata)
 
@@ -618,14 +506,16 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
 
 
 @asset(
-    deps=["stage_skills_normalized", "stage_jobs_unified"],
-    description="Create job-skill relationships with context tracking using schema-as-code",
+    deps=["stage_skills_consolidated", "stage_jobs_unified"],
+    description="Create job-skill relationships using consolidated skills with context tracking using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Map jobs to normalized skills with rich context.
+    Map jobs to consolidated skills with rich context.
+
+    ENHANCEMENT-035: Updated to use consolidated skills from dedicated asset.
 
     Uses schema-as-code approach with canonical table definition from SQL file.
 
@@ -634,6 +524,7 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
     - Context classification (required vs preferred vs nice-to-have)
     - Experience level inference
     - Confidence scoring for skill-job associations
+    - Uses consolidated skills for better variant handling
     """
 
     conn = snowflake.get_connection()
@@ -652,22 +543,26 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔗 Creating job-skills bridge relationships with schema-as-code...")
+        context.log.info("🔗 Creating job-skills bridge relationships using consolidated skills (ENHANCEMENT-035)...")
 
         # 🔧 SCHEMA-AS-CODE: Ensure bridge table exists using canonical SQL file
         bridge_table_name = ensure_object_exists("tables/stage_job_skills_bridge.sql", snowflake, context)
         context.log.info(f"✅ Job skills bridge table ready: {bridge_table_name}")
+        context.log.info("📊 Using consolidated skills for improved variant matching")
 
         # Get required table names dynamically
         skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
-        skills_normalized_table = ensure_object_exists("tables/stage_skills_normalized.sql", snowflake, context)
+        skills_consolidated_table = ensure_object_exists("tables/stage_skills_consolidated.sql", snowflake, context)
         rules_table = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
         jobs_llm_table = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", snowflake, context)
         jobs_unified_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
 
+        context.log.info(f"🔄 Cleared existing data for fresh creation of {bridge_table_name}")
         # Clear existing relationships for fresh creation
         cursor.execute(f"DELETE FROM {bridge_table_name}")
 
+
+        context.log.info(f"🔄 Inserting job-skill relationships for {bridge_table_name}")
         # Create job-skill relationships - Simplified approach
         bridge_sql = f"""
         INSERT INTO {bridge_table_name} (
@@ -685,55 +580,32 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             NEEDS_REVIEW
         )
         WITH skill_matches AS (
-            -- First pass: Match skills that were standardized
-            SELECT
+            -- Match skills from raw extraction to consolidated skills using original variants
+            SELECT DISTINCT
                 sre.JOB_UID,
-                sn.SKILL_ID,
+                sc.CONSOLIDATED_SKILL_ID,
                 sre.SKILL_SOURCE,
-                sn.SKILL_CATEGORY,
+                sc.SKILL_CATEGORY,
                 sre.SKILL_NAME_ORIGINAL,
-                COALESCE(lle.LLM_OVERALL_CONFIDENCE, 0.7) as extraction_confidence,
-                sn.CONFIDENCE_SCORE as standardization_confidence,
-                sr.PATTERN as matched_pattern
+                COALESCE(sc.CONSOLIDATED_CONFIDENCE_SCORE, lle.LLM_OVERALL_CONFIDENCE, 0.7) as extraction_confidence,
+                sc.CONSOLIDATED_CONFIDENCE_SCORE as standardization_confidence,
+                sc.CONSOLIDATION_METHOD as consolidation_method
             FROM {skills_view} sre
-            JOIN {rules_table} sr
-                ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
-            JOIN {skills_normalized_table} sn
-                ON sn.SKILL_NAME = sr.STANDARDIZED_NAME
+            JOIN {skills_consolidated_table} sc
+                ON (
+                    sc.CANONICAL_SKILL_NAME = sre.SKILL_NAME_ORIGINAL
+                    OR ARRAY_CONTAINS(sc.ORIGINAL_SKILL_NAMES, TO_VARIANT(sre.SKILL_NAME_ORIGINAL))
+                )
             LEFT JOIN {jobs_llm_table} lle
                 ON sre.JOB_UID = lle.JOB_UID
             JOIN {jobs_unified_table} ju
                 ON sre.JOB_UID = ju.JOB_UID
             WHERE ju.IS_ENGLISH = TRUE
-
-            UNION ALL
-
-            -- Second pass: Match skills that weren't standardized (direct match)
-            SELECT
-                sre.JOB_UID,
-                sn.SKILL_ID,
-                sre.SKILL_SOURCE,
-                sn.SKILL_CATEGORY,
-                sre.SKILL_NAME_ORIGINAL,
-                COALESCE(lle.LLM_OVERALL_CONFIDENCE, 0.7) as extraction_confidence,
-                sn.CONFIDENCE_SCORE as standardization_confidence,
-                NULL as matched_pattern
-            FROM {skills_view} sre
-            JOIN {skills_normalized_table} sn
-                ON sn.SKILL_NAME = sre.SKILL_NAME_ORIGINAL
-            LEFT JOIN {jobs_llm_table} lle
-                ON sre.JOB_UID = lle.JOB_UID
-            JOIN {jobs_unified_table} ju
-                ON sre.JOB_UID = ju.JOB_UID
-            LEFT JOIN {rules_table} sr
-                ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
-            WHERE ju.IS_ENGLISH = TRUE
-              AND sr.PATTERN IS NULL  -- Only get non-standardized matches
         )
         SELECT
-            CONCAT('bridge_', ROW_NUMBER() OVER (ORDER BY JOB_UID, SKILL_ID)) as bridge_id,
+            CONCAT('bridge_', ROW_NUMBER() OVER (ORDER BY JOB_UID, CONSOLIDATED_SKILL_ID)) as bridge_id,
             JOB_UID,
-            SKILL_ID,
+            CONSOLIDATED_SKILL_ID as SKILL_ID,
             SKILL_SOURCE,
             SKILL_CATEGORY,
             SKILL_NAME_ORIGINAL,
@@ -748,7 +620,7 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
                 ELSE 'unknown'
             END as skill_context,
 
-            'llm_auto' as processing_method,
+            'llm_auto_consolidated' as processing_method,
             CASE WHEN standardization_confidence < 0.5 THEN TRUE ELSE FALSE END as needs_review
 
         FROM skill_matches
@@ -807,24 +679,8 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             columns = [desc[0] for desc in cursor.description]
             stats["source_breakdown"] = [dict(zip(columns, row)) for row in source_results]
 
-        # Add foreign key constraints (best effort - may fail if constraint already exists)
-        try:
-            cursor.execute(f"""
-            ALTER TABLE {bridge_table_name}
-            ADD CONSTRAINT FK_JOB_SKILLS_JOB_UID
-            FOREIGN KEY (JOB_UID) REFERENCES {jobs_unified_table}(JOB_UID)
-            """)
-
-            cursor.execute(f"""
-            ALTER TABLE {bridge_table_name}
-            ADD CONSTRAINT FK_JOB_SKILLS_SKILL_ID
-            FOREIGN KEY (SKILL_ID) REFERENCES {skills_normalized_table}(SKILL_ID)
-            """)
-
-            context.log.info("✅ Added foreign key constraints")
-
-        except Exception as fk_error:
-            context.log.warning(f"Foreign key constraints may already exist: {fk_error}")
+        # Foreign key constraints are defined in the table creation script (stage_job_skills_bridge.sql)
+        # No need to add them here - they are created when the table is created
 
         context.log.info(f"""
         🔗 Job-Skills Bridge Complete (Schema-as-Code):

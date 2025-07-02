@@ -36,6 +36,9 @@ stage_layer:
   - stage_locations_normalized.sql
   - stage_salary_normalized.sql
 
+  # Consolidated tables
+  - stage_skills_consolidated.sql
+
   # Standardization rules tables (may reference normalized tables)
   - stage_experience_standardization_rules.sql
   - stage_skill_standardization_rules.sql
@@ -78,6 +81,9 @@ analytics_layer:
 
   # Bridge tables in analytics (reference dimension tables)
   - analytics_job_experience_bridge.sql
+  - analytics_job_skills_bridge.sql
+  - analytics_job_keywords_bridge.sql
+ 
 
   # Fact tables (reference multiple dimension tables)
   - analytics_fact_job_postings.sql

@@ -1046,14 +1046,14 @@ def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeR
 
 
 @asset(
-    deps=["stage_skills_normalized"],
+    deps=["stage_skills_consolidated"],
     description="Create skills dimension with taxonomy hierarchy and market intelligence",
     group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Build skills dimension from STAGE.SKILLS_NORMALIZED taxonomy.
+    Build skills dimension from STAGE.SKILLS_CONSOLIDATED taxonomy.
 
     This asset creates a skills dimension table with hierarchical classification
     and market intelligence metrics for skills demand analysis.
@@ -1081,7 +1081,7 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
     with snowflake.get_connection() as conn:
         cursor = conn.cursor()
         try:
-            context.log.info("Starting skills dimension build from STAGE.SKILLS_NORMALIZED")
+            context.log.info("Starting skills dimension build from STAGE.SKILLS_CONSOLIDATED")
 
             # Step 1: Build skills dimension from STAGE source
             context.log.info("Building skills dimension with quality filters")
@@ -1123,7 +1123,7 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
 
                     CURRENT_TIMESTAMP as created_timestamp
 
-                FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED
+                FROM BETTERJOBS_DB.STAGE.SKILLS_CONSOLIDATED
                 WHERE CONFIDENCE_SCORE >= 0.5
                   AND (MANUAL_REVIEW_FLAG = FALSE OR APPROVED_BY_ADMIN = TRUE)
                   AND SKILL_NAME IS NOT NULL
