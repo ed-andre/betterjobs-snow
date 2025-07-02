@@ -500,7 +500,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
                 ELSE 0.3
             END as trend_score,
             confidence_score,
-            CASE WHEN confidence_score >= 0.8 THEN TRUE ELSE FALSE END as approved_by_admin,
+            CASE WHEN confidence_score >= 0.5 THEN TRUE ELSE FALSE END as approved_by_admin, --
             CURRENT_TIMESTAMP,
             CURRENT_TIMESTAMP
         FROM keyword_aggregation
@@ -518,6 +518,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             COUNT(CASE WHEN KEYWORD_TYPE = 'industry' THEN 1 END) as industry_count,
             COUNT(CASE WHEN KEYWORD_TYPE = 'role_type' THEN 1 END) as role_type_count,
             COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.8 THEN 1 END) as high_confidence,
+            COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.5 AND CONFIDENCE_SCORE < 0.8 THEN 1 END) as medium_confidence,
             COUNT(CASE WHEN CONFIDENCE_SCORE < 0.5 THEN 1 END) as low_confidence,
             AVG(CONFIDENCE_SCORE) as avg_confidence,
             AVG(FREQUENCY_COUNT) as avg_frequency
@@ -531,9 +532,10 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
                 "industry_keywords": result[1],
                 "role_type_keywords": result[2],
                 "high_confidence_keywords": result[3],
-                "low_confidence_keywords": result[4],
-                "avg_confidence_score": float(result[5]) if result[5] else 0.0,
-                "avg_frequency": float(result[6]) if result[6] else 0.0
+                "medium_confidence_keywords": result[4],
+                "low_confidence_keywords": result[5],
+                "avg_confidence_score": float(result[6]) if result[6] else 0.0,
+                "avg_frequency": float(result[7]) if result[7] else 0.0
             })
 
         # Sample normalized keywords for validation
@@ -555,6 +557,7 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
         • Industry Keywords: {stats['industry_keywords']:,}
         • Role Type Keywords: {stats['role_type_keywords']:,}
         • High Confidence: {stats['high_confidence_keywords']:,}
+        • Medium Confidence: {stats['medium_confidence_keywords']:,}
         • Low Confidence: {stats['low_confidence_keywords']:,}
         • Average Confidence: {stats.get('avg_confidence_score', 0):.3f}
         • Average Frequency: {stats.get('avg_frequency', 0):.1f}
