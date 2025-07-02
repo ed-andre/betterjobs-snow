@@ -655,8 +655,6 @@ def analytics_job_keywords_bridge(context: AssetExecutionContext, snowflake: Sno
             # Step 7: Data quality validation checks
             quality_issues = []
 
-
-
             # Check for invalid confidence scores
             cursor.execute(f"""
                 SELECT COUNT(*) FROM {table_name}
@@ -761,6 +759,167 @@ def analytics_job_keywords_bridge(context: AssetExecutionContext, snowflake: Sno
                     "coverage_percentage": coverage_percentage
                 },
                 "top_keyword_requirements": top_keywords
+            }
+
+        finally:
+            cursor.close()
+
+
+@asset(
+    deps=[
+        "analytics_fact_job_postings",
+        "analytics_dim_skills",
+        "stage_job_skills_bridge",
+    ],
+    description="Create bridge table for many-to-many job posting to skills relationships",
+    group_name="3b_analytics_facts_aggregates_analysis",
+    kinds={"snowflake", "SQL"},
+)
+def analytics_job_skills_bridge(
+    context: AssetExecutionContext,
+    snowflake: SnowflakeResource,
+) -> Dict[str, Any]:
+    """
+    Build the analytics job skills bridge table from STAGE data.
+
+    This asset materialises `ANALYTICS.JOB_SKILLS_BRIDGE`, enabling efficient multi-skill
+    analysis while keeping the fact table free from many-to-many duplication.
+
+    Processing steps (see ENHANCEMENT-026):
+    1. Filter `STAGE.JOB_SKILLS_BRIDGE` for high-confidence (≥0.7), non-review rows.
+    2. Look up `JOB_POSTING_KEY` and `SKILL_KEY` from analytics dimensions.
+    3. Compute `SKILL_WEIGHT` and select `IS_PRIMARY_SKILL` per job posting.
+    4. Insert into the analytics bridge and collect quality / completeness metrics.
+    """
+
+    # 1. Ensure target table exists (schema-as-code pattern)
+    table_name = ensure_object_exists(
+        "tables/analytics_job_skills_bridge.sql", snowflake, context
+    )
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Starting analytics job skills bridge build from STAGE sources")
+
+            # 2. Clear existing data for idempotent rebuild
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+            context.log.info("Existing data truncated – inserting fresh records")
+
+            # 3. Build bridge with business rules from ENHANCEMENT-026
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                SKILLS_BRIDGE_KEY,
+                JOB_POSTING_KEY,
+                SKILL_KEY,
+                SKILL_WEIGHT,
+                IS_PRIMARY_SKILL,
+                IS_REQUIRED_SKILL,
+                EXTRACTION_CONFIDENCE,
+                SKILL_CATEGORY,
+                TECHNOLOGY_CONTEXT,
+                PROCESSING_METHOD,
+                CREATED_TIMESTAMP
+            )
+            WITH quality_job_skills AS (
+                SELECT
+                    jsb.JOB_UID,
+                    jsb.SKILL_ID,
+                    jsb.SKILL_CATEGORY,
+                    jsb.OVERALL_CONFIDENCE,
+                    jsb.SKILL_CONTEXT,
+                    jsb.PROCESSING_METHOD,
+                    jsb.NEEDS_REVIEW,
+                    -- Bridge key
+                    'SK_BRIDGE_' || jsb.JOB_UID || '_' || jsb.SKILL_ID AS skills_bridge_key
+                FROM BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE jsb
+                WHERE jsb.OVERALL_CONFIDENCE >= 0.7
+                  AND jsb.NEEDS_REVIEW = FALSE
+                  AND jsb.JOB_UID IS NOT NULL
+                  AND jsb.SKILL_ID IS NOT NULL
+            ),
+
+            bridge_with_keys AS (
+                SELECT
+                    qjs.*,
+                    fjp.JOB_POSTING_KEY,
+                    ds.SKILL_KEY,
+                    ds.SKILL_CATEGORY AS dim_skill_category,
+                    ds.FREQUENCY_COUNT,
+
+                    /* Skill weight: confidence-based */
+                    CASE
+                        WHEN qjs.OVERALL_CONFIDENCE >= 0.9 THEN qjs.OVERALL_CONFIDENCE * 1.0
+                        WHEN qjs.OVERALL_CONFIDENCE >= 0.8 THEN qjs.OVERALL_CONFIDENCE * 0.9
+                        WHEN qjs.OVERALL_CONFIDENCE >= 0.7 THEN qjs.OVERALL_CONFIDENCE * 0.8
+                        ELSE qjs.OVERALL_CONFIDENCE * 0.7
+                    END AS skill_weight
+                FROM quality_job_skills qjs
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
+                    ON qjs.JOB_UID = fjp.JOB_UID
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds
+                    ON qjs.SKILL_ID = ds.SKILL_ID
+                WHERE fjp.JOB_POSTING_KEY IS NOT NULL
+                  AND ds.SKILL_KEY IS NOT NULL
+            ),
+
+            ranked_skills AS (
+                SELECT
+                    bwk.*,
+                    /* Determine primary skill: highest confidence then frequency */
+                    CASE WHEN ROW_NUMBER() OVER (
+                        PARTITION BY bwk.JOB_POSTING_KEY
+                        ORDER BY bwk.OVERALL_CONFIDENCE DESC, bwk.FREQUENCY_COUNT DESC
+                    ) = 1 THEN TRUE ELSE FALSE END AS is_primary_skill,
+
+                    CASE WHEN bwk.SKILL_CONTEXT = 'required' THEN TRUE ELSE FALSE END AS is_required_skill
+                FROM bridge_with_keys bwk
+            )
+
+            SELECT
+                skills_bridge_key                 AS SKILLS_BRIDGE_KEY,
+                JOB_POSTING_KEY,
+                SKILL_KEY,
+                ROUND(skill_weight, 3)            AS SKILL_WEIGHT,
+                is_primary_skill                  AS IS_PRIMARY_SKILL,
+                is_required_skill                 AS IS_REQUIRED_SKILL,
+                OVERALL_CONFIDENCE               AS EXTRACTION_CONFIDENCE,
+                COALESCE(dim_skill_category, SKILL_CATEGORY) AS SKILL_CATEGORY,
+                NULL                              AS TECHNOLOGY_CONTEXT,
+                COALESCE(PROCESSING_METHOD, 'llm_auto') AS PROCESSING_METHOD,
+                CURRENT_TIMESTAMP                 AS CREATED_TIMESTAMP
+            FROM ranked_skills
+            ORDER BY JOB_POSTING_KEY, skill_weight DESC;
+            """
+
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+            context.log.info(f"Inserted {rows_inserted} rows into {table_name}")
+
+            # 4. Simple completeness check
+            cursor.execute(f"""
+            SELECT
+                COUNT(DISTINCT fjp.JOB_POSTING_KEY) AS total_job_postings,
+                COUNT(DISTINCT jsb.JOB_POSTING_KEY) AS postings_with_skills
+            FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
+            LEFT JOIN {table_name} jsb ON fjp.JOB_POSTING_KEY = jsb.JOB_POSTING_KEY
+            """)
+            total_posts, posts_with_skills = cursor.fetchone()
+            coverage_pct = (posts_with_skills / total_posts * 100) if total_posts else 0.0
+
+            # 5. Dagster metadata
+            context.add_output_metadata({
+                "rows_inserted": MetadataValue.int(rows_inserted),
+                "total_job_postings": MetadataValue.int(total_posts),
+                "postings_with_skills": MetadataValue.int(posts_with_skills),
+                "coverage_percentage": MetadataValue.float(round(coverage_pct, 2)),
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "coverage_percentage": coverage_pct,
             }
 
         finally:

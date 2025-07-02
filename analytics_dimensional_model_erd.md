@@ -214,6 +214,20 @@ erDiagram
         timestamp created_timestamp
     }
 
+    JOB_SKILLS_BRIDGE {
+        string skills_bridge_key PK
+        string job_posting_key FK
+        string skill_key FK
+        float skill_weight
+        boolean is_primary_skill
+        boolean is_required_skill
+        float extraction_confidence
+        string skill_category
+        string technology_context
+        string processing_method
+        timestamp created_timestamp
+    }
+
     %% === SPECIALIZED FACT TABLES ===
 
     FACT_SKILLS_DEMAND_WEEKLY {
@@ -340,6 +354,8 @@ erDiagram
     JOB_EXPERIENCE_BRIDGE }o--|| DIM_EXPERIENCE : "maps_to_experience"
     FACT_JOB_POSTINGS ||--o{ JOB_KEYWORDS_BRIDGE : "has_keyword_requirements"
     JOB_KEYWORDS_BRIDGE }o--|| DIM_KEYWORDS : "maps_to_keyword"
+    FACT_JOB_POSTINGS ||--o{ JOB_SKILLS_BRIDGE : "has_skill_requirements"
+    JOB_SKILLS_BRIDGE }o--|| DIM_SKILLS : "maps_to_skill"
 
     %% Skills Fact Table Relationships
     FACT_SKILLS_DEMAND_WEEKLY ||--o{ DIM_SKILLS : "analyzes_skill"
@@ -362,7 +378,7 @@ erDiagram
     %% Salary Bridge Relationship (Many-to-Many through STAGE layer)
     FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_via_bridge"
 
-    
+
 ```
 
 ## Key Design Features

@@ -1103,31 +1103,31 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
             )
             WITH skills_prep AS (
                 SELECT
-                    'SKL_' || SKILL_ID as skill_key,
-                    SKILL_ID as skill_id,
-                    SKILL_NAME as skill_name,
+                    'SKL_' || CONSOLIDATED_SKILL_ID AS skill_key,
+                    CONSOLIDATED_SKILL_ID AS skill_id,
+                    CANONICAL_SKILL_NAME AS skill_name,
 
                     -- Skill hierarchy
-                    SKILL_CATEGORY as skill_category,
-                    COALESCE(SKILL_SUBCATEGORY, 'General') as skill_subcategory,
+                    SKILL_CATEGORY AS skill_category,
+                    COALESCE(SKILL_SUBCATEGORY, 'General') AS skill_subcategory,
 
                     -- Standardization fields
-                    CANONICAL_FORM as canonical_form,
-                    COMMON_ALIASES as common_aliases,
-                    ORIGINAL_VARIANTS as original_variants,
+                    CANONICAL_SKILL_NAME AS canonical_form,
+                    NULL AS common_aliases,
+                    ORIGINAL_SKILL_NAMES AS original_variants,
 
                     -- Market intelligence
-                    CONFIDENCE_SCORE as stage_confidence_score,
-                    FREQUENCY_COUNT as frequency_count,
-                    TREND_DIRECTION as trend_direction,
+                    CONSOLIDATED_CONFIDENCE_SCORE AS stage_confidence_score,
+                    TOTAL_FREQUENCY_COUNT AS frequency_count,
+                    TREND_DIRECTION AS trend_direction,
 
-                    CURRENT_TIMESTAMP as created_timestamp
+                    CURRENT_TIMESTAMP AS created_timestamp
 
                 FROM BETTERJOBS_DB.STAGE.SKILLS_CONSOLIDATED
-                WHERE CONFIDENCE_SCORE >= 0.5
+                WHERE CONSOLIDATED_CONFIDENCE_SCORE >= 0.5
                   AND (MANUAL_REVIEW_FLAG = FALSE OR APPROVED_BY_ADMIN = TRUE)
-                  AND SKILL_NAME IS NOT NULL
-                  AND TRIM(SKILL_NAME) != ''
+                  AND CANONICAL_SKILL_NAME IS NOT NULL
+                  AND TRIM(CANONICAL_SKILL_NAME) != ''
                   AND SKILL_CATEGORY IS NOT NULL
                   AND TRIM(SKILL_CATEGORY) != ''
             )

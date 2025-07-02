@@ -504,7 +504,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 
 
 @asset(
-    deps=["analytics_fact_job_postings", "stage_job_skills_bridge", "analytics_dim_skills"],
+    deps=["analytics_fact_job_postings", "analytics_job_skills_bridge", "analytics_dim_skills"],
     description="Create weekly skills demand aggregate fact table for technology trend analysis",
     group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
@@ -606,10 +606,10 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     fjp.SALARY_CONFIDENCE,
                     fjp.LLM_OVERALL_CONFIDENCE,
 
-                    -- Skills from bridge table with confidence filtering
-                    jsb.SKILL_ID,
+                    -- Skills from analytics bridge table with confidence filtering
+                    jsb.SKILL_KEY,
                     jsb.SKILL_CATEGORY,
-                    jsb.OVERALL_CONFIDENCE as skill_extraction_confidence,
+                    jsb.EXTRACTION_CONFIDENCE as skill_extraction_confidence,
 
                     -- Generate week keys for aggregation
                     TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
@@ -617,13 +617,12 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     DATE_TRUNC('week', fjp.FIRST_POSTED_DATE) + 6 as week_end_date
 
                 FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
-                INNER JOIN BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE jsb
-                    ON fjp.JOB_UID = jsb.JOB_UID
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.JOB_SKILLS_BRIDGE jsb
+                    ON fjp.JOB_POSTING_KEY = jsb.JOB_POSTING_KEY
 
                 WHERE fjp.IS_ACTIVE_POSTING = TRUE
                   AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
-                  AND jsb.OVERALL_CONFIDENCE >= 0.7        -- High-confidence skill extractions only
-                  AND jsb.NEEDS_REVIEW = FALSE
+                  AND jsb.EXTRACTION_CONFIDENCE >= 0.7        -- High-confidence skill extractions only
                   AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
             ),
 
@@ -657,7 +656,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     COUNT(DISTINCT qjs.JOB_UID) as data_completeness_score
 
                 FROM quality_job_skills qjs
-                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON qjs.SKILL_ID = ds.SKILL_ID
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON qjs.SKILL_KEY = ds.SKILL_KEY
 
                 WHERE ds.SKILL_KEY IS NOT NULL
 

@@ -112,7 +112,8 @@ from dagster_betterjobs.assets.analytics_facts import (
 # ENHANCEMENT-024 & ENHANCEMENT-027: Analytics Bridge Tables
 from dagster_betterjobs.assets.analytics_bridges import (
     analytics_job_experience_bridge,
-    analytics_job_keywords_bridge
+    analytics_job_keywords_bridge,
+    analytics_job_skills_bridge
 )
 
 # Infrastructure Setup Assets
@@ -209,6 +210,7 @@ __all__ = [
     # ENHANCEMENT-024 & ENHANCEMENT-027: Analytics Bridge Tables
     "analytics_job_experience_bridge",
     "analytics_job_keywords_bridge",
+    "analytics_job_skills_bridge",
     # Infrastructure setup assets
     "database_schema_setup",
     "infrastructure_setup",
