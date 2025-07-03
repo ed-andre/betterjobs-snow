@@ -526,7 +526,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
     7. Implement data quality filtering using confidence scores from bridge table
 
     Data Quality Rules:
-    - Include only skills with OVERALL_CONFIDENCE >= 0.7 from bridge table
+    - Include only skills with OVERALL_CONFIDENCE >= 0.5 from bridge table
     - Filter active job postings (IS_ACTIVE_POSTING = TRUE)
     - Require minimum 3 jobs per skill-week combination for statistical validity
     - Use salary data only where SALARY_CONFIDENCE >= 0.6
@@ -622,7 +622,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 
                 WHERE fjp.IS_ACTIVE_POSTING = TRUE
                   AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
-                  AND jsb.EXTRACTION_CONFIDENCE >= 0.7        -- High-confidence skill extractions only
+                  AND jsb.EXTRACTION_CONFIDENCE >= 0.5        -- High-confidence skill extractions only
                   AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
             ),
 
@@ -664,7 +664,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                          ds.SKILL_KEY, ds.SKILL_NAME, ds.SKILL_CATEGORY,
                          qjs.JOB_FAMILY_KEY, qjs.LOCATION_KEY
 
-                HAVING COUNT(DISTINCT qjs.JOB_UID) >= 3  -- Minimum statistical validity
+                HAVING COUNT(DISTINCT qjs.JOB_UID) >= 2  -- Minimum statistical validity
             ),
 
             market_context AS (
@@ -1728,7 +1728,7 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
     Data Quality Rules:
     - Source from high-confidence weekly aggregates (FACT_SKILLS_DEMAND_WEEKLY)
     - Require minimum 5 jobs per skill-week for statistical validity
-    - Apply skill confidence filtering (avg_skill_confidence >= 0.7)
+    - Apply skill confidence filtering (avg_skill_confidence >= 0.5)
     - Validate growth rate calculations for outlier detection
 
     Returns:
@@ -1754,10 +1754,9 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
             INSERT INTO {table_name} (
                 ANALYSIS_KEY,
                 ANALYSIS_DATE,
-                SKILL_KEY,
+                SKILL_NAME,
                 WEEK_KEY,
                 JOBS_REQUIRING_SKILL,
-                TOTAL_JOBS_ANALYZED,
                 MARKET_PENETRATION_RATE,
                 DEMAND_RANK_OVERALL,
                 DEMAND_GROWTH_WEEKLY,
@@ -1784,7 +1783,6 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
 
                     -- Aggregate metrics across all skill variants with same canonical form
                     SUM(fsdw.ACTIVE_JOBS_WITH_SKILL) as jobs_requiring_skill,
-                    AVG(fsdw.TOTAL_ACTIVE_JOBS) as total_jobs_analyzed,  -- Average to avoid double counting
                     AVG(fsdw.SKILL_PENETRATION_RATE) as market_penetration_rate,
                     MIN(fsdw.SKILL_RANK_OVERALL) as demand_rank_overall,  -- Best rank among variants
                     AVG(fsdw.AVG_SALARY_MIDPOINT_ANNUAL_USD) as average_salary_with_skill,
@@ -1796,7 +1794,7 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
 
                 FROM BETTERJOBS_DB.ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY fsdw
                 INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON fsdw.SKILL_KEY = ds.SKILL_KEY
-                WHERE fsdw.AVG_SKILL_CONFIDENCE >= 0.7
+                WHERE fsdw.AVG_SKILL_CONFIDENCE >= 0.5
                   AND fsdw.SAMPLE_SIZE >= 5
                   AND fsdw.WEEK_START_DATE >= CURRENT_DATE - 365  -- 1 year retention
                   AND ds.CANONICAL_FORM IS NOT NULL
@@ -1851,7 +1849,7 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
                 INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON jsb.SKILL_ID = ds.SKILL_ID
                 WHERE fjp.IS_ACTIVE_POSTING = TRUE
                   AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
-                  AND jsb.OVERALL_CONFIDENCE >= 0.7
+                  AND jsb.OVERALL_CONFIDENCE >= 0.5
                   AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 365
                   AND ds.CANONICAL_FORM IS NOT NULL
                 GROUP BY TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW'), ds.CANONICAL_FORM
@@ -1872,10 +1870,9 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
             SELECT
                 'STA_' || sws.week_key || '_' || sws.skill_canonical_form as ANALYSIS_KEY,
                 sws.analysis_date as ANALYSIS_DATE,
-                sws.skill_canonical_form as SKILL_KEY,
+                sws.skill_canonical_form as SKILL_NAME,
                 sws.week_key as WEEK_KEY,
                 sws.jobs_requiring_skill as JOBS_REQUIRING_SKILL,
-                sws.total_jobs_analyzed as TOTAL_JOBS_ANALYZED,
                 sws.market_penetration_rate as MARKET_PENETRATION_RATE,
                 sws.demand_rank_overall as DEMAND_RANK_OVERALL,
                 sws.demand_growth_weekly as DEMAND_GROWTH_WEEKLY,
@@ -1906,7 +1903,7 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
             validation_sql = f"""
             SELECT
                 COUNT(*) as total_skill_weeks,
-                COUNT(DISTINCT SKILL_KEY) as unique_skills,
+                COUNT(DISTINCT SKILL_NAME) as unique_skills,
                 COUNT(DISTINCT WEEK_KEY) as weeks_covered,
                 MIN(ANALYSIS_DATE) as earliest_week,
                 MAX(ANALYSIS_DATE) as latest_week,
