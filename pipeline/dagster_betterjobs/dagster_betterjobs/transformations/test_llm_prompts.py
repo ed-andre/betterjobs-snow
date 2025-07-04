@@ -108,9 +108,7 @@ def test_response_validation():
         "confidence": 0.9
       },
       "skills": {
-        "technical_skills": {
-          "programming_languages": ["JavaScript", "TypeScript", "Python"]
-        },
+        "technical_skills": ["JavaScript", "TypeScript", "Python"],
         "confidence": 0.85
       }
     }

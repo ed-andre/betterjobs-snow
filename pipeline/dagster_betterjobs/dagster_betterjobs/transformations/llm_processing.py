@@ -39,6 +39,10 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
 from dagster_betterjobs.partitions import build_company_partition_filter
 
 
+from google import genai
+from google.genai import types
+
+
 # ENHANCEMENT-031: Configuration class for partitioned LLM enrichment
 class PartitionedLLMEnrichmentConfig(Config):
     """
@@ -83,6 +87,46 @@ def create_llm_enrichment_table_if_not_exists(context: AssetExecutionContext):
         raise
 
 
+def get_lightcast_skills_for_caching(conn, context: AssetExecutionContext) -> List[str]:
+    """Query Lightcast skills and prepare for context caching."""
+    query = """
+    SELECT DISTINCT s.NAME
+    FROM BETTERJOBS_DB.STAGE.SKILL_2_SKILL s
+    WHERE s.LATEST_VERSION = TRUE
+      AND LENGTH(s.NAME) >= 2
+      AND s.NAME NOT ILIKE '%deprecated%'
+    ORDER BY s.NAME
+    """
+    cursor = conn.cursor()
+    cursor.execute(query)
+    skills = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+
+    context.log.info(f"Retrieved {len(skills)} Lightcast skills for caching")
+    return skills
+
+
+def create_lightcast_skills_cache(lightcast_skills: List[str], context: AssetExecutionContext) -> str:
+    """Create Gemini context cache with Lightcast skills list."""
+    client = genai.Client()
+    cache = client.caches.create(
+        model=os.getenv("GEMINI_MODEL", "models/gemini-2.5-flash-lite-preview-06-17"),
+        config=types.CreateCachedContentConfig(
+            display_name=f"lightcast_skills_v{context.partition_key}",
+            system_instruction=(
+                "You are an expert skills extractor. PRIORITY: If ANY term from the Lightcast "
+                "skills list below appears in the job posting (exact match or close variant), "
+                "add it to technical_skills EXACTLY as written in the list. "
+                "Then add any other unlisted skills you find."
+            ),
+            contents=[json.dumps(lightcast_skills)],
+            ttl="3600s"  # 1 hour
+        )
+    )
+    context.log.info(f"Created Lightcast skills cache: {cache.name}")
+    return cache.name
+
+
 def process_platform_llm_enrichment(
     platform: str,
     context: AssetExecutionContext,
@@ -93,9 +137,7 @@ def process_platform_llm_enrichment(
 ) -> Dict[str, Any]:
     """
     Shared LLM enrichment processing logic for individual platforms.
-
-    This function contains all the existing LLM processing logic but filters
-    jobs by platform for parallel processing.
+    Now enhanced with Lightcast skills context caching.
 
     🛡️ INCLUDES GEMINI REFRESH: Prevents recursion by dynamically calculating refresh
     intervals based on batch size to stay below ~750 jobs (safely under the 960-job
@@ -131,7 +173,9 @@ def process_platform_llm_enrichment(
         "low_confidence_count": 0,
         "validation_passes_performed": 0,
         "error_summary": {},
-        "gemini_refreshes_performed": 0  # Track Gemini model refreshes
+        "gemini_refreshes_performed": 0,  # Track Gemini model refreshes
+        "lightcast_cache_created": False,
+        "lightcast_skills_count": 0
     }
 
     database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
@@ -146,6 +190,14 @@ def process_platform_llm_enrichment(
         create_llm_enrichment_table_if_not_exists(context)
         context.log.info(f"🚀 [{platform.upper()}] Starting LLM enrichment processing...")
         context.log.info(f"🛡️ [{platform.upper()}] Gemini refresh protection enabled: dynamic interval based on batch size to prevent recursion")
+
+        # Create Lightcast skills cache once per partition
+        lightcast_skills = get_lightcast_skills_for_caching(conn, context)
+        stats["lightcast_skills_count"] = len(lightcast_skills)
+
+        cached_name = create_lightcast_skills_cache(lightcast_skills, context)
+        stats["lightcast_cache_created"] = True
+        context.log.info(f"✅ [{platform.upper()}] Created Lightcast skills cache with {len(lightcast_skills)} skills")
 
         # Get platform-specific jobs to process (with optional partition filtering)
         jobs_df = get_platform_jobs_for_processing(
@@ -199,9 +251,11 @@ def process_platform_llm_enrichment(
 
                 context.log.info(f"✅ [{platform.upper()}] Gemini model refresh completed - continuing with batch {current_batch}")
 
-            # Process batch
+            # Process batch with Lightcast context
             batch_results = process_llm_batch(
-                batch_jobs, prompts, formatter, gemini, config, context, stats, platform, partition_key
+                batch_jobs, prompts, formatter, gemini, config, context, stats, platform,
+                partition_key=partition_key,
+                lightcast_cache_name=cached_name  # Pass cache name to batch processing
             )
 
             # Store batch results immediately after processing with resilient insertion
@@ -374,10 +428,11 @@ def process_llm_batch(
     context: AssetExecutionContext,
     stats: Dict[str, Any],
     platform: str,
-    partition_key: Optional[str] = None
+    partition_key: Optional[str] = None,
+    lightcast_cache_name: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """
-    Process a batch of jobs through LLM extraction.
+    Process a batch of jobs through LLM extraction with Lightcast context.
     """
 
     batch_results = []
@@ -422,14 +477,15 @@ def process_llm_batch(
             estimated_tokens = len(full_prompt) // 4
             stats["total_tokens_estimated"] += estimated_tokens
 
-            # Extract with retry logic
+            # Extract with Lightcast context and retry logic
             extracted_data = extract_job_data_with_retry(
                 context=context,
                 gemini=gemini,
                 prompt=full_prompt,
                 job_uid=job['JOB_UID'],
                 max_retries=config.max_retries,
-                platform=platform
+                platform=platform,
+                lightcast_cache_name=lightcast_cache_name
             )
 
             stats["api_calls_made"] += 1
@@ -489,10 +545,11 @@ def extract_job_data_with_retry(
     prompt: str,
     job_uid: str,
     max_retries: int = 2,
-    platform: str = ""
+    platform: str = "",
+    lightcast_cache_name: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
-    Extract structured data from job description using Gemini with retry logic.
+    Extract structured data using Gemini with Lightcast context caching.
 
     Adapted from the proven retry patterns in retry_failed_company_urls.py
     """
@@ -501,7 +558,18 @@ def extract_job_data_with_retry(
         try:
             with gemini.get_model(context) as model:
                 start_time = time.time()
-                response = model.generate_content(prompt)
+
+                # Use Lightcast cache if available
+                if lightcast_cache_name:
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=types.GenerationConfig(
+                            cached_content=lightcast_cache_name
+                        )
+                    )
+                else:
+                    response = model.generate_content(prompt)
+
                 elapsed_time = time.time() - start_time
 
                 context.log.debug(f"[{platform.upper()}] Gemini response for {job_uid} in {elapsed_time:.2f}s (attempt {attempt + 1})")
@@ -834,7 +902,11 @@ def create_platform_metadata(stats: Dict[str, Any], platform: str) -> Dict[str, 
         f"{platform}_failed_records_count": MetadataValue.int(len(stats["failed_job_records"])),
 
         # Gemini model refresh metrics (prevents recursion)
-        f"{platform}_gemini_refreshes_performed": MetadataValue.int(stats.get("gemini_refreshes_performed", 0))
+        f"{platform}_gemini_refreshes_performed": MetadataValue.int(stats.get("gemini_refreshes_performed", 0)),
+
+        # Lightcast skills caching metrics
+        f"{platform}_lightcast_cache_created": MetadataValue.bool(stats["lightcast_cache_created"]),
+        f"{platform}_lightcast_skills_count": MetadataValue.int(stats["lightcast_skills_count"])
     }
 
     # Add error summary if there are failures

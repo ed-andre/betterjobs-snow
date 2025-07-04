@@ -2644,37 +2644,7 @@ The current skills taxonomy (categories, subcategories, families) was crafted ad
          """Load Lightcast individual skills from CSV file."""
      ```
 
-- **Taxonomy Update & Maintenance Process**
-  1. Create version-aware update mechanism:
-     ```python
-     # File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/lightcast_taxonomy.py
-     @asset(
-         group_name="0_infrastructure_setup",
-         kinds={"snowflake", "maintenance"}
-     )
-     def lightcast_taxonomy_version_check(context: AssetExecutionContext, snowflake: SnowflakeResource):
-         """Check for Lightcast taxonomy updates and manage versioning."""
 
-     def update_lightcast_taxonomy(new_csv_files: List[str], target_version: str):
-         """Update taxonomy with new CSV data while preserving version history."""
-         # 1. Load new CSV data into staging tables
-         # 2. Compare with existing data
-         # 3. Update LATEST_VERSION flags
-         # 4. Insert new/changed records
-         # 5. Maintain audit trail
-     ```
-  2. Add taxonomy management utilities:
-     ```python
-     # File: pipeline/dagster_betterjobs/dagster_betterjobs/utils/lightcast_taxonomy_utils.py
-     def load_taxonomy_from_csv(csv_path: str, table_name: str, snowflake_conn) -> Dict[str, Any]:
-         """Load taxonomy data from CSV with validation and error handling."""
-
-     def validate_taxonomy_integrity(snowflake_conn) -> List[str]:
-         """Validate referential integrity and data quality of taxonomy tables."""
-
-     def get_skill_hierarchy(skill_id: int, snowflake_conn) -> Dict[str, str]:
-         """Get full hierarchy (Category > Subcategory > Skill) for a given skill."""
-     ```
 
 - **Prompt & Schema Simplification**
   1. Refactor `llm_prompts.py` so `skills.technical_skills` is a **flat string array** (same shape as `soft_skills`) named `technical_skills`, eliminating the nested objects (cloud_platforms, frameworks, etc.).
@@ -2705,7 +2675,7 @@ The current skills taxonomy (categories, subcategories, families) was crafted ad
 
          client = genai.Client()
          cache = client.caches.create(
-             model="models/gemini-2.0-flash-001",
+             model=EnvVar("GEMINI_MODEL"),
              config=types.CreateCachedContentConfig(
                  display_name=f"lightcast_skills_v{context.partition_key}",
                  system_instruction=(

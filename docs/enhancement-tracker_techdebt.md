@@ -780,3 +780,31 @@ ENHANCEMENT-036 introduced an inline CTE (`ai_skill_category`) inside `stage_ski
 • Performance impact – ensure join to mapping table is indexed.
 
 ---
+
+## TECH-DEBT-006: Lightcast Taxonomy Update & Maintenance Process
+
+**Status:** 🔍 Planned
+**Priority:** Low
+**Component:** Taxonomy Infrastructure (`lightcast_taxonomy` assets and tables)
+**Date Identified:** 2025-07-04
+**Estimated Effort:** 1 day
+**Business Impact:** Automates ingestion of future Lightcast taxonomy releases, reducing manual maintenance and ensuring data freshness.
+
+### Problem Statement
+ENHANCEMENT-038 introduces the initial Lightcast taxonomy tables and loaders but lacks an automated mechanism to detect and ingest subsequent taxonomy releases. Without this process, the taxonomy risks becoming outdated, impacting data accuracy and analytical relevancy.
+
+### Proposed Fix
+1. Implement a `lightcast_taxonomy_version_check` asset to detect new CSV releases and manage version flags.
+2. Add utilities for referential integrity validation and audit trail maintenance.
+3. Schedule the check to run weekly and alert on validation failures.
+
+### Success Criteria
+• New taxonomy versions can be incorporated without code changes.
+• `LATEST_VERSION` flags accurately reflect the active release.
+• Validation passes with no referential integrity errors.
+
+### Risks & Mitigation
+• CSV schema drift – enforce pre-load schema validation.
+• Large diff ingest time – load incrementally to avoid long locks.
+
+---

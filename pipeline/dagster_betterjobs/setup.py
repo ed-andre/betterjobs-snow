@@ -32,6 +32,8 @@ setup(
         "boto3>=1.26.0",
         "pyarrow>=10.0.0",  # Required for pandas integration with Snowflake
         "inflect>=7.0.0",
+        # for context caching with Gemini
+        "google-genai",
     ],
     extras_require={"dev": ["dagster-webserver", "pytest"]},
     entry_points={

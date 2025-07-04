@@ -55,13 +55,7 @@ Analyze this job posting and extract ALL relevant structured information. Return
     "confidence": 0.0-1.0
   }},
   "skills": {{
-    "technical_skills": {{
-      "programming_languages": ["Python", "JavaScript", "Java"],
-      "databases": ["PostgreSQL", "MongoDB", "MySQL"],
-      "cloud_platforms": ["AWS", "Azure", "GCP"],
-      "frameworks": ["React", "Django", "Spring"],
-      "tools": ["Docker", "Kubernetes", "Git", "Jenkins"]
-    }},
+    "technical_skills": ["Python", "JavaScript", "PostgreSQL", "AWS", "React", "Docker"],
     "soft_skills": ["Communication", "Leadership", "Problem Solving"],
     "confidence": 0.0-1.0
   }},
