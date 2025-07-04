@@ -382,8 +382,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
                 ELSE 'General AI'
         END AS SKILL_SUBCATEGORY
             FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
-            WHERE SKILL_CATEGORY = 'tools'
-                AND (
+            WHERE  (
                     SKILL_NAME_RAW = 'ai'
                     OR SKILL_NAME_RAW ILIKE 'ai-%'
                     OR SKILL_NAME_RAW ILIKE 'ai %'

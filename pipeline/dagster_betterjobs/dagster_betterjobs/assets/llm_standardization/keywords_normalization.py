@@ -448,14 +448,25 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             CREATED_TIMESTAMP,
             UPDATED_TIMESTAMP
         )
-        WITH keyword_aggregation AS (
+        WITH
+        -- ENHANCEMENT-037: AI Keyword Category and Subcategory override
+        ai_keyword_category AS (
+            SELECT DISTINCT
+                KEYWORD_TEXT_RAW,
+                'Artificial Intelligence' as KEYWORD_CATEGORY
+            FROM {extraction_view} kre
+            WHERE kre.KEYWORD_TEXT_RAW ILIKE 'ai %'
+                OR kre.KEYWORD_TEXT_RAW ILIKE '% ai'
+                OR kre.KEYWORD_TEXT_RAW ILIKE 'ai-%'
+        ),
+        keyword_aggregation AS (
             SELECT
                 -- Apply standardization rules or use original text
                 COALESCE(ksr.STANDARDIZED_TEXT, kre.KEYWORD_TEXT_ORIGINAL) as keyword_text,
 
                 -- Determine keyword type and category
                 COALESCE(ksr.KEYWORD_TYPE, ktm.KEYWORD_TYPE, kre.KEYWORD_TYPE) as keyword_type,
-                COALESCE(ksr.KEYWORD_CATEGORY, ktm.KEYWORD_CATEGORY, 'uncategorized') as keyword_category,
+                COALESCE(aikc.KEYWORD_CATEGORY, ksr.KEYWORD_CATEGORY, ktm.KEYWORD_CATEGORY, 'uncategorized') as keyword_category,
 
                 -- Aggregate variants
                 ARRAY_AGG(DISTINCT kre.KEYWORD_TEXT_ORIGINAL) as original_variants,
@@ -481,6 +492,10 @@ def stage_keywords_normalized(context: AssetExecutionContext, snowflake: Snowfla
             LEFT JOIN {mapping_table} ktm
                 ON LOWER(kre.KEYWORD_TEXT_RAW) = LOWER(ktm.KEYWORD_TEXT)
                 AND ktm.IS_ACTIVE = TRUE
+
+            -- Left join with AI keyword category
+            LEFT JOIN ai_keyword_category aikc
+                ON kre.KEYWORD_TEXT_RAW = aikc.KEYWORD_TEXT_RAW
 
             WHERE LENGTH(kre.KEYWORD_TEXT_RAW) >= 2  -- Filter out single characters
 

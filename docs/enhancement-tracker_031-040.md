@@ -21,7 +21,7 @@ This document tracks planned enhancements and architectural improvements for the
 
 - **OPEN**
 
-    - None
+    - ENHANCEMENT-038: Replace Custom Skill Taxonomy with Lightcast Open Skills Taxonomy
 
 - **IN PROGRESS**
 
@@ -35,6 +35,7 @@ This document tracks planned enhancements and architectural improvements for the
     - ENHANCEMENT-033: Refactor Discovery Assets to Use Universal Partitions Module
     - ENHANCEMENT-031: Partition LLM Enrichment Assets for Improved Performance and Scalability
     - ENHANCEMENT-032: Enrich Job Search Results with LLM-Processed Data
+    - ENHANCEMENT-037: AI Keyword Category Override via CTE in stage_keywords_normalized
 
 - **NO ACTION REQUIRED**
 
@@ -2515,6 +2516,360 @@ AI-related skills appear under the new category with appropriate subcategory val
 
 ### Implementation Notes
 Implemented directly in SQL string of the asset for speed; documented in `insert_skill_standardization_rules.sql` header. A future tech-debt item will migrate this logic to a maintainable mapping table.
+
+---
+
+## ENHANCEMENT-037: AI Keyword Category Override via CTE in stage_keywords_normalized
+
+**Status:** Completed
+**Priority:** Low
+**Component:** Keyword Normalization Pipeline (`stage_keywords_normalized`)
+**Date Planned:** 2025-07-04
+**Date Completed:** 2025-07-04
+**Business Impact:** Ensures AI-related keywords are grouped under a dedicated `Artificial Intelligence` category, improving analytics without waiting for new mapping rules.
+
+### Problem Statement
+AI-related keyword variants (e.g., "ai governance", "ai ethics", "ai tooling") were landing in generic or uncategorized buckets, limiting category-level insights.
+
+### Technical Approach
+A temporary Common Table Expression (`ai_keyword_category`) was introduced inside the SQL string executed by `stage_keywords_normalized` (see `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/keywords_normalization.py`).
+The CTE flags raw keyword texts containing AI patterns and force-sets:
+• `KEYWORD_CATEGORY` = `Artificial Intelligence`
+• Leaves `KEYWORD_TYPE` untouched (primary/industry/role_type).
+
+### Success Criteria
+All AI-related keywords now appear under the new category, accessible to analytics dashboards; no additional rule rows were required.
+
+### Implementation Notes
+This is a stop-gap solution analogous to ENHANCEMENT-036 for skills. A tech-debt item (see TECH-DEBT-005) already covers migrating such inline overrides to maintainable mapping tables.
+
+---
+
+## ENHANCEMENT-038: Replace Custom Skill Taxonomy with Lightcast Open Skills Taxonomy
+
+**Status:** Planned
+**Priority:** High
+**Component:** Skills Normalization Pipeline (rules/mappings, `stage_skills_normalized`, downstream analytics)
+**Date Planned:** 2025-07-04
+**Business Impact:** Aligning with a standardized, widely-adopted skills ontology will dramatically improve analytics consistency, interoperability with external datasets, and reduce long-term maintenance of bespoke taxonomies.
+
+### Problem Statement
+The current skills taxonomy (categories, subcategories, families) was crafted ad-hoc and lacks industry alignment. This limits:
+• Data comparability with market datasets.
+• Accurate cross-company skill insights.
+• Ease of incorporating new skills.
+
+### Technical Approach
+
+- **Database Schema & Data Loading Infrastructure**
+  1. Create three-tier Lightcast taxonomy tables in STAGE schema:
+     • `STAGE.SKILL_0_CATEGORY` - Top-level skill categories (33 categories)
+     • `STAGE.SKILL_1_SUBCATEGORY` - Mid-level subcategories
+     • `STAGE.SKILL_2_SKILL` - Individual skills with mappings to categories/subcategories
+  2. Implement CSV data loading pipeline for initial taxonomy setup:
+     ```sql
+     -- File: pipeline/sql/objects/tables/stage_skill_0_category.sql
+     CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY (
+         ID INTEGER PRIMARY KEY,
+         NAME STRING NOT NULL,
+         LEVEL INTEGER DEFAULT 0,
+         DESCRIPTION TEXT,
+         VERSION STRING DEFAULT '9.31',
+         LATEST_VERSION BOOLEAN DEFAULT TRUE,
+         CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+         UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP
+     ) CLUSTER BY (ID, NAME);
+
+     -- File: pipeline/sql/objects/tables/stage_skill_1_subcategory.sql
+     CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILL_1_SUBCATEGORY (
+         ID INTEGER PRIMARY KEY,
+         NAME STRING NOT NULL,
+         LEVEL INTEGER DEFAULT 1,
+         PARENT_CATEGORY_ID INTEGER,
+         DESCRIPTION TEXT,
+         VERSION STRING DEFAULT '9.31',
+         LATEST_VERSION BOOLEAN DEFAULT TRUE,
+         CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+         UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+         FOREIGN KEY (PARENT_CATEGORY_ID) REFERENCES BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY(ID)
+     ) CLUSTER BY (PARENT_CATEGORY_ID, ID);
+
+     -- File: pipeline/sql/objects/tables/stage_skill_2_skill.sql
+     CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILL_2_SKILL (
+         ID INTEGER PRIMARY KEY,
+         NAME STRING NOT NULL,
+         LEVEL INTEGER DEFAULT 2,
+         PARENT_SUBCATEGORY_ID INTEGER,
+         PARENT_CATEGORY_ID INTEGER,
+         DESCRIPTION TEXT,
+         VERSION STRING DEFAULT '9.31',
+         LATEST_VERSION BOOLEAN DEFAULT TRUE,
+         CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+         UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+         FOREIGN KEY (PARENT_SUBCATEGORY_ID) REFERENCES BETTERJOBS_DB.STAGE.SKILL_1_SUBCATEGORY(ID),
+         FOREIGN KEY (PARENT_CATEGORY_ID) REFERENCES BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY(ID)
+     ) CLUSTER BY (PARENT_CATEGORY_ID, PARENT_SUBCATEGORY_ID);
+     ```
+  3. Create Dagster assets for CSV data loading:
+     ```python
+     # File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/lightcast_taxonomy_loader.py
+     @asset(
+         group_name="0_infrastructure_setup",
+         kinds={"snowflake", "CSV", "taxonomy"}
+     )
+     def stage_lightcast_skill_categories(context: AssetExecutionContext, snowflake: SnowflakeResource):
+         """Load Lightcast skill categories from CSV file."""
+
+     @asset(
+         deps=["stage_lightcast_skill_categories"],
+         group_name="0_infrastructure_setup"
+     )
+     def stage_lightcast_skill_subcategories(context: AssetExecutionContext, snowflake: SnowflakeResource):
+         """Load Lightcast skill subcategories from CSV file."""
+
+     @asset(
+         deps=["stage_lightcast_skill_subcategories"],
+         group_name="0_infrastructure_setup"
+     )
+     def stage_lightcast_skills(context: AssetExecutionContext, snowflake: SnowflakeResource):
+         """Load Lightcast individual skills from CSV file."""
+     ```
+
+- **Taxonomy Update & Maintenance Process**
+  1. Create version-aware update mechanism:
+     ```python
+     # File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/lightcast_taxonomy_updater.py
+     @asset(
+         group_name="0_infrastructure_setup",
+         kinds={"snowflake", "maintenance"}
+     )
+     def lightcast_taxonomy_version_check(context: AssetExecutionContext, snowflake: SnowflakeResource):
+         """Check for Lightcast taxonomy updates and manage versioning."""
+
+     def update_lightcast_taxonomy(new_csv_files: List[str], target_version: str):
+         """Update taxonomy with new CSV data while preserving version history."""
+         # 1. Load new CSV data into staging tables
+         # 2. Compare with existing data
+         # 3. Update LATEST_VERSION flags
+         # 4. Insert new/changed records
+         # 5. Maintain audit trail
+     ```
+  2. Add taxonomy management utilities:
+     ```python
+     # File: pipeline/dagster_betterjobs/dagster_betterjobs/utils/lightcast_taxonomy_utils.py
+     def load_taxonomy_from_csv(csv_path: str, table_name: str, snowflake_conn) -> Dict[str, Any]:
+         """Load taxonomy data from CSV with validation and error handling."""
+
+     def validate_taxonomy_integrity(snowflake_conn) -> List[str]:
+         """Validate referential integrity and data quality of taxonomy tables."""
+
+     def get_skill_hierarchy(skill_id: int, snowflake_conn) -> Dict[str, str]:
+         """Get full hierarchy (Category > Subcategory > Skill) for a given skill."""
+     ```
+
+- **Prompt & Schema Simplification**
+  1. Refactor `llm_prompts.py` so `skills.technical_skills` is a **flat string array** (same shape as `soft_skills`) named `technical_skills`, eliminating the nested objects (cloud_platforms, frameworks, etc.).
+  2. Update JSON contract in `get_comprehensive_extraction_prompt()` and downstream validation helpers.
+
+- **Lightcast Skill List Injection with Context Caching**
+  1. Create skill list caching helper in `llm_processing.py`:
+     ```python
+     def get_lightcast_skills_for_caching(snowflake_conn, context: AssetExecutionContext) -> List[str]:
+         """Query Lightcast skills and prepare for context caching."""
+         query = """
+         SELECT DISTINCT s.NAME
+         FROM BETTERJOBS_DB.STAGE.SKILL_2_SKILL s
+         WHERE s.LATEST_VERSION = TRUE
+           AND LENGTH(s.NAME) >= 2
+           AND s.NAME NOT ILIKE '%deprecated%'
+         ORDER BY s.NAME
+         """
+         result = execute_query_to_list(snowflake_conn, query)
+         context.log.info(f"Retrieved {len(result)} Lightcast skills for caching")
+         return result
+     ```
+  2. **Explicitly cache this list using Gemini API context caching** ([docs](https://ai.google.dev/gemini-api/docs/caching?lang=python)):
+     ```python
+     def create_lightcast_skills_cache(lightcast_skills: List[str], context: AssetExecutionContext) -> str:
+         """Create Gemini context cache with Lightcast skills list."""
+         from google import genai, types
+
+         client = genai.Client()
+         cache = client.caches.create(
+             model="models/gemini-2.0-flash-001",
+             config=types.CreateCachedContentConfig(
+                 display_name=f"lightcast_skills_v{context.partition_key}",
+                 system_instruction=(
+                     "You are an expert skills extractor. PRIORITY: If ANY term from the Lightcast "
+                     "skills list below appears in the job posting (exact match or close variant), "
+                     "add it to technical_skills EXACTLY as written in the list. "
+                     "Then add any other unlisted skills you find."
+                 ),
+                 contents=[json.dumps(lightcast_skills)],
+                 ttl="1800s"  # 30 min default; configurable via env var
+             )
+         )
+         context.log.info(f"Created Lightcast skills cache: {cache.name}")
+         return cache.name
+     ```
+  3. Integrate cache creation with LLM processing:
+     ```python
+     def process_platform_llm_enrichment_with_lightcast(
+         platform: str,
+         context: AssetExecutionContext,
+         config,
+         conn,
+         gemini,
+         partition_key: str
+     ) -> Dict[str, Any]:
+         """Enhanced LLM processing with Lightcast skills context caching."""
+
+         # 1. Get Lightcast skills once per partition
+         lightcast_skills = get_lightcast_skills_for_caching(conn, context)
+         cached_name = create_lightcast_skills_cache(lightcast_skills, context)
+
+         # 2. Use cached context for all job processing
+         # ... existing processing logic with GenerateContentConfig(cached_content=cached_name)
+     ```
+
+- **Skills Normalization Pipeline Integration**
+  1. Update `stage_skills_normalized` to map to Lightcast taxonomy:
+     ```sql
+     -- Enhanced skills normalization with Lightcast mapping
+     WITH lightcast_mapped_skills AS (
+         SELECT
+             sre.JOB_UID,
+             sre.SKILL_NAME_RAW,
+             sre.SKILL_NAME_ORIGINAL,
+             -- Map to Lightcast taxonomy
+             ls.ID as LIGHTCAST_SKILL_ID,
+             ls.NAME as LIGHTCAST_SKILL_NAME,
+             lsc.ID as LIGHTCAST_SUBCATEGORY_ID,
+             lsc.NAME as LIGHTCAST_SUBCATEGORY_NAME,
+             lcat.ID as LIGHTCAST_CATEGORY_ID,
+             lcat.NAME as LIGHTCAST_CATEGORY_NAME,
+             -- Confidence based on exact vs fuzzy match
+             CASE
+                 WHEN LOWER(sre.SKILL_NAME_RAW) = LOWER(ls.NAME) THEN 1.0
+                 WHEN LOWER(sre.SKILL_NAME_RAW) LIKE '%' || LOWER(ls.NAME) || '%' THEN 0.9
+                 ELSE 0.7
+             END as LIGHTCAST_MATCH_CONFIDENCE
+         FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION sre
+         LEFT JOIN BETTERJOBS_DB.STAGE.SKILL_2_SKILL ls
+             ON LOWER(sre.SKILL_NAME_RAW) = LOWER(ls.NAME)
+             OR sre.SKILL_NAME_RAW ILIKE '%' || ls.NAME || '%'
+         LEFT JOIN BETTERJOBS_DB.STAGE.SKILL_1_SUBCATEGORY lsc
+             ON ls.PARENT_SUBCATEGORY_ID = lsc.ID
+         LEFT JOIN BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY lcat
+             ON ls.PARENT_CATEGORY_ID = lcat.ID
+         WHERE ls.LATEST_VERSION = TRUE OR ls.ID IS NULL
+     )
+     ```
+  2. Create Lightcast-aware skills normalization asset:
+     ```python
+     @asset(
+         deps=["stage_llm_skills_raw_extraction", "stage_lightcast_skills"],
+         description="Normalize skills using Lightcast Open Skills Taxonomy"
+     )
+     def stage_skills_normalized_lightcast(context: AssetExecutionContext, snowflake: SnowflakeResource):
+         """Apply Lightcast taxonomy mapping to extracted skills."""
+     ```
+
+- **Analytics Migration & One-Time Historical Backfill**
+  1. Create Snowflake SQL script `pipeline/sql/migrations/20250704_flatten_existing_technical_skills.sql`:
+     ```sql
+     /* Flatten historical technical_skills JSON arrays into STAGE.SKILLS_RAW_EXTRACTION */
+     INSERT INTO BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION (JOB_UID, RAW_SKILL_NAME, SOURCE)
+     SELECT
+         job_uid,
+         flattened.value::STRING       AS raw_skill_name,
+         'legacy_backfill'            AS source
+     FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED,
+          LATERAL FLATTEN(input => technical_skills) flattened
+     WHERE technical_skills IS NOT NULL;
+     ```
+  2. Add historical skills mapping to Lightcast:
+     ```sql
+     /* Map existing skills to Lightcast taxonomy */
+     UPDATE BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED sn
+     SET
+         LIGHTCAST_SKILL_ID = ls.ID,
+         LIGHTCAST_CATEGORY_NAME = lcat.NAME,
+         LIGHTCAST_SUBCATEGORY_NAME = lsc.NAME,
+         LIGHTCAST_MATCH_CONFIDENCE = CASE
+             WHEN LOWER(sn.SKILL_NAME) = LOWER(ls.NAME) THEN 1.0
+             ELSE 0.8
+         END
+     FROM BETTERJOBS_DB.STAGE.SKILL_2_SKILL ls
+     JOIN BETTERJOBS_DB.STAGE.SKILL_1_SUBCATEGORY lsc ON ls.PARENT_SUBCATEGORY_ID = lsc.ID
+     JOIN BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY lcat ON ls.PARENT_CATEGORY_ID = lcat.ID
+     WHERE LOWER(sn.SKILL_NAME) = LOWER(ls.NAME)
+       AND ls.LATEST_VERSION = TRUE;
+     ```
+  3. Create one-off Dagster job for historical migration:
+     ```python
+     @job(name="lightcast_historical_migration")
+     def lightcast_skills_historical_migration():
+         """One-time job to migrate existing skills to Lightcast taxonomy."""
+         return [
+             flatten_historical_technical_skills(),
+             map_existing_skills_to_lightcast(),
+             validate_lightcast_migration()
+         ]
+     ```
+
+### Implementation Plan
+
+#### **Phase 1: Database Infrastructure Setup (Day 1)**
+- Create Lightcast taxonomy table schemas
+- Implement CSV loading utilities and validation
+- Create initial data loading assets
+- Load taxonomy data from provided CSV files
+- Validate referential integrity and data quality
+
+#### **Phase 2: LLM Processing Integration (Day 2)**
+- Update `llm_prompts.py` to use flat technical_skills array
+- Implement Lightcast skills caching with Gemini context API
+- Modify LLM processing pipeline to use cached skills list
+- Test enhanced LLM extraction with Lightcast skills
+
+#### **Phase 3: Skills Normalization Refactoring (Day 3)**
+- Update skills normalization to map to Lightcast taxonomy
+- Create Lightcast-aware normalization asset
+- Update skills consolidation to use Lightcast hierarchy
+- Test end-to-end skills pipeline with Lightcast integration
+
+#### **Phase 4: Historical Data Migration (Day 4)**
+- Create migration scripts for existing skills data
+- Run one-time historical backfill and mapping
+- Validate migration results and data quality
+- Update analytics queries to use Lightcast taxonomy
+
+#### **Phase 5: Taxonomy Management & Documentation (Day 5)**
+- Implement taxonomy update and versioning processes
+- Create maintenance utilities and monitoring
+- Document new taxonomy management procedures
+- Create rollback procedures and testing
+
+### Success Criteria
+• ≥90% of extracted technical skills match a Lightcast skill name
+• Complete three-tier taxonomy integration (Category > Subcategory > Skill)
+• Efficient context caching reduces token costs by 40%+
+• Historical data successfully migrated with audit trail
+• Taxonomy update process handles version management
+• No data loss during migration from custom to Lightcast taxonomy
+
+### Implementation Notes
+- Uses Gemini explicit context caching for guaranteed cost savings and prompt consistency
+- Maintains version history for taxonomy updates and rollback capability
+- Provides complete audit trail for skills mapping decisions
+- Supports both exact and fuzzy matching for skills extraction
+- Includes comprehensive validation and data quality checks
+
+### Dependencies
+- Lightcast Open Skills Taxonomy CSV files (3 files: categories, subcategories, skills)
+- Updated Gemini API configuration for context caching
+- Enhanced skills normalization pipeline from ENHANCEMENT-035
 
 --
 
