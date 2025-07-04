@@ -126,12 +126,19 @@ from dagster_betterjobs.assets.snowflake_setup import (
     setup_validation
 )
 
+# ENHANCEMENT-038: Lightcast Taxonomy Loading Assets
+from dagster_betterjobs.assets.lightcast_taxonomy import (
+    stage_lightcast_skill_categories,
+    stage_lightcast_skill_subcategories,
+    stage_lightcast_skills,
+    lightcast_taxonomy_validation
+)
+
 # ENHANCEMENT-028: Schema Drift Detection
 from dagster_betterjobs.assets.schema_validation import schema_drift_validation
 
 __all__ = [
     "adhoc_company_urls",
-    "job_search_results",
     "bamboohr_company_jobs_discovery",
     "greenhouse_company_jobs_discovery",
     "smartrecruiters_company_jobs_discovery",
@@ -147,8 +154,6 @@ __all__ = [
     "stage_jobs_unified",
     # Company profiles transformation
     "stage_company_profiles",
-    # LLM enrichment asset
-    "stage_jobs_llm_enriched",
     # Platform-specific LLM enrichment assets for parallel processing
     "stage_jobs_llm_enriched_bamboohr",
     "stage_jobs_llm_enriched_greenhouse",
@@ -218,6 +223,11 @@ __all__ = [
     "views_setup",
     "static_data_population",
     "setup_validation",
+    # ENHANCEMENT-038: Lightcast Taxonomy Loading Assets
+    "stage_lightcast_skill_categories",
+    "stage_lightcast_skill_subcategories",
+    "stage_lightcast_skills",
+    "lightcast_taxonomy_validation",
     # ENHANCEMENT-028: Schema Drift Detection
     "schema_drift_validation"
 ]

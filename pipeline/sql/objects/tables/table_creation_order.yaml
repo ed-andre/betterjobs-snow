@@ -21,6 +21,9 @@ stage_layer:
   - stage_jobs_llm_enriched.sql
 
   # Lookup and mapping tables (standalone reference data)
+  - stage_skill_0_category.sql
+  - stage_skill_1_subcategory.sql
+  - stage_skill_2_skill.sql
   - stage_countries_mapping.sql
   - stage_us_states_mapping.sql
   - stage_location_mapping.sql
@@ -83,7 +86,7 @@ analytics_layer:
   - analytics_job_experience_bridge.sql
   - analytics_job_skills_bridge.sql
   - analytics_job_keywords_bridge.sql
- 
+
 
   # Fact tables (reference multiple dimension tables)
   - analytics_fact_job_postings.sql

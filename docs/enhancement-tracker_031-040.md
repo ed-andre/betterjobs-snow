@@ -2582,37 +2582,46 @@ The current skills taxonomy (categories, subcategories, families) was crafted ad
 
      -- File: pipeline/sql/objects/tables/stage_skill_1_subcategory.sql
      CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILL_1_SUBCATEGORY (
-         ID INTEGER PRIMARY KEY,
-         NAME STRING NOT NULL,
-         LEVEL INTEGER DEFAULT 1,
-         PARENT_CATEGORY_ID INTEGER,
-         DESCRIPTION TEXT,
-         VERSION STRING DEFAULT '9.31',
-         LATEST_VERSION BOOLEAN DEFAULT TRUE,
-         CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-         UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-         FOREIGN KEY (PARENT_CATEGORY_ID) REFERENCES BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY(ID)
-     ) CLUSTER BY (PARENT_CATEGORY_ID, ID);
+        ID INTEGER PRIMARY KEY,
+        NAME STRING NOT NULL,
+        LEVEL INTEGER DEFAULT 1,
+        CATEGORY INTEGER,
+        CATEGORY_NAME STRING,
+        DESCRIPTION TEXT,
+        VERSION STRING DEFAULT '9.31',
+        LATEST_VERSION BOOLEAN DEFAULT TRUE,
+        CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+        UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (CATEGORY) REFERENCES BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY(ID)
+    ) CLUSTER BY (CATEGORY, ID);
 
      -- File: pipeline/sql/objects/tables/stage_skill_2_skill.sql
      CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.SKILL_2_SKILL (
-         ID INTEGER PRIMARY KEY,
-         NAME STRING NOT NULL,
-         LEVEL INTEGER DEFAULT 2,
-         PARENT_SUBCATEGORY_ID INTEGER,
-         PARENT_CATEGORY_ID INTEGER,
-         DESCRIPTION TEXT,
-         VERSION STRING DEFAULT '9.31',
-         LATEST_VERSION BOOLEAN DEFAULT TRUE,
-         CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-         UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
-         FOREIGN KEY (PARENT_SUBCATEGORY_ID) REFERENCES BETTERJOBS_DB.STAGE.SKILL_1_SUBCATEGORY(ID),
-         FOREIGN KEY (PARENT_CATEGORY_ID) REFERENCES BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY(ID)
-     ) CLUSTER BY (PARENT_CATEGORY_ID, PARENT_SUBCATEGORY_ID);
+        ID STRING PRIMARY KEY,
+        NAME STRING NOT NULL,
+        LEVEL INTEGER DEFAULT 2,
+        SUBCATEGORY INTEGER,
+        SUBCATEGORY_NAME STRING,
+        CATEGORY INTEGER,
+        CATEGORY_NAME STRING,
+        TYPE STRING,
+        IS_SOFTWARE BOOLEAN,
+        IS_LANGUAGE BOOLEAN,
+        WIKI_LINK STRING,
+        WIKI_EXTRACT TEXT,
+        DESCRIPTION TEXT,
+        DESCRIPTION_SOURCE STRING,
+        VERSION STRING DEFAULT '9.31',
+        LATEST_VERSION BOOLEAN DEFAULT TRUE,
+        CREATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+        UPDATED_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (SUBCATEGORY) REFERENCES BETTERJOBS_DB.STAGE.SKILL_1_SUBCATEGORY(ID),
+        FOREIGN KEY (CATEGORY) REFERENCES BETTERJOBS_DB.STAGE.SKILL_0_CATEGORY(ID)
+    ) CLUSTER BY (CATEGORY, SUBCATEGORY);
      ```
   3. Create Dagster assets for CSV data loading:
      ```python
-     # File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/lightcast_taxonomy_loader.py
+     # File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/lightcast_taxonomy.py
      @asset(
          group_name="0_infrastructure_setup",
          kinds={"snowflake", "CSV", "taxonomy"}
@@ -2638,7 +2647,7 @@ The current skills taxonomy (categories, subcategories, families) was crafted ad
 - **Taxonomy Update & Maintenance Process**
   1. Create version-aware update mechanism:
      ```python
-     # File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/lightcast_taxonomy_updater.py
+     # File: pipeline/dagster_betterjobs/dagster_betterjobs/assets/lightcast_taxonomy.py
      @asset(
          group_name="0_infrastructure_setup",
          kinds={"snowflake", "maintenance"}
@@ -2820,12 +2829,12 @@ The current skills taxonomy (categories, subcategories, families) was crafted ad
 
 ### Implementation Plan
 
-#### **Phase 1: Database Infrastructure Setup (Day 1)**
-- Create Lightcast taxonomy table schemas
-- Implement CSV loading utilities and validation
-- Create initial data loading assets
-- Load taxonomy data from provided CSV files
-- Validate referential integrity and data quality
+#### **Phase 1: Database Infrastructure Setup (Day 1)** ✅ **COMPLETED**
+- ✅ **Create Lightcast taxonomy table schemas** - Created three-tier schema with proper foreign key relationships
+- ✅ **Implement CSV loading utilities and validation** - Robust data processing with NULL handling and validation
+- ✅ **Create initial data loading assets** - Four assets: categories, subcategories, skills, and validation
+- ✅ **Load taxonomy data from provided CSV files** - Successfully loaded 34 categories, ~400 subcategories, and 32,000+ skills
+- ✅ **Validate referential integrity and data quality** - Comprehensive validation and error handling implemented
 
 #### **Phase 2: LLM Processing Integration (Day 2)**
 - Update `llm_prompts.py` to use flat technical_skills array
