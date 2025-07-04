@@ -752,3 +752,31 @@ VIEW_VERSIONING_CONFIG = {
 - Potential integration with broader deployment tracking systems
 
 ---
+
+## TECH-DEBT-005: Replace Inline AI Skill Categorization CTE with Maintainable Mapping
+
+**Status:** 🔍 **Planned**
+**Priority:** Medium
+**Component:** Skills Normalization Pipeline (`stage_skills_normalized`, rules/mapping tables)
+**Date Identified:** 2025-07-04
+**Estimated Effort:** 1 day
+**Business Impact:** Medium – improves maintainability and consistency of skill categorization logic.
+
+### Problem Statement
+ENHANCEMENT-036 introduced an inline CTE (`ai_skill_category`) inside `stage_skills_normalized` to quickly bucket AI-related skill names under the `Artificial Intelligence` category and appropriate subcategories. While efficient, hard-coding business logic in Python SQL strings breaks separation-of-concerns and requires code changes for updates.
+
+### Proposed Fix
+1. Create dedicated rows in `SKILL_STANDARDIZATION_RULES` or a new `SKILL_CATEGORY_MAPPING` table to capture AI patterns and desired categories/subcategories.
+2. Remove the CTE from `skills_normalization.py`, replacing it with a LEFT JOIN to the mapping table (similar to `stage_skill_family_mapping`).
+3. Provide a data-population SQL file (`insert_ai_category_mappings.sql`) for easy updates by non-engineers.
+
+### Success Criteria
+• No AI logic remains in code; all pattern→category mappings live in tables.
+• Updating AI pattern list requires only SQL changes, no pipeline redeploy.
+• Unit tests confirm identical categorization results before/after migration.
+
+### Risks & Mitigation
+• Risk of category drift during migration – validate counts before and after.
+• Performance impact – ensure join to mapping table is indexed.
+
+---

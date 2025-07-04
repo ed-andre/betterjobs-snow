@@ -296,3 +296,22 @@ FROM SKILL_STANDARDIZATION_RULES
 WHERE SKILL_CATEGORY IN ('languages', 'frameworks', 'tools', 'keyword')
 ORDER BY SKILL_CATEGORY, CONFIDENCE_SCORE DESC
 LIMIT 20;
+
+-- -------------------------------------------------------------------------
+-- NOTE ON AI SKILL CATEGORIZATION (ENHANCEMENT-036)
+-- -------------------------------------------------------------------------
+-- As of ENHANCEMENT-036 (2025-07-03) we bucket AI-related raw skill names
+-- under the umbrella category `Artificial Intelligence` directly inside the
+-- Python asset `stage_skills_normalized` (see
+-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/llm_standardization/skills_normalization.py`)
+-- via an inline Common Table Expression (CTE) named `ai_skill_category`.
+-- This avoids adding dozens of near-duplicate rows here while we evaluate a
+-- longer-term mapping/rule-based strategy.
+--
+-- Impact:
+--   • The CTE overrides both `SKILL_CATEGORY` and `SKILL_SUBCATEGORY` before
+--     aggregation. No additional rows are required in this rule file for AI
+--     variants such as "ai-ops", "ai tools", etc.
+--   • Once a dedicated mapping table or rule set is in place this comment
+--     will be removed and the CTE deleted.
+-- -------------------------------------------------------------------------

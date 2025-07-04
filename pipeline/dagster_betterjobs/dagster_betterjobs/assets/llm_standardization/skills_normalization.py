@@ -370,11 +370,32 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             MANUAL_REVIEW_FLAG,
             CANONICAL_FORM
         )
-        WITH standardized_skills AS (
+        -- ENHANCEMENT-036: AI Skill Category and Subcategory override
+        WITH ai_skill_category AS (
+            SELECT DISTINCT
+                SKILL_NAME_RAW,
+                'Artificial Intelligence' as SKILL_CATEGORY,
+                CASE
+                    WHEN SKILL_NAME_RAW ILIKE '%ml%' OR SKILL_NAME_RAW ILIKE '%machine learning%'  THEN 'Machine Learning'
+                    WHEN SKILL_NAME_RAW ILIKE '%nlp%' OR SKILL_NAME_RAW ILIKE '%natural language%' THEN 'Natural Language Processing'
+                    WHEN SKILL_NAME_RAW ILIKE '%cv%'  OR SKILL_NAME_RAW ILIKE '%computer vision%'  THEN 'Computer Vision'
+                ELSE 'General AI'
+        END AS SKILL_SUBCATEGORY
+            FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
+            WHERE SKILL_CATEGORY = 'tools'
+                AND (
+                    SKILL_NAME_RAW = 'ai'
+                    OR SKILL_NAME_RAW ILIKE 'ai-%'
+                    OR SKILL_NAME_RAW ILIKE 'ai %'
+                    OR SKILL_NAME_RAW ILIKE '% ai'
+
+                )
+        ),
+        standardized_skills AS (
             SELECT
                 COALESCE(sr.STANDARDIZED_NAME, sre.SKILL_NAME_ORIGINAL) as skill_name,
-                COALESCE(sr.SKILL_CATEGORY, sre.SKILL_CATEGORY) as skill_category,
-                COALESCE(sr.SKILL_SUBCATEGORY, 'uncategorized') as skill_subcategory,
+                COALESCE(ais.SKILL_CATEGORY, sr.SKILL_CATEGORY, sre.SKILL_CATEGORY) as skill_category,
+                COALESCE(ais.SKILL_SUBCATEGORY, sr.SKILL_SUBCATEGORY, 'uncategorized') as skill_subcategory,
                 COALESCE(sfm.SKILL_FAMILY, 'general') as skill_family,
                 CASE
                     WHEN sre.SKILL_CATEGORY IN ('soft') THEN 'soft'
@@ -391,6 +412,8 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
                 ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
             LEFT JOIN {family_mapping_table} sfm
                 ON sre.SKILL_CATEGORY = sfm.SKILL_CATEGORY AND sfm.IS_ACTIVE = TRUE
+            LEFT JOIN ai_skill_category ais
+                ON sre.SKILL_NAME_RAW = ais.SKILL_NAME_RAW
             LEFT JOIN {llm_enriched_table} lle ON sre.JOB_UID = lle.JOB_UID
             JOIN {unified_jobs_table} ju ON sre.JOB_UID = ju.JOB_UID
             WHERE LENGTH(sre.SKILL_NAME_RAW) >= 2  -- Filter out single characters
