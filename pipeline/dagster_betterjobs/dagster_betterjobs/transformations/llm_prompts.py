@@ -84,9 +84,9 @@ EXTRACTION GUIDELINES:
 
 2. EXPERIENCE: Extract years of experience required (e.g., "3-5 years" → min=3, max=5). For experience_level, use: Entry (0-2 years), Mid (3-5 years), Senior (6+ years), Executive (10+ years). For specific_technologies_years, extract technology requirements with years (e.g., "3+ years Python" → {{"Python": 3}}).
 
-3. TECHNICAL SKILLS: Extract specific technologies, tools, languages, frameworks. Group by category. Be precise - don't include general terms like "programming" or "software".
+3. TECHNICAL SKILLS: Extract specific technologies, software, tools, languages, frameworks, technical abilities as a flat array. Use EXACT NAMES from the Lightcast Open Skills Taxonomy whenever possible. Do not group by category or create nested objects. Be precise - don't include general terms like "programming" or "software".
 
-4. SOFT SKILLS: Extract interpersonal and professional skills like "communication", "leadership", "problem-solving", "teamwork".
+4. SOFT SKILLS: Extract interpersonal and professional skills like "communication", "leadership", "problem-solving", "teamwork". Use standardized terms from Lightcast Open Skills Taxonomy when available.
 
 5. WORK ARRANGEMENT: Identify remote policy, office requirements, travel needs, timezone preferences. For work_type: Remote (100% remote), Hybrid (mix of remote/office), On-site (office required).
 
@@ -103,6 +103,7 @@ CRITICAL RULES:
 - Currency defaults to "USD" if not specified
 - Be conservative with confidence scores - only use >0.8 for very clear information
 - For specific_technologies_years, only include technologies with explicit year requirements
+- For technical_skills and soft_skills, use EXACT NAMES from Lightcast Open Skills Taxonomy whenever possible
 
 Job posting to analyze:
 
@@ -169,13 +170,14 @@ Return a JSON object with corrections and validation results:
 
 VALIDATION GUIDELINES:
 1. Check if extracted salary ranges are realistic and actually mentioned in the job posting
-2. Verify that technical skills are explicitly mentioned, not inferred
+2. Verify that technical skills are explicitly mentioned and match Lightcast taxonomy terms
 3. Ensure experience levels match the language used (e.g., "senior" vs "junior")
 4. Validate specific_technologies_years contains only technologies with explicit year requirements
 5. Confirm work arrangement details are clearly stated, not assumed
 6. Check that certifications and timezone_requirements are explicitly stated
 7. Validate that job classification aligns with the job title and description
-8. Verify team_size is mentioned in the job posting
+8. Track the percentage of technical skills that match Lightcast taxonomy terms
+
 
 Return ONLY valid JSON.
 """
@@ -206,7 +208,8 @@ Return a JSON object with this structure:
 GUIDELINES:
 - Focus on job title and key responsibilities
 - Use conservative confidence scores
-- Primary keywords should be the 3 most relevant technical/role terms
+- Primary keywords should be the 5 most relevant technical/role terms from Lightcast Open Skills Taxonomy
+- If a keyword isn't found in Lightcast taxonomy, use the most similar term that is
 
 Job posting:
 

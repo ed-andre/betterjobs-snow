@@ -15,9 +15,10 @@ Output Tables:
 
 import json
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Union
 from datetime import datetime
 from pathlib import Path
+from decimal import Decimal
 
 from dagster import (
     asset,
@@ -33,6 +34,17 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists, execute_
 PROJECT_ROOT = Path(__file__).resolve().parents[5]  # Go up 6 levels to project root
 
 
+def _convert_decimal(obj: Union[Decimal, List, Dict, Any]) -> Union[float, List, Dict, Any]:
+    """Convert Decimal objects to float for JSON serialization."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    elif isinstance(obj, list):
+        return [_convert_decimal(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: _convert_decimal(value) for key, value in obj.items()}
+    return obj
+
+
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten skills from LLM VARIANT columns using schema-as-code",
@@ -41,17 +53,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[5]  # Go up 6 levels to project 
 )
 def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Extract all skills from VARIANT columns and flatten into workable format.
+    Extract skills from LLM enrichment and map to Lightcast taxonomy.
 
     Uses schema-as-code approach with canonical view definition from SQL file.
 
     Processes:
-    - technical_skills: Flattens nested JSON by category
-    - soft_skills: Extracts array values
+    - technical_skills: Flattens array and maps to Lightcast taxonomy
+    - soft_skills: Extracts array values (not mapped to Lightcast)
 
-    Note: PRIMARY_KEYWORDS are handled separately in keywords normalization pipeline.
-
-    Output: Raw skills with source tracking and confidence scores
+    Output: Raw skills with Lightcast taxonomy mapping and confidence scores
     """
 
     conn = snowflake.get_connection()
@@ -62,6 +72,8 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
         "skills_extracted": 0,
         "technical_skills_count": 0,
         "soft_skills_count": 0,
+        "lightcast_mapped_skills": 0,
+        "high_confidence_matches": 0,  # confidence >= 0.9
         "unique_jobs_processed": 0,
         "extraction_errors": 0,
         "schema_as_code": True
@@ -70,7 +82,7 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔍 Starting LLM skills raw extraction with schema-as-code...")
+        context.log.info("🔍 Starting LLM skills raw extraction with Lightcast mapping...")
 
         # 🔧 SCHEMA-AS-CODE: Ensure view exists using canonical SQL file
         view_name = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
@@ -82,7 +94,9 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
             COUNT(*) as total_skills,
             COUNT(DISTINCT JOB_UID) as unique_jobs,
             COUNT(CASE WHEN SKILL_SOURCE = 'technical_skills' THEN 1 END) as technical_count,
-            COUNT(CASE WHEN SKILL_SOURCE = 'soft_skills' THEN 1 END) as soft_count
+            COUNT(CASE WHEN SKILL_SOURCE = 'soft_skills' THEN 1 END) as soft_count,
+            COUNT(CASE WHEN LIGHTCAST_SKILL_ID IS NOT NULL THEN 1 END) as lightcast_mapped,
+            COUNT(CASE WHEN LIGHTCAST_MATCH_CONFIDENCE >= 0.9 THEN 1 END) as high_confidence
         FROM {view_name}
         """)
 
@@ -92,14 +106,24 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
                 "skills_extracted": result[0],
                 "unique_jobs_processed": result[1],
                 "technical_skills_count": result[2],
-                "soft_skills_count": result[3]
+                "soft_skills_count": result[3],
+                "lightcast_mapped_skills": result[4],
+                "high_confidence_matches": result[5]
             })
 
-        # Sample some data for validation
+        # Sample top skills with Lightcast mapping
         cursor.execute(f"""
-        SELECT SKILL_SOURCE, SKILL_CATEGORY, SKILL_NAME_ORIGINAL, COUNT(*) as frequency
+        SELECT
+            SKILL_SOURCE,
+            SKILL_NAME_ORIGINAL,
+            LIGHTCAST_SKILL_NAME,
+            LIGHTCAST_SUBCATEGORY_NAME,
+            LIGHTCAST_CATEGORY_NAME,
+            LIGHTCAST_MATCH_CONFIDENCE,
+            COUNT(*) as frequency
         FROM {view_name}
-        GROUP BY SKILL_SOURCE, SKILL_CATEGORY, SKILL_NAME_ORIGINAL
+        WHERE LIGHTCAST_SKILL_ID IS NOT NULL
+        GROUP BY 1,2,3,4,5,6
         ORDER BY frequency DESC
         LIMIT 20
         """)
@@ -107,14 +131,16 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
         sample_data = cursor.fetchall()
         if sample_data:
             columns = [desc[0] for desc in cursor.description]
-            stats["top_skills_sample"] = [dict(zip(columns, row)) for row in sample_data]
+            stats["top_skills_sample"] = _convert_decimal([dict(zip(columns, row)) for row in sample_data])
 
         context.log.info(f"""
-        🎯 Skills Raw Extraction Complete (Schema-as-Code):
+        🎯 Skills Raw Extraction Complete (Lightcast Integration):
         • Total Skills Extracted: {stats['skills_extracted']:,}
         • Unique Jobs Processed: {stats['unique_jobs_processed']:,}
         • Technical Skills: {stats['technical_skills_count']:,}
         • Soft Skills: {stats['soft_skills_count']:,}
+        • Lightcast Mapped: {stats['lightcast_mapped_skills']:,}
+        • High Confidence: {stats['high_confidence_matches']:,}
         • View: {view_name}
         """)
 
@@ -124,6 +150,8 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
             "unique_jobs_processed": MetadataValue.int(stats["unique_jobs_processed"]),
             "technical_skills_count": MetadataValue.int(stats["technical_skills_count"]),
             "soft_skills_count": MetadataValue.int(stats["soft_skills_count"]),
+            "lightcast_mapped_skills": MetadataValue.int(stats["lightcast_mapped_skills"]),
+            "high_confidence_matches": MetadataValue.int(stats["high_confidence_matches"]),
             "schema_as_code": MetadataValue.bool(True),
             "view_name": MetadataValue.text(view_name),
             "top_skills_sample": MetadataValue.json(stats.get("top_skills_sample", []))
