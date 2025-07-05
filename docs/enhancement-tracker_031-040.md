@@ -21,8 +21,7 @@ This document tracks planned enhancements and architectural improvements for the
 
 - **OPEN**
 
-    - ENHANCEMENT-038: Replace Custom Skill Taxonomy with Lightcast Open Skills Taxonomy
-    (NOTE: This enhancement deprecated the stage_skills_standardization_rules and the consolidation assets, which is no longer needed)
+
 
 - **IN PROGRESS**
 
@@ -37,6 +36,8 @@ This document tracks planned enhancements and architectural improvements for the
     - ENHANCEMENT-031: Partition LLM Enrichment Assets for Improved Performance and Scalability
     - ENHANCEMENT-032: Enrich Job Search Results with LLM-Processed Data
     - ENHANCEMENT-037: AI Keyword Category Override via CTE in stage_keywords_normalized
+    - ENHANCEMENT-038: Replace Custom Skill Taxonomy with Lightcast Open Skills Taxonomy
+        (NOTE: This enhancement deprecated the stage_skills_standardization_rules and the consolidation assets, which is no longer needed)
 
 - **NO ACTION REQUIRED**
 
@@ -2546,12 +2547,13 @@ This is a stop-gap solution analogous to ENHANCEMENT-036 for skills. A tech-debt
 
 ---
 
-## ENHANCEMENT-038: Replace Custom Skill Taxonomy with Lightcast Open Skills Taxonomy
+## ENHANCEMENT-038: Replace Custom Skill Taxonomy with Lightcast Open Skills Taxonomy -- ✅ COMPLETED
 
-**Status:** In Progress
+**Status:** Completed
 **Priority:** High
 **Component:** Skills Normalization Pipeline (rules/mappings, `stage_skills_normalized`, downstream analytics)
 **Date Planned:** 2025-07-04
+**Date Completed:** 2025-07-05
 **Business Impact:** Aligning with a standardized, widely-adopted skills ontology will dramatically improve analytics consistency, interoperability with external datasets, and reduce long-term maintenance of bespoke taxonomies.
 
 ### Problem Statement

@@ -1,16 +1,19 @@
 -- UPDATED TABLE STRUCTURE: aligned with analytics_fact_job_postings implementation
 -- Enhancement-023: Updated skills demand weekly with denormalized salary fields and enhanced metrics
+-- Enhancement-039: Removed JOB_FAMILY and LOCATION dimensions, added SKILL_CATEGORY and SKILL_SUBCATEGORY
 CREATE TABLE ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY (
     -- Primary Key & Week Hierarchy
-    SKILLS_WEEKLY_KEY STRING PRIMARY KEY,       -- Format: 'SW_' + WEEK_KEY + '_' + SKILL_KEY + '_' + JOB_FAMILY_KEY + '_' + LOCATION_KEY
+    SKILLS_WEEKLY_KEY STRING PRIMARY KEY,       -- Format: 'SW_' + WEEK_KEY + '_' + SKILL_KEY + '_' + SKILL_CATEGORY
     WEEK_KEY STRING,                            -- YYYY-WW format (e.g., '2025-25')
     SKILL_KEY STRING,                           -- FK to DIM_SKILLS
-    JOB_FAMILY_KEY STRING,                      -- FK to DIM_JOB_FAMILY
-    LOCATION_KEY STRING,                        -- FK to DIM_LOCATION
+    SKILL_NAME STRING,                          -- Denormalized from DIM_SKILLS for convenience
+    SKILL_CATEGORY STRING,                      -- Denormalized from DIM_SKILLS for analysis
+    SKILL_SUBCATEGORY STRING,                   -- Denormalized from DIM_SKILLS for analysis
+    SKILL_TYPE STRING,                          -- Skill type (technical, soft, etc.)
 
     -- Core Demand Metrics
     ACTIVE_JOBS_WITH_SKILL INTEGER,             -- Active jobs requiring this skill in the week
-    TOTAL_ACTIVE_JOBS_FOR_WEEK INTEGER,         -- Total active jobs in same category (job family + location) for the week
+    TOTAL_ACTIVE_JOBS_FOR_WEEK INTEGER,         -- Total active jobs across all categories for the week
     SKILL_PENETRATION_RATE FLOAT,               -- Percentage of jobs requiring this skill (jobs_with_skill/total_jobs)
 
     -- Enhanced Salary Analysis (using denormalized annual USD fields from fact table)
@@ -27,9 +30,9 @@ CREATE TABLE ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY (
     FOUR_WEEK_MOVING_AVERAGE FLOAT,            -- 4-week moving average for trend smoothing
 
     -- Market Position & Competitive Analysis
-    SKILL_RANK_IN_FAMILY INTEGER,              -- Rank within job family (1 = most in-demand)
     SKILL_RANK_OVERALL INTEGER,                -- Overall market rank across all skills
-    MARKET_SHARE_IN_FAMILY FLOAT,              -- Share of total job family demand
+    SKILL_RANK_IN_CATEGORY INTEGER,            -- Rank within skill category (1 = most in-demand)
+    MARKET_SHARE_IN_CATEGORY FLOAT,            -- Share of total category demand
 
     -- Data Quality & Confidence Metrics
     AVG_SKILL_CONFIDENCE FLOAT,                -- Average extraction confidence from bridge table
@@ -46,4 +49,4 @@ CREATE TABLE ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY (
     WEEK_START_DATE DATE,                       -- First day of week (Sunday) for partitioning
     WEEK_END_DATE DATE                          -- Last day of week (Saturday) for reference
 )
-CLUSTER BY (WEEK_KEY, SKILL_KEY, JOB_FAMILY_KEY);
+CLUSTER BY (WEEK_KEY, SKILL_KEY, SKILL_CATEGORY);

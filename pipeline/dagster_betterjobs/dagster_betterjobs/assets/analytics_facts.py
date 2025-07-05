@@ -504,7 +504,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 
 
 @asset(
-    deps=["analytics_fact_job_postings", "analytics_job_skills_bridge", "analytics_dim_skills"],
+    deps=["analytics_fact_job_postings", "analytics_job_skills_bridge", "analytics_dim_skills", "analytics_dim_date"],
     description="Create weekly skills demand aggregate fact table for technology trend analysis",
     group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
@@ -514,14 +514,14 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
     Build weekly skills demand aggregates from job postings and skills relationships.
 
     This asset creates comprehensive weekly skill demand intelligence by aggregating job postings
-    by skill, week, job family, and location to enable responsive technology trend analysis.
+    by skill, week, and skill category to enable responsive technology trend analysis.
 
     Processing Logic:
     1. Join FACT_JOB_POSTINGS with JOB_SKILLS_BRIDGE to get job-skill relationships
-    2. Group by week, skill, job family, and location for comprehensive market view
+    2. Group by week, skill, skill category, and skill subcategory for comprehensive market view
     3. Calculate core demand metrics (penetration rates, job counts, growth rates)
     4. Compute salary analysis and skill premiums using denormalized salary fields
-    5. Generate skill rankings within job families and overall market
+    5. Generate skill rankings within categories and overall market
     6. Apply week-over-week trend analysis with directional classification
     7. Implement data quality filtering using confidence scores from bridge table
 
@@ -532,13 +532,13 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
     - Use salary data only where SALARY_CONFIDENCE >= 0.6
     - Apply LLM confidence filtering (LLM_OVERALL_CONFIDENCE >= 0.5)
 
-    Grain: One record per skill per week per job family per location
+    Grain: One record per skill per week per skill category
     Aggregation Level: Weekly (Sunday-Saturday weeks)
     Retention: 104 weeks (2 years) for trend analysis
 
     Performance Optimization:
     - Partition by WEEK_START_DATE for time-based queries
-    - Cluster by (WEEK_KEY, SKILL_KEY, JOB_FAMILY_KEY) for analytical patterns
+    - Cluster by (WEEK_KEY, SKILL_KEY, SKILL_CATEGORY) for analytical patterns
     - Pre-calculate rankings and growth rates for dashboard performance
 
     Returns:
@@ -565,8 +565,10 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 skills_weekly_key,
                 week_key,
                 skill_key,
-                job_family_key,
-                location_key,
+                skill_name,
+                skill_category,
+                skill_subcategory,
+                skill_type,
                 active_jobs_with_skill,
                 total_active_jobs_for_week,
                 skill_penetration_rate,
@@ -579,9 +581,9 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 week_over_week_growth_rate,
                 trend_direction,
                 four_week_moving_average,
-                skill_rank_in_family,
                 skill_rank_overall,
-                market_share_in_family,
+                skill_rank_in_category,
+                market_share_in_category,
                 avg_skill_confidence,
                 data_completeness_score,
                 sample_size,
@@ -598,27 +600,32 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     fjp.JOB_UID,
                     fjp.DATE_POSTED_KEY,
                     fjp.FIRST_POSTED_DATE,
-                    fjp.JOB_FAMILY_KEY,
-                    fjp.LOCATION_KEY,
                     fjp.SALARY_MIDPOINT_ANNUAL_USD,
                     fjp.WORK_TYPE,
                     fjp.IS_ACTIVE_POSTING,
                     fjp.SALARY_CONFIDENCE,
                     fjp.LLM_OVERALL_CONFIDENCE,
 
-                    -- Skills from analytics bridge table with confidence filtering
+                    -- Skills from analytics bridge and dim_skill table with confidence filtering
                     jsb.SKILL_KEY,
-                    jsb.SKILL_CATEGORY,
+                    ds.SKILL_NAME,
+                    ds.SKILL_CATEGORY,
+                    ds.SKILL_SUBCATEGORY,
+                    ds.SKILL_TYPE,
                     jsb.EXTRACTION_CONFIDENCE as skill_extraction_confidence,
 
-                    -- Generate week keys for aggregation
-                    TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
-                    DATE_TRUNC('week', fjp.FIRST_POSTED_DATE) as week_start_date,
-                    DATE_TRUNC('week', fjp.FIRST_POSTED_DATE) + 6 as week_end_date
+                    -- Generate week keys from date dimension for consistency
+                    dd.WEEK_KEY,
+                    dd.WEEK_BEGINNING_DATE as week_start_date,
+                    dd.WEEK_ENDING_DATE as week_end_date
 
                 FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
                 INNER JOIN BETTERJOBS_DB.ANALYTICS.JOB_SKILLS_BRIDGE jsb
                     ON fjp.JOB_POSTING_KEY = jsb.JOB_POSTING_KEY
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds
+                    ON jsb.SKILL_KEY = ds.SKILL_KEY
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_DATE dd
+                    ON fjp.FIRST_POSTED_DATE = dd.FULL_DATE
 
                 WHERE fjp.IS_ACTIVE_POSTING = TRUE
                   AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
@@ -631,12 +638,11 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     qjs.week_key,
                     qjs.week_start_date,
                     qjs.week_end_date,
-                    ds.SKILL_KEY,
-                    ds.SKILL_NAME,
-                    ds.SKILL_CATEGORY,
-                    qjs.JOB_FAMILY_KEY,
-                    qjs.LOCATION_KEY,
-
+                    qjs.SKILL_KEY,
+                    qjs.SKILL_NAME,
+                    qjs.SKILL_CATEGORY,
+                    qjs.SKILL_SUBCATEGORY,
+                    qjs.SKILL_TYPE,
                     -- Core demand metrics
                     COUNT(DISTINCT qjs.JOB_UID) as active_jobs_with_skill,
                     AVG(qjs.skill_extraction_confidence) as avg_skill_confidence,
@@ -656,13 +662,10 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     COUNT(DISTINCT qjs.JOB_UID) as data_completeness_score
 
                 FROM quality_job_skills qjs
-                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON qjs.SKILL_KEY = ds.SKILL_KEY
-
-                WHERE ds.SKILL_KEY IS NOT NULL
+                WHERE qjs.SKILL_KEY IS NOT NULL
 
                 GROUP BY qjs.week_key, qjs.week_start_date, qjs.week_end_date,
-                         ds.SKILL_KEY, ds.SKILL_NAME, ds.SKILL_CATEGORY,
-                         qjs.JOB_FAMILY_KEY, qjs.LOCATION_KEY
+                         qjs.SKILL_KEY, qjs.SKILL_NAME, qjs.SKILL_CATEGORY, qjs.SKILL_SUBCATEGORY, qjs.SKILL_TYPE
 
                 HAVING COUNT(DISTINCT qjs.JOB_UID) >= 2  -- Minimum statistical validity
             ),
@@ -670,10 +673,8 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
             market_context AS (
                 SELECT
                     qjs.week_key,
-                    qjs.JOB_FAMILY_KEY,
-                    qjs.LOCATION_KEY,
 
-                    -- Total market size for penetration rate calculation
+                    -- Total market size for penetration rate calculation (all jobs for the week)
                     COUNT(DISTINCT qjs.JOB_UID) as total_active_jobs_for_week,
 
                     -- Baseline salary (jobs WITHOUT specific skills) for premium calculation
@@ -681,7 +682,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                              THEN qjs.SALARY_MIDPOINT_ANNUAL_USD END) as baseline_salary_midpoint_annual_usd
 
                 FROM quality_job_skills qjs
-                GROUP BY qjs.week_key, qjs.JOB_FAMILY_KEY, qjs.LOCATION_KEY
+                GROUP BY qjs.week_key
             ),
 
             skills_with_trends AS (
@@ -703,13 +704,13 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 
                        -- Week-over-week trend analysis
                        LAG(swb.active_jobs_with_skill, 1) OVER (
-                           PARTITION BY swb.skill_key, swb.job_family_key, swb.location_key
+                           PARTITION BY swb.skill_key, swb.skill_category
                            ORDER BY swb.week_start_date
                        ) as prev_week_jobs,
 
                        -- 4-week moving average for trend smoothing
                        AVG(swb.active_jobs_with_skill) OVER (
-                           PARTITION BY swb.skill_key, swb.job_family_key, swb.location_key
+                           PARTITION BY swb.skill_key, swb.skill_category
                            ORDER BY swb.week_start_date
                            ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
                        ) as four_week_moving_average
@@ -717,8 +718,6 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 FROM skills_weekly_base swb
                 INNER JOIN market_context mc
                     ON swb.week_key = mc.week_key
-                    AND swb.job_family_key = mc.job_family_key
-                    AND swb.location_key = mc.location_key
             ),
 
             skills_with_rankings AS (
@@ -738,11 +737,11 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                            ELSE 'DECLINING'
                        END as trend_direction,
 
-                       -- Skill rankings within job family
+                       -- Skill rankings within category
                        RANK() OVER (
-                           PARTITION BY swt.week_key, swt.job_family_key
+                           PARTITION BY swt.week_key, swt.skill_category
                            ORDER BY swt.active_jobs_with_skill DESC
-                       ) as skill_rank_in_family,
+                       ) as skill_rank_in_category,
 
                        -- Overall market ranking
                        RANK() OVER (
@@ -750,24 +749,25 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                            ORDER BY swt.active_jobs_with_skill DESC
                        ) as skill_rank_overall,
 
-                       -- Market share within job family
+                       -- Market share within category
                        swt.active_jobs_with_skill::FLOAT / SUM(swt.active_jobs_with_skill) OVER (
-                           PARTITION BY swt.week_key, swt.job_family_key
-                       ) * 100 as market_share_in_family
+                           PARTITION BY swt.week_key, swt.skill_category
+                       ) * 100 as market_share_in_category
 
                 FROM skills_with_trends swt
             )
 
             SELECT
                 -- Primary key generation
-                'SW_' || swr.week_key || '_' || swr.skill_key || '_' || swr.job_family_key || '_' || swr.location_key as skills_weekly_key,
+                LOWER('SW_' || swr.week_key || '_' || swr.skill_key || '_' || REPLACE(swr.skill_category, ' ', '_') || '_' || REPLACE(swr.skill_type, ' ', '_')) as skills_weekly_key,
 
                 -- Dimension keys
                 swr.week_key,
                 swr.skill_key,
-                swr.job_family_key,
-                swr.location_key,
-
+                swr.skill_name,
+                swr.skill_category,
+                swr.skill_subcategory,
+                swr.skill_type,
                 -- Core demand metrics
                 swr.active_jobs_with_skill,
                 swr.total_active_jobs_for_week,
@@ -787,9 +787,9 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 swr.four_week_moving_average,
 
                 -- Market position
-                swr.skill_rank_in_family,
                 swr.skill_rank_overall,
-                swr.market_share_in_family,
+                swr.skill_rank_in_category,
+                swr.market_share_in_category,
 
                 -- Data quality metrics
                 swr.avg_skill_confidence,
@@ -823,8 +823,8 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 COUNT(*) as total_skill_weeks,
                 COUNT(DISTINCT skill_key) as unique_skills,
                 COUNT(DISTINCT week_key) as unique_weeks,
-                COUNT(DISTINCT job_family_key) as unique_job_families,
-                COUNT(DISTINCT location_key) as unique_locations,
+                COUNT(DISTINCT skill_category) as unique_skill_categories,
+                COUNT(DISTINCT skill_subcategory) as unique_skill_subcategories,
 
                 -- Demand metrics
                 SUM(active_jobs_with_skill) as total_skill_job_instances,
@@ -892,25 +892,24 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
             # Step 5: Top skills analysis
             cursor.execute(f"""
             SELECT
-                ds.SKILL_NAME,
-                ds.SKILL_CATEGORY,
-                AVG(fsw.active_jobs_with_skill) as avg_weekly_demand,
-                AVG(fsw.skill_penetration_rate) as avg_penetration_rate,
-                AVG(fsw.salary_premium_percentage) as avg_salary_premium,
-                AVG(fsw.remote_skill_percentage) as avg_remote_percentage,
+                SKILL_CATEGORY,
+                SKILL_SUBCATEGORY,
+                AVG(active_jobs_with_skill) as avg_weekly_demand,
+                AVG(skill_penetration_rate) as avg_penetration_rate,
+                AVG(salary_premium_percentage) as avg_salary_premium,
+                AVG(remote_skill_percentage) as avg_remote_percentage,
                 COUNT(*) as weeks_tracked
-            FROM {table_name} fsw
-            JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON fsw.skill_key = ds.skill_key
-            WHERE fsw.week_start_date >= CURRENT_DATE - 30  -- Last 4 weeks
-            GROUP BY ds.SKILL_NAME, ds.SKILL_CATEGORY
+            FROM {table_name}
+            WHERE week_start_date >= CURRENT_DATE - 30  -- Last 4 weeks
+            GROUP BY SKILL_CATEGORY, SKILL_SUBCATEGORY
             ORDER BY avg_weekly_demand DESC
             LIMIT 20
             """)
 
-            top_skills_stats = [
+            top_categories_stats = [
                 {
-                    "skill_name": row[0],
-                    "skill_category": row[1],
+                    "skill_category": row[0],
+                    "skill_subcategory": row[1],
                     "avg_weekly_demand": float(row[2]) if row[2] is not None else 0.0,
                     "avg_penetration_rate": float(row[3]) if row[3] is not None else 0.0,
                     "avg_salary_premium": float(row[4]) if row[4] is not None else 0.0,
@@ -955,26 +954,26 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 
             # Step 7: Calculate derived statistics
             total_skill_weeks = validation_result[0]
-            salary_coverage = (validation_result[7] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
-            growing_percentage = (validation_result[11] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
-            declining_percentage = (validation_result[12] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
+            salary_coverage = (validation_result[8] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
+            growing_percentage = (validation_result[12] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
+            declining_percentage = (validation_result[13] / total_skill_weeks * 100) if total_skill_weeks > 0 else 0
 
             context.log.info(f"Skills demand validation: {total_skill_weeks} total skill-week records, "
                            f"{validation_result[1]} unique skills, {validation_result[2]} unique weeks")
 
-            context.log.info(f"Market intelligence: {validation_result[6]} total skill-job instances, "
-                           f"avg penetration {validation_result[7]:.2f}%, avg premium {validation_result[9]:.1f}%")
+            context.log.info(f"Market intelligence: {validation_result[5]} total skill-job instances, "
+                           f"avg penetration {validation_result[6]:.2f}%, avg premium {validation_result[10]:.1f}%")
 
             context.log.info(f"Trend distribution: {growing_percentage:.1f}% growing, "
-                           f"{declining_percentage:.1f}% declining, avg confidence {validation_result[16]:.3f}")
+                           f"{declining_percentage:.1f}% declining, avg confidence {validation_result[18]:.3f}")
 
             # Add metadata for Dagster UI (convert all numeric types properly for Dagster compatibility)
             context.add_output_metadata({
                 "total_skill_weeks": MetadataValue.int(int(total_skill_weeks)),
                 "unique_skills": MetadataValue.int(int(validation_result[1])),
                 "unique_weeks": MetadataValue.int(int(validation_result[2])),
-                "unique_job_families": MetadataValue.int(int(validation_result[3])),
-                "unique_locations": MetadataValue.int(int(validation_result[4])),
+                "unique_skill_categories": MetadataValue.int(int(validation_result[3])),
+                "unique_skill_subcategories": MetadataValue.int(int(validation_result[4])),
                 "total_skill_job_instances": MetadataValue.int(int(validation_result[5])),
                 "avg_penetration_rate": MetadataValue.float(float(validation_result[6]) if validation_result[6] is not None else 0.0),
                 "avg_jobs_per_skill_week": MetadataValue.float(float(validation_result[7]) if validation_result[7] is not None else 0.0),
@@ -983,15 +982,15 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 "avg_salary_premium": MetadataValue.float(float(validation_result[10]) if validation_result[10] is not None else 0.0),
                 "growing_skills_percentage": MetadataValue.float(float(growing_percentage)),
                 "declining_skills_percentage": MetadataValue.float(float(declining_percentage)),
-                "avg_remote_percentage": MetadataValue.float(float(validation_result[15]) if validation_result[15] is not None else 0.0),
-                "remote_friendly_skills": MetadataValue.int(int(validation_result[16])),
-                "overall_avg_confidence": MetadataValue.float(float(validation_result[17]) if validation_result[17] is not None else 0.0),
-                "overall_completeness": MetadataValue.float(float(validation_result[18]) if validation_result[18] is not None else 0.0),
-                "avg_sample_size": MetadataValue.float(float(validation_result[19]) if validation_result[19] is not None else 0.0),
-                "earliest_week": MetadataValue.text(str(validation_result[20])),
-                "latest_week": MetadataValue.text(str(validation_result[21])),
+                "avg_remote_percentage": MetadataValue.float(float(validation_result[16]) if validation_result[16] is not None else 0.0),
+                "remote_friendly_skills": MetadataValue.int(int(validation_result[17])),
+                "overall_avg_confidence": MetadataValue.float(float(validation_result[18]) if validation_result[18] is not None else 0.0),
+                "overall_completeness": MetadataValue.float(float(validation_result[19]) if validation_result[19] is not None else 0.0),
+                "avg_sample_size": MetadataValue.float(float(validation_result[20]) if validation_result[20] is not None else 0.0),
+                "earliest_week": MetadataValue.text(str(validation_result[21])),
+                "latest_week": MetadataValue.text(str(validation_result[22])),
                 "trend_distribution": MetadataValue.json(trend_stats),
-                "top_skills_last_4_weeks": MetadataValue.json(top_skills_stats),
+                "top_categories_last_4_weeks": MetadataValue.json(top_categories_stats),
                 "quality_issues_count": MetadataValue.int(len(quality_issues))
             })
 
@@ -1003,14 +1002,14 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 "market_coverage": {
                     "unique_skills": validation_result[1],
                     "unique_weeks": validation_result[2],
-                    "unique_job_families": validation_result[3],
-                    "unique_locations": validation_result[4],
+                    "unique_skill_categories": validation_result[3],
+                    "unique_skill_subcategories": validation_result[4],
                     "total_skill_job_instances": validation_result[5]
                 },
                 "demand_metrics": {
                     "avg_penetration_rate": float(validation_result[6]) if validation_result[6] is not None else 0.0,
                     "avg_jobs_per_skill_week": float(validation_result[7]) if validation_result[7] is not None else 0.0,
-                    "avg_sample_size": float(validation_result[19]) if validation_result[19] is not None else 0.0
+                    "avg_sample_size": float(validation_result[20]) if validation_result[20] is not None else 0.0
                 },
                 "salary_intelligence": {
                     "salary_coverage_percentage": salary_coverage,
@@ -1037,11 +1036,11 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     "quality_issues": quality_issues
                 },
                 "temporal_coverage": {
-                    "earliest_week": str(validation_result[20]),
-                    "latest_week": str(validation_result[21]),
+                    "earliest_week": str(validation_result[21]),
+                    "latest_week": str(validation_result[22]),
                     "weeks_covered": validation_result[2]
                 },
-                "top_skills_analysis": top_skills_stats
+                "top_categories_analysis": top_categories_stats
             }
 
         finally:
@@ -1049,7 +1048,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 
 
 @asset(
-    deps=["analytics_fact_job_postings", "analytics_dim_company"],
+    deps=["analytics_fact_job_postings", "analytics_dim_company", "analytics_dim_date"],
     description="Create weekly company hiring aggregate fact table for competitive analysis",
     group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
@@ -1123,21 +1122,23 @@ def analytics_fact_company_hiring_weekly(context: AssetExecutionContext, snowfla
             )
             WITH quality_company_jobs AS (
                 SELECT
-                    COMPANY_KEY,
-                    FIRST_POSTED_DATE,
-                    TO_CHAR(FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
-                    DATE_TRUNC('week', FIRST_POSTED_DATE) as week_start_date,
-                    IS_ACTIVE_POSTING,
-                    SALARY_MIDPOINT_ANNUAL_USD,
-                    SALARY_CONFIDENCE,
-                    WORK_TYPE,
-                    SENIORITY_LEVEL,
-                    LLM_OVERALL_CONFIDENCE
-                FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS
-                WHERE COMPANY_KEY IS NOT NULL
-                  AND COMPANY_KEY != 'COMP_UNKNOWN'
-                  AND LLM_OVERALL_CONFIDENCE >= 0.5
-                  AND FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
+                    fjp.COMPANY_KEY,
+                    fjp.FIRST_POSTED_DATE,
+                    dd.WEEK_KEY,
+                    dd.WEEK_BEGINNING_DATE as week_start_date,
+                    fjp.IS_ACTIVE_POSTING,
+                    fjp.SALARY_MIDPOINT_ANNUAL_USD,
+                    fjp.SALARY_CONFIDENCE,
+                    fjp.WORK_TYPE,
+                    fjp.SENIORITY_LEVEL,
+                    fjp.LLM_OVERALL_CONFIDENCE
+                FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_DATE dd
+                    ON fjp.FIRST_POSTED_DATE = dd.FULL_DATE
+                WHERE fjp.COMPANY_KEY IS NOT NULL
+                  AND fjp.COMPANY_KEY != 'COMP_UNKNOWN'
+                  AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
+                  AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 730  -- 2 years of data
             ),
 
             company_weekly_base AS (
@@ -1553,9 +1554,9 @@ def analytics_market_weekly_summary(context: AssetExecutionContext, snowflake: S
             )
             WITH weekly_job_data AS (
                 SELECT
-                    DATE_TRUNC('week', FIRST_POSTED_DATE) as week_start_date,
-                    DATE_TRUNC('week', FIRST_POSTED_DATE) + 6 as week_ending_date,
-                    TO_CHAR(FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+                    dd.WEEK_BEGINNING_DATE as week_start_date,
+                    dd.WEEK_ENDING_DATE as week_ending_date,
+                    dd.WEEK_KEY,
 
                     -- Job counting logic
                     COUNT(*) as total_jobs_posted,
@@ -1698,7 +1699,7 @@ def analytics_market_weekly_summary(context: AssetExecutionContext, snowflake: S
 
 
 @asset(
-    deps=["analytics_fact_skills_demand_weekly", "analytics_fact_job_postings", "analytics_dim_skills"],
+    deps=["analytics_fact_skills_demand_weekly", "analytics_fact_job_postings", "analytics_dim_skills", "analytics_dim_date"],
     description="Create skills trend analysis table for technology intelligence and market insights",
     group_name="3b_analytics_facts_aggregates_analysis",
     kinds={"snowflake", "SQL"}
@@ -1768,6 +1769,7 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
                 REMOTE_AVAILABILITY_RATE,
                 ENTRY_LEVEL_DEMAND,
                 MID_LEVEL_DEMAND,
+                MANAGER_LEVEL_DEMAND,
                 SENIOR_LEVEL_DEMAND,
                 SAMPLE_SIZE,
                 DATA_QUALITY_SCORE,
@@ -1835,32 +1837,33 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
 
             seniority_breakdown AS (
                 SELECT
-                    TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW') as week_key,
+                    dd.WEEK_KEY as week_key,
                     ds.CANONICAL_FORM as skill_canonical_form,
-                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%entry%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%junior%'
-                               THEN 1 END) as entry_level_demand,
-                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%mid%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%intermediate%'
-                               THEN 1 END) as mid_level_demand,
-                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%senior%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%staff%'
-                                    OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%principal%'
-                               THEN 1 END) as senior_level_demand
+                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%entry%' THEN 1 END) as entry_level_jobs,
+                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%junior%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%mid%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%intermediate%' THEN 1 END) as mid_level_jobs,
+                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%senior%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%staff%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%principal%' THEN 1 END) as senior_level_jobs,
+                    COUNT(CASE WHEN LOWER(fjp.SENIORITY_LEVEL) LIKE '%manager%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%director%' OR LOWER(fjp.SENIORITY_LEVEL) LIKE '%vp%' THEN 1 END) as manager_level_jobs
                 FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fjp
-                INNER JOIN BETTERJOBS_DB.STAGE.JOB_SKILLS_BRIDGE jsb ON fjp.JOB_UID = jsb.JOB_UID
-                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON jsb.SKILL_ID = ds.SKILL_ID
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.JOB_SKILLS_BRIDGE jsb
+                    ON fjp.JOB_POSTING_KEY = jsb.JOB_POSTING_KEY
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds
+                    ON jsb.SKILL_KEY = ds.SKILL_KEY
+                INNER JOIN BETTERJOBS_DB.ANALYTICS.DIM_DATE dd
+                    ON fjp.FIRST_POSTED_DATE = dd.FULL_DATE
                 WHERE fjp.IS_ACTIVE_POSTING = TRUE
-                  AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
-                  AND jsb.OVERALL_CONFIDENCE >= 0.5
-                  AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 365
-                  AND ds.CANONICAL_FORM IS NOT NULL
-                GROUP BY TO_CHAR(fjp.FIRST_POSTED_DATE, 'IYYY-IW'), ds.CANONICAL_FORM
+                    AND fjp.LLM_OVERALL_CONFIDENCE >= 0.5
+                    AND fjp.FIRST_POSTED_DATE >= CURRENT_DATE - 365
+                    AND ds.CANONICAL_FORM IS NOT NULL
+                GROUP BY dd.WEEK_KEY, ds.CANONICAL_FORM
             ),
 
             skills_with_seniority AS (
                 SELECT swrc.*,
                        -- Seniority breakdown from job postings
-                       COALESCE(sb.entry_level_demand, 0) as entry_level_demand,
-                       COALESCE(sb.mid_level_demand, 0) as mid_level_demand,
-                       COALESCE(sb.senior_level_demand, 0) as senior_level_demand
+                       COALESCE(sb.entry_level_jobs, 0) as entry_level_demand,
+                       COALESCE(sb.mid_level_jobs, 0) as mid_level_demand,
+                       COALESCE(sb.senior_level_jobs, 0) as senior_level_demand,
+                       COALESCE(sb.manager_level_jobs, 0) as manager_level_demand
                 FROM skills_with_ranking_changes swrc
                 LEFT JOIN seniority_breakdown sb
                     ON swrc.skill_canonical_form = sb.skill_canonical_form
@@ -1868,7 +1871,7 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
             )
 
             SELECT
-                'STA_' || sws.week_key || '_' || sws.skill_canonical_form as ANALYSIS_KEY,
+                LOWER('sta_' || sws.week_key || '_' || REPLACE(sws.skill_canonical_form, ' ', '_')) as ANALYSIS_KEY,
                 sws.analysis_date as ANALYSIS_DATE,
                 sws.skill_canonical_form as SKILL_NAME,
                 sws.week_key as WEEK_KEY,
@@ -1885,6 +1888,7 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
                 sws.entry_level_demand as ENTRY_LEVEL_DEMAND,
                 sws.mid_level_demand as MID_LEVEL_DEMAND,
                 sws.senior_level_demand as SENIOR_LEVEL_DEMAND,
+                sws.manager_level_demand as MANAGER_LEVEL_DEMAND,
                 sws.sample_size as SAMPLE_SIZE,
                 ROUND(sws.data_quality_score, 3) as DATA_QUALITY_SCORE,
                 CURRENT_TIMESTAMP as CREATED_TIMESTAMP
@@ -1921,8 +1925,9 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
 
                 -- Seniority distribution
                 AVG(ENTRY_LEVEL_DEMAND) as avg_entry_demand,
-                AVG(MID_LEVEL_DEMAND) as avg_mid_demand,
+                AVG(MID_LEVEL_DEMAND) as avg_mid_level_demand,
                 AVG(SENIOR_LEVEL_DEMAND) as avg_senior_demand,
+                AVG(MANAGER_LEVEL_DEMAND) as avg_manager_demand,
 
                 -- Quality checks
                 COUNT(CASE WHEN JOBS_REQUIRING_SKILL < 5 THEN 1 END) as records_below_threshold,
@@ -1996,13 +2001,14 @@ def analytics_skills_trend_analysis(context: AssetExecutionContext, snowflake: S
                 },
                 "seniority_distribution": {
                     "avg_entry_demand": float(validation_result[14]) if validation_result[14] is not None else 0.0,
-                    "avg_mid_demand": float(validation_result[15]) if validation_result[15] is not None else 0.0,
-                    "avg_senior_demand": float(validation_result[16]) if validation_result[16] is not None else 0.0
+                    "avg_mid_level_demand": float(validation_result[15]) if validation_result[15] is not None else 0.0,
+                    "avg_senior_demand": float(validation_result[16]) if validation_result[16] is not None else 0.0,
+                    "avg_manager_demand": float(validation_result[17]) if validation_result[17] is not None else 0.0
                 },
                 "quality_metrics": {
-                    "records_below_threshold": validation_result[17] if validation_result[17] is not None else 0,
-                    "records_missing_salary": validation_result[18] if validation_result[18] is not None else 0,
-                    "records_extreme_growth": validation_result[19] if validation_result[19] is not None else 0,
+                    "records_below_threshold": validation_result[18] if validation_result[18] is not None else 0,
+                    "records_missing_salary": validation_result[19] if validation_result[19] is not None else 0,
+                    "records_extreme_growth": validation_result[20] if validation_result[20] is not None else 0,
                     "avg_data_quality": float(validation_result[9]) if validation_result[9] is not None else 0.0
                 },
                 "temporal_coverage": {

@@ -264,6 +264,8 @@ def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResou
                 day_of_week,
                 week_beginning_date,
                 week_ending_date,
+                week_number,
+                week_key,
                 month_number,
                 month_name,
                 quarter_number,
@@ -283,6 +285,8 @@ def analytics_dim_date(context: AssetExecutionContext, snowflake: SnowflakeResou
                 DAYOFWEEK(calendar_date) AS day_of_week,
                 DATE_TRUNC('week', calendar_date) AS week_beginning_date,
                 DATEADD(day, 6, DATE_TRUNC('week', calendar_date)) AS week_ending_date,
+                WEEKOFYEAR(calendar_date) AS week_number,
+                CONCAT(YEAR(calendar_date), '-', LPAD(WEEKOFYEAR(calendar_date), 2, '0')) AS week_key,
                 MONTH(calendar_date) AS month_number,
                 MONTHNAME(calendar_date) AS month_name,
                 QUARTER(calendar_date) AS quarter_number,
@@ -1093,6 +1097,7 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
                 skill_name,
                 skill_category,
                 skill_subcategory,
+                skill_type,
                 canonical_form,
                 common_aliases,
                 original_variants,
@@ -1109,7 +1114,8 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
 
                     -- Skill hierarchy
                     SKILL_CATEGORY AS skill_category,
-                    COALESCE(SKILL_SUBCATEGORY, 'General') AS skill_subcategory,
+                    SKILL_SUBCATEGORY AS skill_subcategory,
+                    SKILL_TYPE AS skill_type,
 
                     -- Standardization fields
                     CANONICAL_FORM AS canonical_form,
@@ -1132,7 +1138,7 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
                   AND TRIM(SKILL_CATEGORY) != ''
             )
             SELECT * FROM skills_prep
-            ORDER BY skill_category, skill_subcategory, frequency_count DESC, skill_name
+            ORDER BY skill_category, skill_subcategory, skill_type, frequency_count DESC, skill_name
             """
 
             cursor.execute(build_sql)
