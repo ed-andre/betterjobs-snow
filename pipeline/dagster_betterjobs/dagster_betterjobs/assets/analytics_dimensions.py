@@ -1046,14 +1046,14 @@ def analytics_dim_platform(context: AssetExecutionContext, snowflake: SnowflakeR
 
 
 @asset(
-    deps=["stage_skills_consolidated"],
+    deps=["stage_skills_normalized"],
     description="Create skills dimension with taxonomy hierarchy and market intelligence",
     group_name="3a_analytics_dimensions",
     kinds={"snowflake", "SQL"}
 )
 def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Build skills dimension from STAGE.SKILLS_CONSOLIDATED taxonomy.
+    Build skills dimension from STAGE.SKILLS_NORMALIZED with Lightcast taxonomy.
 
     This asset creates a skills dimension table with hierarchical classification
     and market intelligence metrics for skills demand analysis.
@@ -1081,7 +1081,7 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
     with snowflake.get_connection() as conn:
         cursor = conn.cursor()
         try:
-            context.log.info("Starting skills dimension build from STAGE.SKILLS_CONSOLIDATED")
+            context.log.info("Starting skills dimension build from STAGE.SKILLS_NORMALIZED")
 
             # Step 1: Build skills dimension from STAGE source
             context.log.info("Building skills dimension with quality filters")
@@ -1103,31 +1103,31 @@ def analytics_dim_skills(context: AssetExecutionContext, snowflake: SnowflakeRes
             )
             WITH skills_prep AS (
                 SELECT
-                    'SKL_' || CONSOLIDATED_SKILL_ID AS skill_key,
-                    CONSOLIDATED_SKILL_ID AS skill_id,
-                    CANONICAL_SKILL_NAME AS skill_name,
+                    'SKL_' || SKILL_ID AS skill_key,
+                    SKILL_ID AS skill_id,
+                    SKILL_NAME AS skill_name,
 
                     -- Skill hierarchy
                     SKILL_CATEGORY AS skill_category,
                     COALESCE(SKILL_SUBCATEGORY, 'General') AS skill_subcategory,
 
                     -- Standardization fields
-                    CANONICAL_SKILL_NAME AS canonical_form,
+                    CANONICAL_FORM AS canonical_form,
                     NULL AS common_aliases,
-                    ORIGINAL_SKILL_NAMES AS original_variants,
+                    ORIGINAL_VARIANTS AS original_variants,
 
                     -- Market intelligence
-                    CONSOLIDATED_CONFIDENCE_SCORE AS stage_confidence_score,
-                    TOTAL_FREQUENCY_COUNT AS frequency_count,
+                    CONFIDENCE_SCORE AS stage_confidence_score,
+                    FREQUENCY_COUNT AS frequency_count,
                     TREND_DIRECTION AS trend_direction,
 
                     CURRENT_TIMESTAMP AS created_timestamp
 
-                FROM BETTERJOBS_DB.STAGE.SKILLS_CONSOLIDATED
-                WHERE CONSOLIDATED_CONFIDENCE_SCORE >= 0.5
+                FROM BETTERJOBS_DB.STAGE.SKILLS_NORMALIZED
+                WHERE CONFIDENCE_SCORE >= 0.5
                   AND (MANUAL_REVIEW_FLAG = FALSE OR APPROVED_BY_ADMIN = TRUE)
-                  AND CANONICAL_SKILL_NAME IS NOT NULL
-                  AND TRIM(CANONICAL_SKILL_NAME) != ''
+                  AND CANONICAL_FORM IS NOT NULL
+                  AND TRIM(CANONICAL_FORM) != ''
                   AND SKILL_CATEGORY IS NOT NULL
                   AND TRIM(SKILL_CATEGORY) != ''
             )

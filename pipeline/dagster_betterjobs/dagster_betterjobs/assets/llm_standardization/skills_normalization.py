@@ -19,6 +19,7 @@ from typing import Dict, Any, List, Union
 from datetime import datetime
 from pathlib import Path
 from decimal import Decimal
+import time
 
 from dagster import (
     asset,
@@ -27,8 +28,9 @@ from dagster import (
 )
 
 from dagster_betterjobs.resources import SnowflakeResource
-# Consolidation imports removed - moved to dedicated stage_skills_consolidated asset (ENHANCEMENT-035)
 from dagster_betterjobs.utils.schema_utils import ensure_object_exists, execute_sql_file
+from dagster_betterjobs.transformations.llm_prompts import JobExtractionPrompts, PromptFormatter
+from dagster_gemini import GeminiResource
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[5]  # Go up 6 levels to project root
@@ -170,112 +172,240 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
             cursor.close()
 
 
-@asset(
-    description="Maintain skill standardization rules and aliases using schema-as-code",
-    group_name="2b_stage_llm_standardization_validation",
-    kinds={"snowflake", "python", "SQL"}
-)
-def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
-    """
-    Create and maintain comprehensive skill standardization rules.
 
-    Uses schema-as-code approach with canonical table definition from SQL file.
+
+@asset(
+    deps=["stage_llm_skills_raw_extraction"],
+    description="Process orphaned skills through Gemini API for Lightcast taxonomy categorization",
+    group_name="2b_stage_llm_standardization_validation",
+    kinds={"snowflake", "python", "gemini"},
+
+)
+def stage_manual_skill_taxonomy(context: AssetExecutionContext, snowflake: SnowflakeResource, gemini: GeminiResource) -> Dict[str, Any]:
+    """
+    Second-pass categorization of orphaned or uncategorized skills using Gemini API.
+
+    Maps skills to Lightcast taxonomy categories and subcategories, storing results
+    in a dedicated lookup table for future reference.
 
     Features:
-    - Technical skill standardization (e.g., JS -> JavaScript)
-    - Soft skill normalization (e.g., communication -> Communication Skills)
-    - Common abbreviation expansions
-    - Confidence scoring based on pattern matching
-    - Manual override support
+    - Bulk processing of uncategorized skills through Gemini API
+    - Direct Gemini API integration
+    - Confidence scoring for mappings
+    - Persistent storage of results
     """
 
     conn = snowflake.get_connection()
     cursor = None
 
     stats = {
-        "rules_timestamp": datetime.now().isoformat(),
-        "total_rules_found": 0,
-        "categories_covered": 0,
-        "high_confidence_rules": 0,
-        "rules_table_created": False,
-        "data_populated": False,
-        "schema_as_code": True
+        "processing_timestamp": datetime.now().isoformat(),
+        "skills_processed": 0,
+        "high_confidence_mappings": 0,
+        "low_confidence_mappings": 0,
+        "avg_confidence_score": 0.0,
+        "schema_as_code": True,
+        "api_calls_made": 0,
+        "extraction_failures": 0
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔧 Setting up skill standardization rules with schema-as-code...")
+        context.log.info("🔍 Starting manual skill taxonomy categorization...")
 
-        # 🔧 SCHEMA-AS-CODE: Ensure table exists using canonical SQL file
-        table_name = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
-        context.log.info(f"✅ Skill standardization rules table ready: {table_name}")
-        stats["rules_table_created"] = True
+        taxonomy_table = ensure_object_exists("tables/stage_manual_skill_taxonomy.sql", snowflake, context)
+        context.log.info(f"✅ Manual skill taxonomy table ready: {taxonomy_table}")
 
-        # Always reload data to ensure latest rules from SQL file
-        context.log.info("🔄 Clearing existing data and reloading skill standardization rules...")
-
-        # Clear existing data
-        cursor.execute(f"DELETE FROM {table_name}")
-        context.log.info("🗑️ Cleared existing skill standardization rules")
-
-        # Execute data population script using standardized utility
-        insert_file_path = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_skill_standardization_rules.sql"
-
-        if insert_file_path.exists():
-            result = execute_sql_file(snowflake, str(insert_file_path), context)
-
-            if result["status"] == "success":
-                context.log.info(f"✅ Successfully executed skill standardization rules data population")
-                stats["data_populated"] = True
-            else:
-                context.log.error(f"❌ Failed to populate skill standardization rules: {result.get('error', 'Unknown error')}")
-                stats["data_populated"] = False
-        else:
-            context.log.warning(f"Data population file not found: {insert_file_path}")
-            stats["data_populated"] = False
-
-        # Get statistics on existing rules
+        # Extract uncategorized skills
+        context.log.info("🔄 Extracting uncategorized skills...")
         cursor.execute(f"""
-        SELECT
-            COUNT(*) as total_rules,
-            COUNT(DISTINCT SKILL_CATEGORY) as categories,
-            COUNT(CASE WHEN CONFIDENCE_SCORE >= 0.9 THEN 1 END) as high_confidence
-        FROM {table_name}
+        WITH processed_skills AS (
+            SELECT DISTINCT SKILL_NAME
+            FROM {taxonomy_table}
+            WHERE LIGHTCAST_CATEGORY_NAME IS NOT NULL
+        )
+        SELECT DISTINCT
+            SKILL_NAME_ORIGINAL as SKILL_NAME,
+            COUNT(*) as occurrence_count
+        FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION sre
+        WHERE LIGHTCAST_SKILL_NAME IS NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM processed_skills ps
+            WHERE ps.SKILL_NAME = sre.SKILL_NAME_ORIGINAL
+        )
+        GROUP BY 1
+        ORDER BY 2 DESC
         """)
 
-        result = cursor.fetchone()
-        if result:
-            stats.update({
-                "total_rules_found": result[0],
-                "categories_covered": result[1],
-                "high_confidence_rules": result[2]
-            })
+        uncategorized_skills = cursor.fetchall()
+        if not uncategorized_skills:
+            context.log.info("✅ No uncategorized skills found for processing")
+            return stats
 
+        context.log.info(f"Found {len(uncategorized_skills)} uncategorized skills for processing")
+
+        # Extract Lightcast taxonomy
+        context.log.info("🔄 Extracting Lightcast taxonomy...")
+        cursor.execute("""
+        SELECT DISTINCT
+            CATEGORY_NAME,
+            SUBCATEGORY_NAME
+        FROM BETTERJOBS_DB.STAGE.SKILL_2_SKILL
+        WHERE LATEST_VERSION = TRUE
+        ORDER BY CATEGORY_NAME, SUBCATEGORY_NAME
+        """)
+
+        taxonomy_rows = cursor.fetchall()
+        taxonomy_pairs = [f"{row[0]} ⇢ {row[1]}" for row in taxonomy_rows]
+        taxonomy_text = "\n".join(taxonomy_pairs)
+
+        batch_size = 100  # Process 100 skills per API call for maximum efficiency
+        prompts = JobExtractionPrompts()
+        formatter = PromptFormatter()
+
+        for i in range(0, len(uncategorized_skills), batch_size):
+            batch = uncategorized_skills[i:i + batch_size]
+            context.log.info(f"Processing batch {i//batch_size + 1} of {(len(uncategorized_skills)-1)//batch_size + 1}")
+
+            # Create a list of skill names for bulk processing
+            skill_names = [skill[0] for skill in batch]
+            skill_list = "\n".join([f"- {skill}" for skill in skill_names])
+
+            try:
+                prompt_template = prompts.get_skill_taxonomy_prompt()
+                prompt = prompt_template.format(
+                    skill_name=skill_list,  # Pass the entire list of skills
+                    taxonomy_list=taxonomy_text
+                )
+
+                max_retries = 2
+                for attempt in range(max_retries):
+                    try:
+                        with gemini.get_model(context) as model:
+                            stats["api_calls_made"] += 1
+
+                            response = model.generate_content(
+                                prompt,
+                                generation_config={
+                                    "temperature": 0.1,
+                                    "candidate_count": 1
+                                }
+                            )
+
+                            response_text = response.text if hasattr(response, 'text') else str(response)
+                            parsed = formatter.validate_extraction_response(response_text)
+
+                            if not parsed:
+                                raise ValueError("Empty response from Gemini")
+
+                            if "skill_mappings" not in parsed:  # Note: Changed to skill_mappings (plural)
+                                raise ValueError("Missing skill_mappings in response")
+
+                            mappings = parsed["skill_mappings"]  # Expect a list of mappings
+                            if not isinstance(mappings, list):
+                                raise ValueError(f"skill_mappings is not a list: {type(mappings)}")
+
+                            # Validate and prepare all mappings for bulk insert
+                            valid_mappings = []
+                            skipped_count = 0
+                            for mapping in mappings:
+                                if not isinstance(mapping, dict):
+                                    skipped_count += 1
+                                    continue
+
+                                required_fields = ["skill_name", "lightcast_category", "lightcast_subcategory", "match_confidence"]
+                                missing_fields = [f for f in required_fields if f not in mapping]
+                                if missing_fields:
+                                    context.log.warning(f"Skipping individual record for skill '{mapping.get('skill_name', 'unknown')}' due to missing fields: {missing_fields}")
+                                    skipped_count += 1
+                                    continue
+
+                                valid_mappings.append(mapping)
+
+                            if skipped_count > 0:
+                                context.log.info(f"Batch summary: {len(valid_mappings)} valid mappings will be processed, {skipped_count} records were skipped")
+
+                            if valid_mappings:
+                                # Bulk insert using ARRAY_CONSTRUCT and FLATTEN
+                                cursor.execute(f"""
+                                INSERT INTO {taxonomy_table} (
+                                    SKILL_NAME,
+                                    LIGHTCAST_CATEGORY_NAME,
+                                    LIGHTCAST_SUBCATEGORY_NAME,
+                                    MATCH_CONFIDENCE,
+                                    SOURCE,
+                                    VERSION
+                                )
+                                SELECT
+                                    value:skill_name::STRING,
+                                    value:lightcast_category::STRING,
+                                    value:lightcast_subcategory::STRING,
+                                    value:match_confidence::FLOAT,
+                                    'gemini_auto',
+                                    'v1'
+                                FROM TABLE(FLATTEN(input => PARSE_JSON(%s)))
+                                """, (json.dumps(valid_mappings),))
+
+                                # Update stats
+                                stats["skills_processed"] += len(valid_mappings)
+                                stats["high_confidence_mappings"] += sum(1 for m in valid_mappings if m["match_confidence"] >= 0.7)
+                                stats["low_confidence_mappings"] += sum(1 for m in valid_mappings if m["match_confidence"] < 0.7)
+
+                            break
+
+                    except Exception as api_err:
+                        context.log.warning(f"Attempt {attempt + 1} failed for batch: {str(api_err)}")
+                        if attempt == max_retries - 1:
+                            raise
+                        time.sleep(1.5 ** attempt)
+
+            except Exception as e:
+                stats["extraction_failures"] += len(skill_names)
+                context.log.error(f"Error processing batch: {str(e)}")
+                continue
+
+        if stats["skills_processed"] > 0:
+            cursor.execute(f"""
+            SELECT AVG(MATCH_CONFIDENCE)
+            FROM {taxonomy_table}
+            WHERE SOURCE = 'gemini_auto'
+            AND VERSION = 'v1'
+            """)
+            avg_confidence = cursor.fetchone()
+            if avg_confidence and avg_confidence[0]:
+                stats["avg_confidence_score"] = float(avg_confidence[0])
+
+        # Log final statistics
         context.log.info(f"""
-        📋 Skill Standardization Rules Status (Schema-as-Code):
-        • Total Rules Found: {stats['total_rules_found']}
-        • Categories Covered: {stats['categories_covered']}
-        • High Confidence Rules: {stats['high_confidence_rules']}
-        • Table: {table_name}
-        • Data Populated: {stats['data_populated']}
+        ✅ Manual Skill Taxonomy Processing Complete:
+        • Skills Processed: {stats['skills_processed']:,}
+        • API Batch Calls Made: {stats['api_calls_made']:,}
+        • High Confidence Mappings: {stats['high_confidence_mappings']:,}
+        • Low Confidence Mappings: {stats['low_confidence_mappings']:,}
+        • Extraction Failures: {stats['extraction_failures']:,}
+        • Average Confidence: {stats['avg_confidence_score']:.3f}
         """)
 
-        # Add metadata
+        # Add metadata for Dagster UI
         context.add_output_metadata({
-            "total_rules_found": MetadataValue.int(stats["total_rules_found"]),
-            "categories_covered": MetadataValue.int(stats["categories_covered"]),
-            "high_confidence_rules": MetadataValue.int(stats["high_confidence_rules"]),
-            "rules_table_created": MetadataValue.bool(stats["rules_table_created"]),
-            "schema_as_code": MetadataValue.bool(True),
-            "table_name": MetadataValue.text(table_name),
-            "data_populated": MetadataValue.bool(stats["data_populated"])
+            "skills_processed": MetadataValue.int(stats["skills_processed"]),
+            "api_batch_calls": MetadataValue.int(stats["api_calls_made"]),
+            "high_confidence_mappings": MetadataValue.int(stats["high_confidence_mappings"]),
+            "low_confidence_mappings": MetadataValue.int(stats["low_confidence_mappings"]),
+            "extraction_failures": MetadataValue.int(stats["extraction_failures"]),
+            "avg_confidence_score": MetadataValue.float(stats["avg_confidence_score"]),
+            "processing_note": MetadataValue.text(
+                "API batch calls represent HTTP requests to Gemini. Each batch processes multiple skills. "
+                "Gemini internal metrics may show higher counts due to token-level processing."
+            )
         })
 
         return stats
 
     except Exception as e:
-        context.log.error(f"❌ Skills standardization rules check failed: {str(e)}")
+        context.log.error(f"❌ Manual skill taxonomy processing failed: {str(e)}")
         stats["error_message"] = str(e)
         raise
 
@@ -284,8 +414,9 @@ def stage_skills_standardization_rules(context: AssetExecutionContext, snowflake
             cursor.close()
 
 
+
 @asset(
-    deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
+    deps=["stage_llm_skills_raw_extraction", "stage_manual_skill_taxonomy"],
     description="Apply standardization rules to create skills master table (standardization only) using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
@@ -294,13 +425,17 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
     """
     Apply standardization rules and create skills master table.
 
-    ENHANCEMENT-035: Simplified to handle standardization only.
-    Consolidation moved to dedicated stage_skills_consolidated asset.
+
+    ENHANCEMENT-038: Updated to use Lightcast taxonomy instead of custom taxonomy.
+    Uses LIGHTCAST_CATEGORY_NAME and LIGHTCAST_SUBCATEGORY_NAME from SKILLS_RAW_EXTRACTION
+    with fallback to MANUAL_SKILL_TAXONOMY for orphaned skills.
 
     Uses schema-as-code approach with canonical table definitions from SQL files.
 
     Processing:
     - Apply standardization rules with confidence scoring
+    - Use Lightcast taxonomy for categorization
+    - Fall back to manual taxonomy for orphaned skills
     - Calculate frequency and trend metrics from raw skills
     - Preserve original LLM confidence scores
     - Flag low-confidence items for manual review
@@ -319,59 +454,30 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         "low_confidence_skills": 0,
         "unique_skill_categories": 0,
         "avg_confidence_score": 0.0,
+        "lightcast_mapped_skills": 0,
+        "manual_taxonomy_mapped_skills": 0,
+        "unmapped_skills": 0,
         "schema_as_code": True
     }
 
     try:
         cursor = conn.cursor()
 
-        context.log.info("🎯 Starting skills normalization with schema-as-code...")
+        context.log.info("🎯 Starting skills normalization with Lightcast taxonomy...")
 
         # 🔧 SCHEMA-AS-CODE: Ensure skills normalized table exists using canonical SQL file
         skills_table_name = ensure_object_exists("tables/stage_skills_normalized.sql", snowflake, context)
         context.log.info(f"✅ Skills normalized table ready: {skills_table_name}")
 
-        # 🔧 SCHEMA-AS-CODE: Ensure skill family mapping table exists using canonical SQL file
-        family_mapping_table = ensure_object_exists("tables/stage_skill_family_mapping.sql", snowflake, context)
-        context.log.info(f"✅ Skill family mapping table ready: {family_mapping_table}")
-
-        # Always reload family mapping data to ensure latest mappings from SQL file
-        context.log.info("🔄 Clearing existing data and reloading skill family mappings...")
-
-        # Clear existing family mapping data
-        cursor.execute(f"DELETE FROM {family_mapping_table}")
-        context.log.info("🗑️ Cleared existing skill family mappings")
-
-        # Execute family mapping data population script
-        family_insert_file_path = PROJECT_ROOT / "pipeline" / "sql" / "data_population" / "insert_skill_family_mappings.sql"
-
-        if family_insert_file_path.exists():
-            result = execute_sql_file(snowflake, str(family_insert_file_path), context)
-
-            if result["status"] == "success":
-                context.log.info(f"✅ Successfully executed skill family mappings data population")
-            else:
-                context.log.error(f"❌ Failed to populate skill family mappings: {result.get('error', 'Unknown error')}")
-        else:
-            context.log.warning(f"Family mapping data population file not found: {family_insert_file_path}")
-
-        # Check if family mappings exist after population
-        cursor.execute(f"SELECT COUNT(*) FROM {family_mapping_table}")
-        mapping_count = cursor.fetchone()[0]
-
-        if mapping_count == 0:
-            context.log.warning(f"""
-            ⚠️  No skill family mappings found in {family_mapping_table}.
-            Family mappings are required for proper skill categorization.
-            """)
-        else:
-            context.log.info(f"✅ Found {mapping_count} skill family mappings")
+        # 🔧 SCHEMA-AS-CODE: Ensure manual skill taxonomy table exists
+        manual_taxonomy_table = ensure_object_exists("tables/stage_manual_skill_taxonomy.sql", snowflake, context)
+        context.log.info(f"✅ Manual skill taxonomy table ready: {manual_taxonomy_table}")
 
         # Clear existing data for fresh normalization
         cursor.execute(f"DELETE FROM {skills_table_name}")
 
-        # ENHANCEMENT-035: Simplified Skills Standardization (No Consolidation)
-        context.log.info("🔄 Starting skills standardization process (consolidation moved to separate asset)...")
+        # ENHANCEMENT-038: Updated to use Lightcast taxonomy
+        context.log.info("🔄 Starting skills standardization with Lightcast taxonomy...")
 
         # Get table names dynamically using schema-as-code
         skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
@@ -379,7 +485,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         unified_jobs_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
         llm_enriched_table = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", snowflake, context)
 
-        # Direct standardization without consolidation
+        # Direct standardization with Lightcast taxonomy
         standardization_sql = f"""
         INSERT INTO {skills_table_name} (
             SKILL_ID,
@@ -388,7 +494,6 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             SKILL_NAME_ORIGINAL,
             SKILL_CATEGORY,
             SKILL_SUBCATEGORY,
-            SKILL_FAMILY,
             SKILL_TYPE,
             ORIGINAL_VARIANTS,
             FREQUENCY_COUNT,
@@ -398,54 +503,51 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             MANUAL_REVIEW_FLAG,
             CANONICAL_FORM
         )
-        -- ENHANCEMENT-036: AI Skill Category and Subcategory override
-        WITH ai_skill_category AS (
-            SELECT DISTINCT
-                SKILL_NAME_RAW,
-                'Artificial Intelligence' as SKILL_CATEGORY,
-                CASE
-                    WHEN SKILL_NAME_RAW ILIKE '%ml%' OR SKILL_NAME_RAW ILIKE '%machine learning%'  THEN 'Machine Learning'
-                    WHEN SKILL_NAME_RAW ILIKE '%nlp%' OR SKILL_NAME_RAW ILIKE '%natural language%' THEN 'Natural Language Processing'
-                    WHEN SKILL_NAME_RAW ILIKE '%cv%'  OR SKILL_NAME_RAW ILIKE '%computer vision%'  THEN 'Computer Vision'
-                ELSE 'General AI'
-        END AS SKILL_SUBCATEGORY
-            FROM BETTERJOBS_DB.STAGE.SKILLS_RAW_EXTRACTION
-            WHERE  (
-                    SKILL_NAME_RAW = 'ai'
-                    OR SKILL_NAME_RAW ILIKE 'ai-%'
-                    OR SKILL_NAME_RAW ILIKE 'ai %'
-                    OR SKILL_NAME_RAW ILIKE '% ai'
-
-                )
-        ),
-        standardized_skills AS (
+        WITH standardized_skills AS (
             SELECT
-                COALESCE(sr.STANDARDIZED_NAME, sre.SKILL_NAME_ORIGINAL) as skill_name,
-                COALESCE(ais.SKILL_CATEGORY, sr.SKILL_CATEGORY, sre.SKILL_CATEGORY) as skill_category,
-                COALESCE(ais.SKILL_SUBCATEGORY, sr.SKILL_SUBCATEGORY, 'uncategorized') as skill_subcategory,
-                COALESCE(sfm.SKILL_FAMILY, 'general') as skill_family,
+                sre.SKILL_NAME_ORIGINAL as skill_name,
+                -- Use Lightcast taxonomy with fallback to manual taxonomy and then 'Unknown'
+                COALESCE(
+                    sre.LIGHTCAST_CATEGORY_NAME,
+                    mst.LIGHTCAST_CATEGORY_NAME,
+                    'Unknown'
+                ) as skill_category,
+                COALESCE(
+                    sre.LIGHTCAST_SUBCATEGORY_NAME,
+                    mst.LIGHTCAST_SUBCATEGORY_NAME,
+                    'Unknown'
+                ) as skill_subcategory,
                 CASE
-                    WHEN sre.SKILL_CATEGORY IN ('soft') THEN 'soft'
+                    WHEN sre.SKILL_SOURCE IN ('soft_skills') THEN 'soft'
                     ELSE 'technical'
                 END as skill_type,
                 ARRAY_AGG(DISTINCT sre.SKILL_NAME_ORIGINAL) as original_variants,
                 COUNT(*) as frequency_count,
                 MIN(ju.DATE_RETRIEVED::DATE) as first_seen_date,
                 MAX(ju.DATE_RETRIEVED::DATE) as last_seen_date,
-                -- FIX: Preserve original LLM confidence scores instead of defaulting to 0.5
-                AVG(COALESCE(sr.CONFIDENCE_SCORE, lle.SKILLS_CONFIDENCE, 0.8)) as confidence_score
+                -- Preserve original LLM confidence scores
+                AVG(COALESCE(
+                    mst.MATCH_CONFIDENCE, -- added first to prevent using 0.5 for skills that didn't get mapped in first pass
+                    sre.LIGHTCAST_MATCH_CONFIDENCE,
+                    lle.SKILLS_CONFIDENCE,
+                    0.5
+                )) as confidence_score,
+                -- Track taxonomy source for statistics
+                CASE
+                    WHEN sre.LIGHTCAST_CATEGORY_NAME IS NOT NULL THEN 'lightcast_direct'
+                    WHEN mst.LIGHTCAST_CATEGORY_NAME IS NOT NULL THEN 'manual_taxonomy'
+                    ELSE 'unknown'
+                END as taxonomy_source
             FROM {skills_view} sre
-            LEFT JOIN {rules_table} sr
-                ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
-            LEFT JOIN {family_mapping_table} sfm
-                ON sre.SKILL_CATEGORY = sfm.SKILL_CATEGORY AND sfm.IS_ACTIVE = TRUE
-            LEFT JOIN ai_skill_category ais
-                ON sre.SKILL_NAME_RAW = ais.SKILL_NAME_RAW
-            LEFT JOIN {llm_enriched_table} lle ON sre.JOB_UID = lle.JOB_UID
-            JOIN {unified_jobs_table} ju ON sre.JOB_UID = ju.JOB_UID
+            LEFT JOIN {manual_taxonomy_table} mst
+                ON LOWER(sre.SKILL_NAME_ORIGINAL) = LOWER(mst.SKILL_NAME)
+            LEFT JOIN {llm_enriched_table} lle
+                ON sre.JOB_UID = lle.JOB_UID
+            JOIN {unified_jobs_table} ju
+                ON sre.JOB_UID = ju.JOB_UID
             WHERE LENGTH(sre.SKILL_NAME_RAW) >= 2  -- Filter out single characters
-              AND ju.IS_ENGLISH = TRUE            -- Only English jobs
-            GROUP BY 1, 2, 3, 4, 5
+              AND ju.IS_ENGLISH = TRUE            -- Only English jobs. Handling foreign language skills would be a headache now
+            GROUP BY 1, 2, 3, 4, 10
             HAVING COUNT(*) >= 1  -- Include all skills
         )
         SELECT
@@ -455,7 +557,6 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             original_variants[0]::STRING as skill_name_original,
             skill_category,
             skill_subcategory,
-            skill_family,
             skill_type,
             original_variants,
             frequency_count,
@@ -468,13 +569,13 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
         """
 
         cursor.execute(standardization_sql)
-        context.log.info("✅ Successfully applied standardization rules and inserted skills")
+        context.log.info("✅ Successfully applied standardization rules and inserted skills with Lightcast taxonomy")
 
         # Update stats to reflect standardization-only processing
         stats.update({
             "consolidation_enabled": False,
             "standardization_only": True,
-            "processing_method": "direct_sql_standardization"
+            "processing_method": "direct_sql_standardization_with_lightcast"
         })
 
         # Get normalization statistics
@@ -498,6 +599,38 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
                 "avg_confidence_score": result[4]
             })
 
+        # Get taxonomy source breakdown
+        cursor.execute(f"""
+        WITH taxonomy_sources AS (
+            SELECT
+                CASE
+                    WHEN s.SKILL_CATEGORY = 'Unknown' THEN 'unmapped'
+                    WHEN EXISTS (
+                        SELECT 1 FROM {manual_taxonomy_table} m
+                        WHERE LOWER(s.SKILL_NAME) = LOWER(m.SKILL_NAME)
+                    ) THEN 'manual_taxonomy'
+                    ELSE 'lightcast_direct'
+                END as taxonomy_source,
+                COUNT(*) as skill_count
+            FROM {skills_table_name} s
+            GROUP BY 1
+        )
+        SELECT taxonomy_source, skill_count
+        FROM taxonomy_sources
+        ORDER BY skill_count DESC
+        """)
+
+        taxonomy_results = cursor.fetchall()
+        if taxonomy_results:
+            for row in taxonomy_results:
+                source, count = row
+                if source == 'lightcast_direct':
+                    stats["lightcast_mapped_skills"] = count
+                elif source == 'manual_taxonomy':
+                    stats["manual_taxonomy_mapped_skills"] = count
+                elif source == 'unmapped':
+                    stats["unmapped_skills"] = count
+
         # Get category breakdown
         cursor.execute(f"""
         SELECT SKILL_CATEGORY, COUNT(*) as skill_count
@@ -512,21 +645,25 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             stats["category_breakdown"] = [dict(zip(columns, row)) for row in category_results]
 
         context.log.info(f"""
-        🎯 Skills Standardization Complete (Schema-as-Code) - ENHANCEMENT-035:
+        🎯 Skills Standardization Complete with Lightcast Taxonomy - ENHANCEMENT-038:
         • Skills Standardized: {stats['skills_normalized']:,}
+        • Lightcast Mapped Skills: {stats.get('lightcast_mapped_skills', 0):,}
+        • Manual Taxonomy Mapped: {stats.get('manual_taxonomy_mapped_skills', 0):,}
+        • Unmapped Skills: {stats.get('unmapped_skills', 0):,}
         • High Confidence: {stats['high_confidence_skills']:,}
         • Low Confidence: {stats['low_confidence_skills']:,}
         • Unique Categories: {stats['unique_skill_categories']}
         • Average Confidence: {stats['avg_confidence_score']:.3f}
         • Processing Method: {stats.get('processing_method', 'standardization')}
         • Skills Table: {skills_table_name}
-        • Family Mapping Table: {family_mapping_table}
-        • Note: Consolidation moved to dedicated stage_skills_consolidated asset
         """)
 
-        # Add metadata for standardization-only processing
+        # Add metadata for standardization with Lightcast taxonomy
         metadata = {
             "skills_normalized": MetadataValue.int(stats["skills_normalized"]),
+            "lightcast_mapped_skills": MetadataValue.int(stats.get("lightcast_mapped_skills", 0)),
+            "manual_taxonomy_mapped_skills": MetadataValue.int(stats.get("manual_taxonomy_mapped_skills", 0)),
+            "unmapped_skills": MetadataValue.int(stats.get("unmapped_skills", 0)),
             "high_confidence_skills": MetadataValue.int(stats["high_confidence_skills"]),
             "low_confidence_skills": MetadataValue.int(stats["low_confidence_skills"]),
             "unique_skill_categories": MetadataValue.int(stats["unique_skill_categories"]),
@@ -534,10 +671,9 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
             "category_breakdown": MetadataValue.json(stats.get("category_breakdown", [])),
             "schema_as_code": MetadataValue.bool(True),
             "skills_table_name": MetadataValue.text(skills_table_name),
-            "family_mapping_table": MetadataValue.text(family_mapping_table),
             "standardization_only": MetadataValue.bool(True),
-            "processing_method": MetadataValue.text(stats.get("processing_method", "direct_sql_standardization")),
-            "enhancement_035": MetadataValue.bool(True),  # Flag for tracking this enhancement
+            "processing_method": MetadataValue.text(stats.get("processing_method", "direct_sql_standardization_with_lightcast")),
+            "enhancement_038": MetadataValue.bool(True),  # Flag for tracking this enhancement
             "consolidation_enabled": MetadataValue.bool(False)
         }
 
@@ -556,16 +692,16 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
 
 
 @asset(
-    deps=["stage_skills_consolidated", "stage_jobs_unified"],
-    description="Create job-skill relationships using consolidated skills with context tracking using schema-as-code",
+    deps=["stage_skills_normalized", "stage_jobs_unified"],
+    description="Create job-skill relationships using normalized skills with context tracking using schema-as-code",
     group_name="2b_stage_llm_standardization_validation",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """
-    Map jobs to consolidated skills with rich context.
+    Map jobs to normalized skills with rich context.
 
-    ENHANCEMENT-035: Updated to use consolidated skills from dedicated asset.
+    ENHANCEMENT-035: Updated to use normalized skills from dedicated asset.
 
     Uses schema-as-code approach with canonical table definition from SQL file.
 
@@ -574,7 +710,6 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
     - Context classification (required vs preferred vs nice-to-have)
     - Experience level inference
     - Confidence scoring for skill-job associations
-    - Uses consolidated skills for better variant handling
     """
 
     conn = snowflake.get_connection()
@@ -593,16 +728,16 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
     try:
         cursor = conn.cursor()
 
-        context.log.info("🔗 Creating job-skills bridge relationships using consolidated skills (ENHANCEMENT-035)...")
+        context.log.info("🔗 Creating job-skills bridge relationships using normalized skills ...")
 
         # 🔧 SCHEMA-AS-CODE: Ensure bridge table exists using canonical SQL file
         bridge_table_name = ensure_object_exists("tables/stage_job_skills_bridge.sql", snowflake, context)
         context.log.info(f"✅ Job skills bridge table ready: {bridge_table_name}")
-        context.log.info("📊 Using consolidated skills for improved variant matching")
+        context.log.info("📊 Using normalized skills with lightcast taxonomy for improved variant matching")
 
         # Get required table names dynamically
         skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
-        skills_consolidated_table = ensure_object_exists("tables/stage_skills_consolidated.sql", snowflake, context)
+        skills_normalized_table = ensure_object_exists("tables/stage_skills_normalized.sql", snowflake, context)
         rules_table = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
         jobs_llm_table = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", snowflake, context)
         jobs_unified_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
@@ -619,7 +754,7 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             BRIDGE_ID,
             JOB_UID,
             SKILL_ID,
-            SKILL_SOURCE,
+            SKILL_SOURCE, -- same as SKILL_TYPE in STAGE.SKILLS_NORMALIZED
             SKILL_CATEGORY,
             ORIGINAL_TEXT,
             EXTRACTION_CONFIDENCE,
@@ -630,21 +765,20 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             NEEDS_REVIEW
         )
         WITH skill_matches AS (
-            -- Match skills from raw extraction to consolidated skills using original variants
+            -- Match skills from raw extraction to normalized skills using original variants
             SELECT DISTINCT
                 sre.JOB_UID,
-                sc.CONSOLIDATED_SKILL_ID,
+                sn.SKILL_ID,
                 sre.SKILL_SOURCE,
-                sc.SKILL_CATEGORY,
+                sn.SKILL_CATEGORY,
                 sre.SKILL_NAME_ORIGINAL,
-                COALESCE(sc.CONSOLIDATED_CONFIDENCE_SCORE, lle.LLM_OVERALL_CONFIDENCE, 0.7) as extraction_confidence,
-                sc.CONSOLIDATED_CONFIDENCE_SCORE as standardization_confidence,
-                sc.CONSOLIDATION_METHOD as consolidation_method
+                COALESCE(sn.CONFIDENCE_SCORE, lle.LLM_OVERALL_CONFIDENCE, 0.5) as extraction_confidence,
+                sn.CONFIDENCE_SCORE as standardization_confidence
             FROM {skills_view} sre
-            JOIN {skills_consolidated_table} sc
+            JOIN {skills_normalized_table} sn
                 ON (
-                    sc.CANONICAL_SKILL_NAME = sre.SKILL_NAME_ORIGINAL
-                    OR ARRAY_CONTAINS(sc.ORIGINAL_SKILL_NAMES, TO_VARIANT(sre.SKILL_NAME_ORIGINAL))
+                    sn.SKILL_NAME = sre.SKILL_NAME_ORIGINAL
+
                 )
             LEFT JOIN {jobs_llm_table} lle
                 ON sre.JOB_UID = lle.JOB_UID
@@ -653,9 +787,9 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
             WHERE ju.IS_ENGLISH = TRUE
         )
         SELECT
-            CONCAT('bridge_', ROW_NUMBER() OVER (ORDER BY JOB_UID, CONSOLIDATED_SKILL_ID)) as bridge_id,
+            CONCAT('bridge_', ROW_NUMBER() OVER (ORDER BY JOB_UID, SKILL_ID)) as bridge_id,
             JOB_UID,
-            CONSOLIDATED_SKILL_ID as SKILL_ID,
+            SKILL_ID,
             SKILL_SOURCE,
             SKILL_CATEGORY,
             SKILL_NAME_ORIGINAL,
@@ -670,7 +804,7 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
                 ELSE 'unknown'
             END as skill_context,
 
-            'llm_auto_consolidated' as processing_method,
+            'llm_auto_normalized' as processing_method,
             CASE WHEN standardization_confidence < 0.5 THEN TRUE ELSE FALSE END as needs_review
 
         FROM skill_matches
@@ -764,3 +898,4 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
     finally:
         if cursor:
             cursor.close()
+

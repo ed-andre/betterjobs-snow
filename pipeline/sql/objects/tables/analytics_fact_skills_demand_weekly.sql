@@ -10,7 +10,7 @@ CREATE TABLE ANALYTICS.FACT_SKILLS_DEMAND_WEEKLY (
 
     -- Core Demand Metrics
     ACTIVE_JOBS_WITH_SKILL INTEGER,             -- Active jobs requiring this skill in the week
-    TOTAL_ACTIVE_JOBS INTEGER,                  -- Total active jobs in same category (job family + location)
+    TOTAL_ACTIVE_JOBS_FOR_WEEK INTEGER,         -- Total active jobs in same category (job family + location) for the week
     SKILL_PENETRATION_RATE FLOAT,               -- Percentage of jobs requiring this skill (jobs_with_skill/total_jobs)
 
     -- Enhanced Salary Analysis (using denormalized annual USD fields from fact table)

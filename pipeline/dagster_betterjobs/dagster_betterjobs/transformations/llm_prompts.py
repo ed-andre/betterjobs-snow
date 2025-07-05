@@ -259,6 +259,62 @@ Job posting:
 {job_description}
 """
 
+    @staticmethod
+    def get_skill_taxonomy_prompt() -> str:
+        """
+        Specialized prompt for categorizing skills using Lightcast taxonomy.
+
+        Used for second-pass categorization of orphaned or uncategorized skills.
+        Designed to map skills to Lightcast categories and subcategories.
+        Supports bulk processing of multiple skills.
+
+        Returns: Formatted skill taxonomy prompt string
+        """
+        return '''
+You are a Lightcast skill taxonomy expert. Categorize each skill in the provided list using the official Lightcast categories and subcategories.
+
+LIGHTCAST TAXONOMY (category ⇢ subcategory pairs):
+{taxonomy_list}
+
+TASK:
+1. Read each skill name from the provided list.
+2. For each skill:
+   - Select the most appropriate category and subcategory from the taxonomy list
+   - Provide a confidence score between 0.0-1.0
+   - Briefly justify your decision (max 15 words)
+
+Return ONLY valid JSON with exactly this structure:
+{{
+  "skill_mappings": [
+    {{
+      "skill_name": "first skill name",
+      "lightcast_category": "matched category name or 'Unknown'",
+      "lightcast_subcategory": "matched subcategory name or 'Unknown'",
+      "match_confidence": 0.0-1.0,
+      "notes": "brief explanation"
+    }},
+    {{
+      "skill_name": "second skill name",
+      "lightcast_category": "matched category name or 'Unknown'",
+      "lightcast_subcategory": "matched subcategory name or 'Unknown'",
+      "match_confidence": 0.0-1.0,
+      "notes": "brief explanation"
+    }},
+    // ... one mapping object for each input skill
+  ]
+}}
+
+CRITICAL RULES:
+• Use category & subcategory names exactly as they appear in the taxonomy list
+• If no good match, set both to "Unknown" and confidence ≤ 0.4
+• Return JSON only – no additional commentary
+• Process EVERY skill in the input list
+• Maintain exact skill names as provided
+
+Skills to analyze:
+{skill_name}
+'''
+
 
 class PromptFormatter:
     """

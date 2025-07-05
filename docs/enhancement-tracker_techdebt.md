@@ -753,7 +753,7 @@ VIEW_VERSIONING_CONFIG = {
 
 ---
 
-## TECH-DEBT-005: Replace Inline AI Skill Categorization CTE with Maintainable Mapping
+## TECH-DEBT-005: Replace Inline AI Skill Categorization CTE with Maintainable Mapping (NOT NEEDED - replaced with Lightcast taxonomy)
 
 **Status:** 🔍 **Planned**
 **Priority:** Medium

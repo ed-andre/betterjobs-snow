@@ -568,7 +568,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                 job_family_key,
                 location_key,
                 active_jobs_with_skill,
-                total_active_jobs,
+                total_active_jobs_for_week,
                 skill_penetration_rate,
                 avg_salary_midpoint_annual_usd,
                 baseline_salary_midpoint_annual_usd,
@@ -674,7 +674,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
                     qjs.LOCATION_KEY,
 
                     -- Total market size for penetration rate calculation
-                    COUNT(DISTINCT qjs.JOB_UID) as total_active_jobs,
+                    COUNT(DISTINCT qjs.JOB_UID) as total_active_jobs_for_week,
 
                     -- Baseline salary (jobs WITHOUT specific skills) for premium calculation
                     AVG(CASE WHEN qjs.SALARY_CONFIDENCE >= 0.6 AND qjs.SALARY_MIDPOINT_ANNUAL_USD > 0
@@ -686,11 +686,11 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 
             skills_with_trends AS (
                 SELECT swb.*,
-                       mc.total_active_jobs,
+                       mc.total_active_jobs_for_week,
                        mc.baseline_salary_midpoint_annual_usd,
 
                        -- Penetration rate calculation
-                       swb.active_jobs_with_skill::FLOAT / mc.total_active_jobs * 100 as skill_penetration_rate,
+                       swb.active_jobs_with_skill::FLOAT / mc.total_active_jobs_for_week * 100 as skill_penetration_rate,
 
                        -- Salary premium calculations
                        (swb.avg_salary_midpoint_annual_usd - mc.baseline_salary_midpoint_annual_usd) as salary_premium_annual_usd,
@@ -770,7 +770,7 @@ def analytics_fact_skills_demand_weekly(context: AssetExecutionContext, snowflak
 
                 -- Core demand metrics
                 swr.active_jobs_with_skill,
-                swr.total_active_jobs,
+                swr.total_active_jobs_for_week,
                 swr.skill_penetration_rate,
 
                 -- Enhanced salary analysis
