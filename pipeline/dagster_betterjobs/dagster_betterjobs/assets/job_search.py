@@ -42,7 +42,7 @@ class JobSearchConfig(Config):
 
     # Results control
     max_results: int = 500  # Limit number of results
-    min_match_score: float = 0.4  # Minimum relevance score (0.0 - 1.0)
+    min_relevance_score: float = 0.4  # Minimum relevance score (0.0 - 1.0)
     output_format: str = "dataframe"  # Output format: "dataframe", "dict", "csv", "html"
     output_file: Optional[str] = None  # Path to save results to file, with optional {date} placeholder
 
@@ -218,6 +218,11 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
             END as enriched_technical_skills,
 
             CASE
+                WHEN llm.SKILLS_CONFIDENCE >= {config.min_skills_confidence} THEN llm.SOFT_SKILLS
+                ELSE NULL
+            END as enriched_soft_skills,
+
+            CASE
                 WHEN llm.WORK_ARRANGEMENT_CONFIDENCE >= {config.min_work_arrangement_confidence} THEN llm.WORK_TYPE
                 ELSE NULL
             END as enriched_work_type,
@@ -389,8 +394,8 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
         query += f" ORDER BY {', '.join(order_clauses)}"
 
         # Add result limit
-        # More generous SQL limit for HTML output to ensure all jobs are available for filtering
-        sql_limit = config.max_results * 5 if config.output_format == "html" else config.max_results
+        # Apply server-side limit strictly across all formats
+        sql_limit = config.max_results
         query += f" LIMIT {sql_limit}"
 
         # Execute the query
@@ -417,13 +422,11 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
                 axis=1
             )
 
-            # Filter by minimum score if needed (skip for HTML to show all jobs in client-side filtering)
-            if config.min_match_score > 0 and config.output_format != "html":
+            # Filter by minimum relevance score
+            if config.min_relevance_score > 0:
                 prev_count = len(combined_results)
-                combined_results = combined_results[combined_results["relevance_score"] >= config.min_match_score]
+                combined_results = combined_results[combined_results["relevance_score"] >= config.min_relevance_score]
                 context.log.info(f"Filtered {prev_count - len(combined_results)} results below minimum relevance score")
-            elif config.output_format == "html":
-                context.log.info(f"Skipping relevance score filtering for HTML output to enable client-side filtering")
 
         # Update stats with actual platforms found when "all" was specified
         if "all" in config.platforms and not combined_results.empty:
@@ -433,8 +436,8 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
 
         stats["total_results"] = len(combined_results)
 
-        # Limit results if needed (additional safeguard) - more generous limit for HTML output
-        result_limit = config.max_results * 5 if config.output_format == "html" else config.max_results
+        # Limit results if needed (additional safeguard)
+        result_limit = config.max_results
         if len(combined_results) > result_limit:
             combined_results = combined_results.head(result_limit)
             context.log.info(f"Limited results to {result_limit} for {config.output_format} output")
@@ -642,6 +645,21 @@ def process_enriched_data(job_row: pd.Series, config: JobSearchConfig) -> Dict[s
         except (json.JSONDecodeError, TypeError, AttributeError):
             pass
 
+    # Soft skills (confidence-based filtering)
+    if (job_row.get('enriched_soft_skills') and
+        pd.notna(job_row.get('enriched_skills_confidence')) and
+        job_row.get('enriched_skills_confidence', 0) >= config.min_skills_confidence):
+        try:
+            soft_skills_data = json.loads(job_row['enriched_soft_skills']) if isinstance(job_row['enriched_soft_skills'], str) else job_row['enriched_soft_skills']
+            if soft_skills_data and len(soft_skills_data) > 0:
+                skills_list = [str(skill) for skill in soft_skills_data[:config.max_skills_display]]
+                enriched['soft_skills'] = {
+                    'skills': skills_list,
+                    'confidence': float(job_row.get('enriched_skills_confidence', 0)) if pd.notna(job_row.get('enriched_skills_confidence')) else 0.0
+                }
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+
     # Work arrangements (confidence-based filtering)
     if (pd.notna(job_row.get('enriched_work_arrangement_confidence')) and
         job_row.get('enriched_work_arrangement_confidence', 0) >= config.min_work_arrangement_confidence):
@@ -768,6 +786,19 @@ def generate_skills_section_html(skills_data: Dict, config: JobSearchConfig) -> 
 
     return f"🛠️ <strong>Technical Skills:</strong> {skill_badges}"
 
+def generate_soft_skills_section_html(soft_skills_data: Dict, config: JobSearchConfig) -> str:
+    """Generate inline text for soft skills with badges."""
+    if not soft_skills_data or not soft_skills_data.get('skills'):
+        return ""
+
+    skills = soft_skills_data['skills']
+
+    skill_badges = ''.join([f'<span class="skill-badge">{html.escape(str(skill))}</span>' for skill in skills[:config.max_skills_display]])
+    if len(skills) > config.max_skills_display:
+        skill_badges += f'<span class="more-badge">+{len(skills) - config.max_skills_display} more</span>'
+
+    return f"🤝 <strong>Soft Skills:</strong> {skill_badges}"
+
 def generate_work_arrangement_section_html(work_data: Dict, config: JobSearchConfig) -> str:
     """Generate inline text for work arrangement."""
     if not work_data:
@@ -825,46 +856,51 @@ def generate_enriched_insights_section_html(enriched_data: Dict, config: JobSear
     if not enriched_data.get('has_enrichment') or not config.show_enriched_data:
         return ""
 
-    # Generate main sections (top line)
-    main_sections = []
+    # ----------------- Build top and bottom sections -----------------
+    top_sections: List[str] = []  # single horizontal line
+    bottom_sections: List[str] = []  # each element will become its own line
 
+    # Top sections (keep inline)
     if enriched_data.get('salary'):
-        main_sections.append(generate_salary_section_html(enriched_data['salary'], config))
+        top_sections.append(generate_salary_section_html(enriched_data['salary'], config))
 
     if enriched_data.get('experience'):
-        main_sections.append(generate_experience_section_html(enriched_data['experience'], config))
-
-    if enriched_data.get('technical_skills'):
-        main_sections.append(generate_skills_section_html(enriched_data['technical_skills'], config))
+        top_sections.append(generate_experience_section_html(enriched_data['experience'], config))
 
     if enriched_data.get('work_arrangement'):
-        main_sections.append(generate_work_arrangement_section_html(enriched_data['work_arrangement'], config))
+        top_sections.append(generate_work_arrangement_section_html(enriched_data['work_arrangement'], config))
 
     if enriched_data.get('classification'):
-        main_sections.append(generate_classification_section_html(enriched_data['classification'], config))
+        # Role Type + Team Size stay on top line
+        top_sections.append(generate_classification_section_html(enriched_data['classification'], config))
 
-    # Generate keywords section (bottom line)
-    keywords_section = ""
+    # Bottom sections (each on its own line) – Technical, Soft, Keywords
+    if enriched_data.get('technical_skills'):
+        bottom_sections.append(generate_skills_section_html(enriched_data['technical_skills'], config))
+
+    if enriched_data.get('soft_skills'):
+        bottom_sections.append(generate_soft_skills_section_html(enriched_data['soft_skills'], config))
+
     if enriched_data.get('classification'):
-        keywords_section = generate_keywords_section_html(enriched_data['classification'], config)
+        kw_line = generate_keywords_section_html(enriched_data['classification'], config)
+        if kw_line:
+            bottom_sections.append(kw_line)
 
-    # Filter out empty main sections and join with wider spacing
-    valid_main_sections = [section for section in main_sections if section.strip()]
-
-    if not valid_main_sections and not keywords_section:
+    # Nothing to show
+    if not top_sections and not bottom_sections:
         return ""
 
-    # Build the content with main sections on first line and keywords on second line
-    content_parts = []
+    # Assemble HTML parts
+    content_lines: List[str] = []
 
-    if valid_main_sections:
-        main_line = '&nbsp;&nbsp;&nbsp;&nbsp;'.join(valid_main_sections)
-        content_parts.append(main_line)
+    if top_sections:
+        top_line = '&nbsp;&nbsp;&nbsp;&nbsp;'.join(top_sections)
+        content_lines.append(top_line)
 
-    if keywords_section:
-        content_parts.append(keywords_section)
+    # Each bottom section on its own line
+    content_lines.extend(bottom_sections)
 
-    sections_text = '<br>'.join(content_parts)  # Use line break to separate lines
+    sections_text = '<br>'.join(content_lines)
 
     return f"""
     <div class="job-insights" data-has-enrichment="true">

@@ -99,7 +99,7 @@ def main():
         date_from=args.date_from,
         date_to=args.date_to,
         max_results=args.max_results,
-        min_match_score=args.min_score,
+        min_relevance_score=args.min_score,
         output_format="dataframe",
         output_file=args.output_file,
         include_descriptions=not args.no_descriptions,
@@ -122,7 +122,7 @@ def main():
     print(f"  Date Range: {args.days_back} days" if not args.date_from else
           f"  Date Range: {args.date_from} to {args.date_to or 'now'}")
     print(f"  Max Results: {config.max_results}")
-    print(f"  Min Score: {config.min_match_score}")
+    print(f"  Min Score: {config.min_relevance_score}")
     print()
 
     try:

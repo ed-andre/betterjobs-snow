@@ -240,7 +240,7 @@ data_engineering_job = define_asset_job(
                     "remote": True,
                     "days_back": 14,
                     "max_results": 500,
-                    "min_match_score": 0.1,
+                    "min_relevance_score": 0.1,
                     "platforms": ["greenhouse", "bamboohr", "smartrecruiters", "workday"],
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "data_engineering_jobs_{date}.html"),
@@ -275,7 +275,7 @@ enhanced_data_engineering_job = define_asset_job(
                     "remote": True,
                     "days_back": 14,
                     "max_results": 1000,
-                    "min_match_score": 0.2,
+                    "min_relevance_score": 0.2,
                     "platforms": ["all"],  # Search all available platforms
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "enhanced_data_engineering_jobs_{date}.html"),
@@ -308,13 +308,16 @@ legal_positions_job = define_asset_job(
                     "excluded_keywords": [],
                     "locations": ["New York", "New Jersey", "NY", "NJ", "Washington DC", "Geneva", "Brussels", "Paris", "Madrid", "Europe", "Africa", "Caribbean", "Latin America", "Location", ""],
                     "remote": True,
-                    "days_back": 28,
-                    "max_results": 500,
-                    "min_match_score": 0.3,
+                    "days_back": 50,
+                    "max_results": 10000,
+                    "min_relevance_score": 0.1,
                     "platforms": ["greenhouse", "bamboohr", "smartrecruiters", "workday"],
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "legal_positions_jobs_{date}.html"),
-                    "include_descriptions": True
+                    "include_descriptions": True,
+                    "rank_by_quality": True,
+                    "rank_by_recency": True,
+                    "job_name": "Legal Positions Job"
                 }
             }
         }
@@ -365,7 +368,7 @@ def full_jobs_discovery_enrichment_search_partitioned_config(partition_key: str)
                     "remote": True,
                     "days_back": 14,
                     "max_results": 500,
-                    "min_match_score": 0.1,
+                    "min_relevance_score": 0.1,
                     "platforms": ["greenhouse", "workday", "bamboohr", "smartrecruiters"],
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "data_engineering_jobs_enriched_{date}.html"),
@@ -426,7 +429,7 @@ def full_jobs_discovery_search_partitioned_config(partition_key: str):
                     "remote": True,
                     "days_back": 14,
                     "max_results": 500,
-                    "min_match_score": 0.1,
+                    "min_relevance_score": 0.1,
                     "platforms": ["greenhouse", "workday", "bamboohr", "smartrecruiters"],
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "data_engineering_jobs_{date}.html"),
