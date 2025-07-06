@@ -21,7 +21,8 @@ This document tracks planned enhancements and architectural improvements for the
 
 - **OPEN**
 
-
+    - ENHANCEMENT-040: Add Job Description Dimension and integrate with Fact Table
+    - ENHANCEMENT-041: Refactor Job Search to Leverage Analytics Layer
 
 - **IN PROGRESS**
 
@@ -38,7 +39,7 @@ This document tracks planned enhancements and architectural improvements for the
     - ENHANCEMENT-037: AI Keyword Category Override via CTE in stage_keywords_normalized
     - ENHANCEMENT-038: Replace Custom Skill Taxonomy with Lightcast Open Skills Taxonomy
         (NOTE: This enhancement deprecated the stage_skills_standardization_rules and the consolidation assets, which is no longer needed)
-
+    - ENHANCEMENT-040: Add Job Description Dimension and integrate with Fact Table
 - **NO ACTION REQUIRED**
 
 
@@ -2845,6 +2846,83 @@ Full refresh logic (`TRUNCATE TABLE …; INSERT …`) inside every analytics ass
 | Runtime – analytics layer | 45 min | <10 min |
 | Snowflake credits / run | 100 | 30 |
 | Mean time to recover (failed run) | 45 min | 5 min |
+
+---
+
+## ENHANCEMENT-040: Add Job Description Dimension and Integrate with Fact Table
+
+**Status:** Completed
+**Priority:** Medium
+**Component:** Analytics Layer – Dimensions & Facts
+**Date Planned:** 2025-07-06
+**Estimated Effort:** 1–2 days
+
+### Problem Statement
+Current analytic star schema lacks a dedicated dimension for job descriptions, forcing downstream queries to pull large text directly from stage tables and preventing efficient joins for text search and metadata analysis.
+
+### Technical Approach
+1. Create `ANALYTICS.DIM_JOB_DESCRIPTION`:
+   • `JOB_DESCRIPTION_KEY` NUMBER GENERATED AS IDENTITY
+   • `JOB_UID` STRING (natural key, unique)
+   • `DESCRIPTION_RAW` TEXT
+   • `DESCRIPTION_CLEAN` TEXT
+   • `LANGUAGE` STRING
+   • `TOKENS_COUNT` INTEGER
+   • `CREATED_AT`, `UPDATED_AT` TIMESTAMP
+2. SQL definition file: `pipeline/sql/objects/tables/analytics_dim_job_description.sql`.
+3. Add the new table to `objects/tables/table_order.yaml` after other dimension tables.
+4. Modify `analytics_fact_job_postings.sql`:
+   • Add `JOB_DESCRIPTION_KEY` NUMBER column.
+   • `JOIN` dim on `JOB_UID` during load `MERGE`.
+5. Update ETL assets (`analytics_dimensions.py`, `analytics_facts.py`) to populate the dimension first and capture the surrogate key for the fact.
+6. Extend ERD and documentation diagrams.
+
+### Implementation Plan
+• Day 1 AM – Author table SQL & YAML entry; deploy migration.
+• Day 1 PM – Update dimension & fact asset code; unit-test surrogate key lookup.
+• Day 2 – Backfill historical descriptions (single temp INSERT…SELECT).
+• Success = fact table row-count unchanged, description dimension populated 1-to-1 with `jobs_unified`.
+
+---
+
+## ENHANCEMENT-041: Refactor Job Search to Use Analytics Layer
+
+**Status:** Planned
+**Priority:** High
+**Component:** Application – job_search.py & SQL generation
+**Date Planned:** 2025-07-06
+**Estimated Effort:** 2–3 days
+
+### Problem Statement
+The current job search constructs a monolithic query over `STAGE.JOBS_UNIFIED`, performing expensive text filters on raw description fields and ignoring normalized skills/keywords available in analytics tables.
+
+### Technical Approach
+1. Switch query base to `ANALYTICS.FACT_JOB_POSTINGS fp`
+   • Join `ANALYTICS.JOB_SKILLS_BRIDGE jsb → DIM_SKILLS ds`
+   • Join `ANALYTICS.JOB_KEYWORDS_BRIDGE jkb → DIM_KEYWORDS dk`
+   • Join `ANALYTICS.DIM_JOB_DESCRIPTION djd` (new from ENH-040) for `DESCRIPTION_CLEAN`.
+   • **Temporarily LEFT JOIN `STAGE.JOBS_LLM_ENRICHED llm` to surface enrichment fields** (`ENRICHED_OFFICE_LOCATIONS`, `ENRICHED_WORK_TYPE`, `ENRICHED_SALARY_*`, `ENRICHED_MIN/MAX_YEARS_EXPERIENCE`, `ENRICHED_EXPERIENCE_LEVEL`) **until we revalidate the dim tables with the corresponding fields.**
+2. Deprecate wide `WHERE LOWER(job_description_clean)…` clauses; replace with:
+   • Skill/category filters via `ds.skill_name` or `ds.category`.
+   • Keyword filters via `dk.keyword_name`.
+   • Optional full-text match on `djd.description_clean` only when needed.
+3. Update `JobSearchConfig`:
+   • `skills_filter`, `keywords_filter`, `categories_filter` arrays.
+   • Remove gigantic `raw_search_terms` list.
+4. Adjust HTML generation to consume normalized skill/keyword lists already present in fact table (enriched fields).
+5. Provide migration path: keep stage-based query behind feature flag until analytics path proven.
+
+### Implementation Plan
+• Day 1 – Build new SQL generator using analytics joins; unit test results parity on sample inputs.
+• Day 2 – Refactor config schema & CLI flags; update docs.
+• Day 2 – Remove legacy regex filters; bench-test performance (expect >5× faster).
+• Day 3 – Toggle feature flag in production, monitor for issues.
+
+### Success Criteria
+• Query runtime < 1 s on 100 k posting dataset.
+• Results volume & relevance match legacy search.
+• Config size shrinks by >80 %.
+• Code coverage updated tests pass.
 
 
 

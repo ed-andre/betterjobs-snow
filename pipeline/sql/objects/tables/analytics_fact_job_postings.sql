@@ -6,6 +6,7 @@ CREATE TABLE ANALYTICS.FACT_JOB_POSTINGS (
     DATE_POSTED_KEY STRING,              -- When job was first posted
     COMPANY_KEY STRING,
     LOCATION_KEY STRING,
+    JOB_DESCRIPTION_KEY STRING,
     JOB_FAMILY_KEY STRING,
     PLATFORM_KEY STRING,
     SALARY_KEY STRING,                   -- FK to DIM_SALARY (normalized salary data)

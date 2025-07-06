@@ -63,6 +63,15 @@ erDiagram
         timestamp created_timestamp
     }
 
+    DIM_JOB_DESCRIPTION {
+        string job_description_key PK
+        string job_uid "Natural Key"
+        string description_clean
+        string language
+        integer tokens_count
+        timestamp created_timestamp
+    }
+
     DIM_JOB_FAMILY {
         string job_family_key PK
         string job_family "Direct from LLM"
@@ -71,6 +80,9 @@ erDiagram
         string role_type "Direct from LLM"
         integer seniority_order "Simple derivation"
         boolean is_management_role "Simple derivation"
+        string platform_key FK
+        string job_description_key FK
+        string salary_key FK
         timestamp created_timestamp
     }
 
@@ -345,6 +357,7 @@ erDiagram
     FACT_JOB_POSTINGS ||--o{ DIM_DATE : "posted_on"
     FACT_JOB_POSTINGS ||--o{ DIM_COMPANY : "posted_by"
     FACT_JOB_POSTINGS ||--o{ DIM_LOCATION : "located_in"
+    FACT_JOB_POSTINGS ||--o{ DIM_JOB_DESCRIPTION : "described_by"
     FACT_JOB_POSTINGS ||--o{ DIM_JOB_FAMILY : "categorized_as"
     FACT_JOB_POSTINGS ||--o{ DIM_PLATFORM : "sourced_from"
     FACT_JOB_POSTINGS ||--o{ DIM_SALARY : "offers_salary_range"

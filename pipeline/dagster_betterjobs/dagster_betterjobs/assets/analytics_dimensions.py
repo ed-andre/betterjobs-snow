@@ -2216,3 +2216,74 @@ def analytics_dim_keywords(context: AssetExecutionContext, snowflake: SnowflakeR
 
         finally:
             cursor.close()
+
+
+@asset(
+    deps=["stage_jobs_unified"],
+    description="Create job description dimension for analytics",
+    group_name="3a_analytics_dimensions",
+    kinds={"snowflake", "SQL"}
+)
+def analytics_dim_job_description(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """
+    Build job description dimension from STAGE.JOBS_UNIFIED.
+
+    The dimension captures cleaned job descriptions and basic metadata so that
+    large text is held outside the fact table while remaining easily joinable
+    via JOB_UID.
+    """
+
+    table_name = ensure_object_exists("tables/analytics_dim_job_description.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+        try:
+            context.log.info("Clearing existing job description dimension data")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
+
+            context.log.info("Populating job description dimension from STAGE.JOBS_UNIFIED")
+            build_sql = f"""
+            INSERT INTO {table_name} (
+                job_description_key,
+                job_uid,
+                description_clean,
+                language,
+                tokens_count,
+                created_timestamp,
+                updated_timestamp
+            )
+            SELECT
+                'JD_' || ju.JOB_UID                  AS job_description_key,
+                ju.JOB_UID                           AS job_uid,
+                ju.JOB_DESCRIPTION_CLEAN            AS description_clean,
+                COALESCE(ju.DETECTED_LANGUAGE, 'unknown') AS language,
+                CASE
+                    WHEN ju.JOB_DESCRIPTION_CLEAN IS NOT NULL THEN ARRAY_SIZE(SPLIT(ju.JOB_DESCRIPTION_CLEAN, ' '))
+                    ELSE 0
+                END                                   AS tokens_count,
+                CURRENT_TIMESTAMP                    AS created_timestamp,
+                CURRENT_TIMESTAMP                    AS updated_timestamp
+            FROM BETTERJOBS_DB.STAGE.JOBS_UNIFIED ju
+            WHERE ju.JOB_DESCRIPTION_CLEAN IS NOT NULL
+              AND TRIM(ju.JOB_DESCRIPTION_CLEAN) != ''
+            """
+            cursor.execute(build_sql)
+            rows_inserted = cursor.rowcount
+
+            context.log.info(f"Inserted {rows_inserted} job description records")
+
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            total_recs = cursor.fetchone()[0]
+
+            context.add_output_metadata({
+                "rows_inserted": MetadataValue.int(rows_inserted),
+                "total_records": MetadataValue.int(total_recs)
+            })
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_inserted": rows_inserted,
+                "total_records": total_recs
+            }
+        finally:
+            cursor.close()

@@ -94,7 +94,8 @@ from dagster_betterjobs.assets.analytics_dimensions import (
     analytics_dim_skills,
     analytics_dim_salary,
     analytics_dim_experience,
-    analytics_dim_keywords
+    analytics_dim_keywords,
+    analytics_dim_job_description
 )
 
 # Analytics Layer Assets - Phase 2: Facts
@@ -196,6 +197,7 @@ __all__ = [
     "analytics_dim_date",
     "analytics_dim_company",
     "analytics_dim_location",
+    "analytics_dim_job_description",
     "analytics_dim_job_family",
     "analytics_dim_platform",
     "analytics_dim_skills",

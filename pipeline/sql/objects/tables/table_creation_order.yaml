@@ -75,6 +75,7 @@ analytics_layer:
   - analytics_dim_company.sql
   - analytics_dim_platform.sql
   - analytics_dim_location.sql
+  - analytics_dim_job_description.sql
   - analytics_dim_experience.sql
   - analytics_dim_skills.sql
   - analytics_dim_keywords.sql

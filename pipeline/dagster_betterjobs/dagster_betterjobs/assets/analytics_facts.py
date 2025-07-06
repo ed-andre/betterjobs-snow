@@ -15,7 +15,7 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
 @asset(
     deps=["analytics_dim_date", "analytics_dim_company", "analytics_dim_location",
           "analytics_dim_job_family", "analytics_dim_platform", "analytics_dim_skills",
-          "analytics_dim_salary",
+          "analytics_dim_salary", "analytics_dim_job_description",
           "stage_jobs_unified", "stage_jobs_llm_enriched_unified", "stage_job_salary_bridge"],
     description="Create primary fact table for job posting analytics",
     group_name="3b_analytics_facts_aggregates_analysis",
@@ -69,6 +69,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 date_posted_key,
                 company_key,
                 location_key,
+                job_description_key,
                 job_family_key,
                 platform_key,
                 salary_key,
@@ -160,6 +161,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
 
                     -- Salary dimension lookup (via bridge table)
                     COALESCE(ds.SALARY_KEY, 'SAL_UNKNOWN') as salary_key,
+                    COALESCE(djd.JOB_DESCRIPTION_KEY, 'JD_UNKNOWN') as job_description_key,
 
                     -- Salary measures (denormalized from DIM_SALARY for performance)
                     ds.SALARY_MIN_ANNUAL_USD,
@@ -200,6 +202,10 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_PLATFORM dp
                     ON jd.PLATFORM = dp.PLATFORM_NAME
 
+                -- Job description dimension lookup
+                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_JOB_DESCRIPTION djd
+                    ON jd.JOB_UID = djd.JOB_UID
+
                 -- Salary dimension lookup (via bridge table)
                 LEFT JOIN BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb
                     ON jd.JOB_UID = jsb.JOB_UID
@@ -213,6 +219,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                 date_posted_key,
                 company_key,
                 location_key,
+                job_description_key,
                 job_family_key,
                 platform_key,
                 salary_key,
