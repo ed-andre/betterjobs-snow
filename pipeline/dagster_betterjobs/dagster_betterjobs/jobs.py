@@ -33,6 +33,14 @@ infrastructure_setup_job = define_asset_job(
     description="Job that sets up the infrastructure for the pipeline",
 )
 
+# COMPANY PROFILES RAW AND STAGE
+## JOB
+company_profiles_job = define_asset_job(
+    name="company_profiles_job",
+    selection=AssetSelection.assets("raw_company_profiles", "stage_company_profiles"),
+    description="Job that materializes the company profiles",
+)
+
 
 # JOB DISCOVERY - BAMBOOHR
 ## CONFIG
