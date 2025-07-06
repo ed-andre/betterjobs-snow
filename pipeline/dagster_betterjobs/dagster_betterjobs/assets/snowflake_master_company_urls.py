@@ -656,6 +656,34 @@ def snowflake_master_company_urls(
     context.log.info(f"  • Main table: {main_table_fqn}")
     context.log.info(f"  • Log table: {log_table_fqn}")
 
+    # === CONSISTENCY CHECK BETWEEN MAIN TABLE AND PROCESSING LOG ===
+    cursor = conn.cursor()
+    try:
+        cursor.execute("USE DATABASE BETTERJOBS_DB")
+        cursor.execute("USE SCHEMA RAW")
+
+        # Current number of rows in the master table
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        current_table_count = cursor.fetchone()[0]
+
+        # Total of record_count tracked in the processing log (0 if table is empty)
+        cursor.execute(f"SELECT COALESCE(SUM(record_count), 0) FROM {log_table_name}")
+        processed_records_count = cursor.fetchone()[0] or 0
+
+        # If counts don\'t match while the log reports existing records, force a full refresh
+        if current_table_count != processed_records_count and processed_records_count > 0:
+            context.log.warning(
+                f"Count mismatch detected: {table_name} has {current_table_count} rows but {log_table_name} tracks {processed_records_count}. Triggering full refresh."
+            )
+            # Invalidate watermarking by clearing the processing log so every source file is re-evaluated
+            cursor.execute(f"TRUNCATE TABLE {log_table_name}")
+            conn.commit()
+            context.log.info("Processing log truncated; all source files will be considered new in this run.")
+    except Exception as e:
+        context.log.error(f"Error during consistency check: {str(e)}")
+    finally:
+        cursor.close()
+
     # Track statistics
     stats = {
         "files_processed": 0,
