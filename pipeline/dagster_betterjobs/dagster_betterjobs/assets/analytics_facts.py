@@ -1579,6 +1579,7 @@ def analytics_market_weekly_summary(context: AssetExecutionContext, snowflake: S
                     AVG(DATA_QUALITY_SCORE) as data_quality_score
 
                 FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS
+                LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_DATE dd ON dd.DATE_KEY = FACT_JOB_POSTINGS.DATE_POSTED_KEY
                 WHERE IS_ACTIVE_POSTING = TRUE
                   AND LLM_OVERALL_CONFIDENCE >= 0.5
                   AND FIRST_POSTED_DATE >= CURRENT_DATE - 365  -- 1 year retention
