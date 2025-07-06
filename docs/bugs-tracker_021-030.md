@@ -19,6 +19,8 @@ This document tracks known bugs and issues in the BetterJobs Snowflake project.
 
 - **OPEN**
 
+  - BUG-022: Master Company URLs Temp Table Race Condition
+
 - **IN PROGRESS**
 
   - **RESOLVED**
@@ -111,3 +113,57 @@ temp_table_name = f"temp_{platform}_jobs_{datetime.now().strftime('%Y%m%d_%H%M%S
 - **UUID Approach**: Uses standard library UUID for guaranteed uniqueness
 - **Performance Impact**: Negligible - UUID generation is very fast
 - **Backwards Compatible**: No breaking changes to existing functionality
+
+---
+
+## BUG-022: Master Company URLs Temp Table Race Condition
+
+**Status:** OPEN 🚧
+**Severity:** High
+**Component:** Master Company URLs Ingestion (`snowflake_master_company_urls.py`)
+**Date Reported:** 2025-07-06
+
+### Description
+When the `snowflake_master_company_urls` asset is scheduled inside **jobs** it can be materialised several times in quick succession. Each run creates a temporary external table named `MASTER_COMPANY_URLS_TEMP_S3`. Because the name is static, the first run that finishes drops the table while another in-flight run still expects it, leading to:
+
+```
+002003 (42S02): SQL compilation error:
+Object 'MASTER_COMPANY_URLS_TEMP_S3' does not exist or not authorized.
+```
+
+### Root Cause Analysis
+- **File:** `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_master_company_urls.py`
+- **Function:** `snowflake_master_company_urls` (around lines 600+)
+- **Issue:** Temporary table name is hard-coded. Concurrent materialisations share the same name; when one run closes its Snowflake session it drops the temp table, breaking others.
+- **Similarity:** Same pattern fixed previously in **BUG-021** for `watermark_management.py` temp tables.
+
+### Reproduction Steps
+1. Include `snowflake_master_company_urls` asset inside a Dagster job.
+2. Trigger the job manually twice (or have overlapping schedules).
+3. Observe that the second run fails during `CREATE OR REPLACE TEMPORARY` / subsequent query because the table was dropped by the first run.
+
+### Expected vs Actual
+**Expected:** Each run uses its own uniquely named temporary table so concurrent executions do not interfere.
+
+**Actual:** All runs share `MASTER_COMPANY_URLS_TEMP_S3`; race condition causes `OBJECT DOES NOT EXIST` errors.
+
+### Potential Impact
+- **Pipeline Failures:** Job fails unpredictably on busy schedules.
+- **Data Staleness:** Master company URL list may not refresh.
+- **Operator Fatigue:** Manual re-triggers required.
+
+### Suggested Fix (TBD)
+Introduce a helper (e.g., `ensure_temp_object_exists(platform: str, base_name: str)`) that appends a short random/UUID suffix to the base temp table name, mirroring the approach in BUG-021. Asset then references the generated unique name for the entire session.
+
+### Files Affected (planned)
+- `dagster_betterjobs/utils/temp_object_utils.py` (new) – `ensure_temp_object_exists()`
+- `dagster_betterjobs/assets/snowflake_master_company_urls.py` – replace static temp table name with call to helper.
+
+### Verification Steps (after fix)
+1. Trigger two concurrent materialisations – both should succeed.
+2. Check Snowflake history: temp tables have unique names per run.
+3. Confirm tables are cleaned up automatically when session closes.
+
+### Additional Notes
+- Pattern identical to BUG-021 – reuse UUID-based suffix strategy.
+- Ensure helper is generic for future temp tables.

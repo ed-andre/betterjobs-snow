@@ -2752,5 +2752,100 @@ The current skills taxonomy (categories, subcategories, families) was crafted ad
 5. Document new taxonomy management procedures
 6. Implement monitoring for taxonomy coverage and quality
 
+## ENHANCEMENT-039: Incremental Loads for Analytics Assets
+
+**Status:** Planned
+**Priority:** High
+**Component:** Analytics Layer – facts, bridges, dimensions & aggregates
+**Date Planned:** 2025-07-06
+**Estimated Effort:** 3–4 days
+**Business Impact:** High – Run-time reduction and Snowflake credit savings
+
+### Problem Statement
+Full refresh logic (`TRUNCATE TABLE …; INSERT …`) inside every analytics asset causes:
+- Long runtimes (30-60 min) as data volume grows.
+- Unnecessary Snowflake compute spend.
+- Down-stream aggregates to wait for large writes/locks.
+
+### Business Justification
+- **Performance:** Expect 80-90 % reduction in daily ELT runtime.
+- **Cost:** ~70 % fewer Snowflake credits once incremental writes replace full reloads.
+- **Reliability:** Smaller change-sets mean faster retries and easier debugging.
+- **Scalability:** Prepares the pipeline for multi-million job posting datasets.
+
+### Solution Architecture
+1. **Watermark + MERGE pattern (Type-1 upsert)** for record-level assets
+   - Fetch `MAX(updated_timestamp)` from target table.
+   - Query source tables where `updated_timestamp > watermark – overlap`.
+   - `MERGE INTO … ON <business_key>` to insert new / update changed rows.
+   - Persist new watermark via existing `watermark_management.py` helper.
+2. **Micro-rebuild (partition delete + insert)** for weekly/monthly aggregates
+   - Determine impacted `week_key` (or `partition_date`) from newly merged base tables (last 8 weeks by default).
+   - `DELETE FROM … WHERE week_key IN (…)` then `INSERT … WHERE week_key IN (…);`.
+3. **Config switches**
+   - `enable_incremental` (default `True`) per asset to allow full refresh when needed.
+   - `overlap_hours` (default `2`) cushion for late-arriving rows.
+
+### Technical Approach
+| Asset Type | Files to touch | Change summary |
+|------------|---------------|----------------|
+| Facts      | `analytics_facts.py` | Replace `TRUNCATE` with MERGE; add CTE to filter by watermark. |
+| Bridges    | `analytics_bridges.py` | Same MERGE pattern using bridge natural keys. |
+| Dimensions | `analytics_dimensions.py` | MERGE on dimension keys; keep Type-2 dims (e.g., company) as-is. |
+| Aggregates | Weekly tables in `analytics_facts.py` | Switch to delete + insert for `week_key` ≥ (current week – 8). |
+| Helper     | `watermark_management.py` | Add `get_asset_watermark()` + generic `update_watermark()` if absent. |
+
+### Implementation Plan
+1. **Prep (½ day)**
+   1. Add `updated_timestamp TIMESTAMP` column to any analytics table missing it (SQL migration files).
+   2. Add INTERNAL schema to project through database_schema_setup and in env file
+2. **Watermark Utilities (½ day)**
+   1. In `watermark_management.py` add two generic functions:
+      - `get_asset_watermark(asset_name: str) -> Optional[datetime]`.
+      - `set_asset_watermark(asset_name: str, value: datetime) -> None`.
+   2. Store values in a lightweight Snowflake table `INTERNAL.WATERMARKS`.
+3. **Refactor Record-level Assets (1 day)**
+   For each asset in `analytics_facts.py`, `analytics_bridges.py`, `analytics_dimensions.py`:
+   1. Replace `TRUNCATE TABLE {table_name}` with:
+      ```sql
+      -- Step 0: Determine delta window
+      SET last_wm = (SELECT COALESCE(MAX_WATERMARK, '1900-01-01') FROM INTERNAL.WATERMARKS WHERE ASSET_NAME = 'analytics_fact_job_postings');
+      -- Step 1-2: Merge delta rows
+      MERGE INTO {table_name} tgt
+      USING (SELECT * FROM source_view WHERE updated_timestamp >= DATEADD('hour', -${overlap_hours}, :last_wm)) src
+      ON tgt.business_key = src.business_key
+      WHEN MATCHED THEN UPDATE SET <column_list>
+      WHEN NOT MATCHED THEN INSERT (<columns>) VALUES (<src.columns>);
+      ```
+   2. After merge, call `set_asset_watermark()` with `MAX(src.updated_timestamp)`.
+4. **Refactor Aggregate Assets (½ day)**
+   1. Identify impacted `week_key` by querying fact table for rows where `updated_timestamp >= last_wm`.
+   2. Delete + Insert for those keys only.
+5. **Testing (½ day)**
+   1. Unit tests: mock Snowflake cursor; verify MERGE SQL generated.
+   2. Integration: run pipeline twice and ensure second run writes minimal rows.
+6. **Documentation & PR (½ day)**
+   - Update `README.md` incremental section.
+   - Add entry to `CHANGELOG.md`.
+
+### Success Criteria
+- Daily run time drops by >70 % on staging dataset.
+- `FACT_JOB_POSTINGS` MERGE affects <5 % of rows on typical day.
+- No full-table locks observed during incremental runs.
+- Dagster runs show idempotent behaviour (second run processes 0 new rows).
+
+### Risk Mitigation
+- Keep `enable_incremental=False` option to fallback to full refresh quickly.
+- 2-hour overlap prevents accidental data gaps.
+- Thorough testing on staging before production cut-over.
+
+### Expected Benefits
+| Metric | Before | After (target) |
+|--------|--------|----------------|
+| Runtime – analytics layer | 45 min | <10 min |
+| Snowflake credits / run | 100 | 30 |
+| Mean time to recover (failed run) | 45 min | 5 min |
+
+
 
 
