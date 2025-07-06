@@ -39,16 +39,27 @@ from dagster_betterjobs.io import BetterJobsIOManager
 from dagster_betterjobs.jobs import (
     data_engineering_job,
     enhanced_data_engineering_job,
+    legal_positions_job,
     full_jobs_discovery_job,
+    stage_jobs_unified_job,
     bamboohr_jobs_discovery_job,
     greenhouse_jobs_discovery_job,
     smartrecruiters_jobs_discovery_job,
     workday_jobs_discovery_job,
-    full_jobs_discovery_and_search_job,
+    full_jobs_discovery_enrichment_search_job,
+    full_jobs_discovery_search_job,
     snowflake_master_company_urls_job,
+    stage_jobs_llm_enriched_unified_job,
+    stage_jobs_llm_enriched_job,
+    stage_llm_standardization_validation_job,
+    analytics_dimensions_job,
+    analytics_facts_aggregates_analysis_job,
+    stage_data_quality_governance_job,
+    infrastructure_setup_job,
+
 )
 from dagster_betterjobs.schedules import (
-    full_jobs_discovery_and_search_schedule,
+    full_jobs_discovery_enrichment_and_search_schedule,
     schema_drift_validation_schedule,
 )
 
@@ -152,16 +163,26 @@ defs = Definitions(
     jobs=[
         data_engineering_job,
         enhanced_data_engineering_job,
+        legal_positions_job,
         full_jobs_discovery_job,
+        stage_jobs_unified_job,
         bamboohr_jobs_discovery_job,
         greenhouse_jobs_discovery_job,
         smartrecruiters_jobs_discovery_job,
         workday_jobs_discovery_job,
-        full_jobs_discovery_and_search_job,
+        full_jobs_discovery_enrichment_search_job,
+        full_jobs_discovery_search_job,
         snowflake_master_company_urls_job,
+        stage_jobs_llm_enriched_unified_job,
+        stage_jobs_llm_enriched_job,
+        stage_llm_standardization_validation_job,
+        analytics_dimensions_job,
+        analytics_facts_aggregates_analysis_job,
+        stage_data_quality_governance_job,
+        infrastructure_setup_job,
     ],
     schedules=[
-        full_jobs_discovery_and_search_schedule,
+        full_jobs_discovery_enrichment_and_search_schedule,
         schema_drift_validation_schedule,
     ],
     sensors=[

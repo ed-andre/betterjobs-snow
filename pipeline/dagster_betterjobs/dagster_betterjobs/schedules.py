@@ -1,7 +1,7 @@
 from dagster import schedule, RunRequest, AssetSelection
 from .jobs import (
-    full_jobs_discovery_and_search_job,
-    full_jobs_discovery_except_icims_job,
+    full_jobs_discovery_enrichment_search_job,
+    full_jobs_discovery_job,
     # supabase_transport_job,
     # discovery_and_transport_job
 )
@@ -56,18 +56,18 @@ from dagster_betterjobs.partitions import company_alpha_partitions as alpha_part
 #             tags={"partition": partition_key}
 #         )
 
-# Schedule for running all job discovery assets (except iCIMS) plus job search
+# Schedule for running all job discovery assets plus job search
 @schedule(
     cron_schedule="0 4 * * *",  # Run daily at 4 AM
     execution_timezone="US/Eastern",
-    job=full_jobs_discovery_and_search_job,
+    job=full_jobs_discovery_enrichment_search_job,
 )
-def full_jobs_discovery_and_search_schedule(context):
-    """Schedule that runs all job discovery assets (except iCIMS) plus job search daily."""
+def full_jobs_discovery_enrichment_and_search_schedule(context):
+    """Schedule that runs all job discovery assets plus job search daily."""
     # Get all partition keys from alpha_partitions
     for partition_key in alpha_partitions.get_partition_keys():
         # Create a unique run key for each partition
-        run_key = f"full_jobs_discovery_and_search_{partition_key}_{context.scheduled_execution_time.strftime('%Y-%m-%d')}"
+        run_key = f"full_jobs_discovery_enrichment_search_{partition_key}_{context.scheduled_execution_time.strftime('%Y-%m-%d')}"
 
         # Yield a RunRequest for each partition
         yield RunRequest(
@@ -83,7 +83,7 @@ def full_jobs_discovery_and_search_schedule(context):
 #     job=discovery_and_transport_job,
 # )
 # def full_jobs_discovery_and_supabase_schedule(context):
-#     """Schedule that runs job discovery (except iCIMS) followed by Supabase transport daily at noon."""
+#     """Schedule that runs job discovery  followed by Supabase transport daily at noon."""
 #     for partition_key in alpha_partitions.get_partition_keys():
 #         run_key = f"discovery_and_transport_{partition_key}_{context.scheduled_execution_time.strftime('%Y-%m-%d')}"
 #         yield RunRequest(

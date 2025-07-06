@@ -1493,7 +1493,7 @@ def analytics_market_weekly_summary(context: AssetExecutionContext, snowflake: S
     3. Compute salary intelligence using denormalized annual USD fields
     4. Analyze work arrangement trends from WORK_TYPE field
     5. Generate data quality metrics and sample size indicators
-    6. Implement incremental processing for new weeks only
+    6. Implement incremental processing for new weeks only (FUTURE ENHANCEMENT)
 
     Data Quality Rules:
     - Include only active job postings (IS_ACTIVE_POSTING = TRUE)

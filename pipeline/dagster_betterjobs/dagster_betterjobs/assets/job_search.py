@@ -75,7 +75,7 @@ class JobSearchConfig(Config):
     group_name="job_search",
     kinds={"snowflake", "python"},
     required_resource_keys={"snowflake"},
-    deps=["stage_jobs_unified"]  # Changed from multiple RAW discovery assets to single STAGE asset
+    deps=["stage_jobs_unified", "stage_jobs_llm_enriched_unified"]  # Changed from multiple RAW discovery assets to single STAGE asset
 )
 def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.DataFrame:
     """
