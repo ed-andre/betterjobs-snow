@@ -2849,13 +2849,14 @@ Full refresh logic (`TRUNCATE TABLE …; INSERT …`) inside every analytics ass
 
 ---
 
-## ENHANCEMENT-040: Add Job Description Dimension and Integrate with Fact Table
+## ENHANCEMENT-040: Add Job Description Dimension and Integrate with Fact Table -- ✅ COMPLETED
 
 **Status:** Completed
 **Priority:** Medium
 **Component:** Analytics Layer – Dimensions & Facts
 **Date Planned:** 2025-07-06
-**Estimated Effort:** 1–2 days
+**Date Completed:** 2025-07-06
+**Estimated Effort:** 1 day
 
 ### Problem Statement
 Current analytic star schema lacks a dedicated dimension for job descriptions, forcing downstream queries to pull large text directly from stage tables and preventing efficient joins for text search and metadata analysis.
@@ -2885,44 +2886,63 @@ Current analytic star schema lacks a dedicated dimension for job descriptions, f
 
 ---
 
-## ENHANCEMENT-041: Refactor Job Search to Use Analytics Layer
+## ENHANCEMENT-041: Implement Advanced Job Search Asset to leverage Analytics Layer
 
 **Status:** Planned
 **Priority:** High
-**Component:** Application – job_search.py & SQL generation
+**Component:** Application – `advanced_job_search` asset, denormalised search table & front-end API
 **Date Planned:** 2025-07-06
 **Estimated Effort:** 2–3 days
 
 ### Problem Statement
-The current job search constructs a monolithic query over `STAGE.JOBS_UNIFIED`, performing expensive text filters on raw description fields and ignoring normalized skills/keywords available in analytics tables.
+The existing `search_jobs` asset executes heavyweight text filters directly against the **Stage** layer (`STAGE.JOBS_UNIFIED`). This results in slow query times (>5 s) and fails to leverage curated, normalised data already present in the **Analytics** star-schema. A clean-slate approach, rather than an in-place rewrite, will let us experiment rapidly while keeping the existing search functionality.
 
-### Technical Approach
-1. Switch query base to `ANALYTICS.FACT_JOB_POSTINGS fp`
-   • Join `ANALYTICS.JOB_SKILLS_BRIDGE jsb → DIM_SKILLS ds`
-   • Join `ANALYTICS.JOB_KEYWORDS_BRIDGE jkb → DIM_KEYWORDS dk`
-   • Join `ANALYTICS.DIM_JOB_DESCRIPTION djd` (new from ENH-040) for `DESCRIPTION_CLEAN`.
-   • **Temporarily LEFT JOIN `STAGE.JOBS_LLM_ENRICHED llm` to surface enrichment fields** (`ENRICHED_OFFICE_LOCATIONS`, `ENRICHED_WORK_TYPE`, `ENRICHED_SALARY_*`, `ENRICHED_MIN/MAX_YEARS_EXPERIENCE`, `ENRICHED_EXPERIENCE_LEVEL`) **until we revalidate the dim tables with the corresponding fields.**
-2. Deprecate wide `WHERE LOWER(job_description_clean)…` clauses; replace with:
-   • Skill/category filters via `ds.skill_name` or `ds.category`.
-   • Keyword filters via `dk.keyword_name`.
-   • Optional full-text match on `djd.description_clean` only when needed.
-3. Update `JobSearchConfig`:
-   • `skills_filter`, `keywords_filter`, `categories_filter` arrays.
-   • Remove gigantic `raw_search_terms` list.
-4. Adjust HTML generation to consume normalized skill/keyword lists already present in fact table (enriched fields).
-5. Provide migration path: keep stage-based query behind feature flag until analytics path proven.
+### Solution Overview
+1. **New Asset:** `dagster_betterjobs.assets.advanced_job_search`
+   • Group: `job_search`
+   • Depends on `analytics_fact_job_postings`, bridge tables, and key dimensions.
+   • Returns a `pandas.DataFrame` **and** writes results to `SERVE.ADVANCED_JOB_SEARCH` for BI tools.
++   • **NEW Supporting Asset:** `dagster_betterjobs.assets.serve_denorm_skills` – refreshes a lookup table `SERVE.DENORM_SKILLS` (category, subcategory, skills_csv) to power UI autocomplete and search filters.
+2. **Denormalised View Logic:** Inside the asset build a CTE joining:
+   • `ANALYTICS.FACT_JOB_POSTINGS   fp`
+   • `ANALYTICS.DIM_COMPANY         dc`
+   • `ANALYTICS.DIM_LOCATION        dl`
+   • `ANALYTICS.DIM_JOB_DESCRIPTION dj`
+   • `ANALYTICS.JOB_SKILLS_BRIDGE  jsb → DIM_SKILLS ds`
+   • `ANALYTICS.JOB_KEYWORDS_BRIDGE jkb → DIM_KEYWORDS dk`
+   • `STAGE.JOBS_LLM_ENRICHED      llm` (salary / experience stop-gap until corresponding dims are fully validated).
+   The query flattens skills & keywords into comma-separated strings for quick text search and attaches salary/experience insights.
+3. **Config Class:** `AdvancedJobSearchConfig` extends `JobSearchConfig` with analytics-specific filters:
+   • `skills_filter`, `keywords_filter`, `industries_filter`, `company_size_filter`
+   • `return_table` (bool, default `False`) – write to Snowflake when `True`.
+4. **Backward Compatibility:** Keep `search_jobs` unchanged; feature flag (`use_advanced_search`) allows gradual migration.
+5. **Testing:** Add `tests/test_advanced_job_search.py` covering SQL generation, filter application and result parity on benchmark queries.
 
 ### Implementation Plan
-• Day 1 – Build new SQL generator using analytics joins; unit test results parity on sample inputs.
-• Day 2 – Refactor config schema & CLI flags; update docs.
-• Day 2 – Remove legacy regex filters; bench-test performance (expect >5× faster).
-• Day 3 – Toggle feature flag in production, monitor for issues.
+• **Day 0 – Scaffolding**
+   – Create `advanced_job_search.py`; register asset in `assets/__init__.py`.
+   – Define `AdvancedJobSearchConfig` and basic unit skeleton.
++   – Create companion asset `serve_denorm_skills.py` with nightly schedule.
+• **Day 1 – SQL Generator & DataFrame Output**
+  – Write join CTEs, skill/keyword aggregation (`LISTAGG` in Snowflake).
+  – Ensure configurable filters are translated to SQL `WHERE` clauses.
+• **Day 1 PM – Optional Snowflake Materialisation**
+  – `CREATE OR REPLACE TABLE SERVE.ADVANCED_JOB_SEARCH AS <query>` when `return_table=True`.
++  – `CREATE OR REPLACE TABLE SERVE.DENORM_SKILLS AS <query>` inside `serve_denorm_skills` asset.
+• **Day 2 – HTML/CSV Report Support & Tests**
+  – Re-use existing report helpers with new column names.
+  – Implement pytest with mocked cursor for SQL validation.
+• **Day 3 – Roll-out**
+  – Enable feature flag in staging, compare performance & relevance.
+  – If metrics met, switch UI default to `advanced_job_search`.
 
 ### Success Criteria
-• Query runtime < 1 s on 100 k posting dataset.
-• Results volume & relevance match legacy search.
-• Config size shrinks by >80 %.
-• Code coverage updated tests pass.
+• Query runtime ≤ 500 ms on 100 k-row dataset.
+• Result relevance within ±3 % of legacy search.
+• Config verbosity reduced by ≥ 80 %.
+• Adoption: ≥ 80 % of front-end requests use the new asset within 2 weeks.
+
+---
 
 
 

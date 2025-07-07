@@ -135,6 +135,10 @@ from dagster_betterjobs.assets.lightcast_taxonomy import (
 # ENHANCEMENT-028: Schema Drift Detection
 from dagster_betterjobs.assets.schema_validation import schema_drift_validation
 
+# SERVE ASSETS
+from dagster_betterjobs.assets.serve_denormalization import serve_denorm_skills, serve_denorm_keywords
+
+
 __all__ = [
     "adhoc_company_urls",
     "bamboohr_company_jobs_discovery",
@@ -227,5 +231,8 @@ __all__ = [
     "stage_lightcast_skills",
     "lightcast_taxonomy_validation",
     # ENHANCEMENT-028: Schema Drift Detection
-    "schema_drift_validation"
+    "schema_drift_validation",
+    # ENHANCEMENT-041: SERVE ASSETS FOR ADVANCED JOB SEARCH
+    "serve_denorm_skills",
+    "serve_denorm_keywords"
 ]

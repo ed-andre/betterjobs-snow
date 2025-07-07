@@ -97,3 +97,7 @@ analytics_layer:
   - analytics_skills_trend_analysis.sql
   - analytics_market_weekly_summary.sql
 
+  # Serving layer tables (reference analytics layer)
+  - serve_denorm_skills.sql
+  - serve_advanced_job_search.sql
+
