@@ -14,7 +14,7 @@ BetterJobs-Snow is a comprehensive job market analytics project that retrieves j
 
 ## Project Architecture
 
-The project consists of a Dagster data pipeline implementing a medallion architecture (Bronze, Silver, Gold) for retrieving, processing, and storing job data in Snowflake for analytics and reporting.
+The project consists of a Dagster data pipeline implementing a medallion architecture (Bronze, Silver, Gold, Serve) for retrieving, processing, and storing job data in Snowflake for analytics and reporting.
 
 ### Data Flow Architecture
 
@@ -27,18 +27,21 @@ CSV Data Sources (Company URLs with verified ATS links)
          ↓
    Data Transformation (Silver/Gold Layers)
          ↓
+   Data Denormalization (Serve Layer)
+         ↓
    Snowflake Storage
          ↓
-Analytics & Reporting
+Analytics & Reporting / Advanced Job Search
          ↓
-  Business Intelligence
+  Business Intelligence / Applications
 ```
 
 ### Pipeline Components
 - **CSV Ingestion**: Processes CSV files containing company information with verified ATS URLs from S3 and local sources
 - **Adhoc Processing**: Sensor-based ingestion for additional CSV files as needed
 - **Job Discovery**: Extracts job listings from company sites, varies by ATS platform
-- **Data Transformation**: Medallion architecture layers for data quality and enrichment (Bronze → Silver → Gold)
+- **Data Transformation**: Medallion architecture layers for data quality and enrichment (Bronze → Silver → Gold → Serve)
+- **Data Denormalization**: SERVE layer optimizes data for applications and advanced job search functionality
 - **Data Storage**: Stores job and company data in Snowflake for analytics
 
 **Note**: The initial CSV files with verified ATS URLs were generated from a previous version of this project that included automated URL discovery and extraction processes.
@@ -77,7 +80,7 @@ The RAW layer handles data ingestion and initial discovery:
 - **Company Profile Extraction**: Automated company information gathering
 - **Sensor-Based Processing**: Adhoc company processing with automatic detection
 
-#### STAGE (Silver) Layer  🚧 **IN PROGRESS**
+#### STAGE (Silver) Layer  ✅ **PRODUCTION READY**
 ![STAGE Layer Pipeline](media/2-stage_dagsterpipeline.png)
 
 The STAGE layer provides comprehensive data transformation and AI enrichment:
@@ -87,15 +90,15 @@ The STAGE layer provides comprehensive data transformation and AI enrichment:
 - **Quality Validation**: Comprehensive data quality scoring and language detection
 - **Enhanced Job Search**: Modern HTML report generation with interactive filtering capabilities
 
-##### LLM Data Standardization sub-layer ✅ **PRODUCTION READY**
+##### LLM Data Normalization & Standardization sub-layer ✅ **PRODUCTION READY**
 ![STAGE Standardization Pipeline](media/3-stage_standardization_dagsterpipeline.png)
 
-The LLM Standardization group transforms AI-extracted VARIANT/JSON data into normalized relational structures:
-- **Skills Normalization** ✅ **COMPLETED**: 8,302 skills standardized with 149,477 job-skill relationships and family classification (as of June 11, 2025)
-- **Keywords Standardization** ✅ **COMPLETED**: 2,847 keywords normalized with industry and role type classifications (as of June 11, 2025)
+The LLM Normalization & Standardization group transforms AI-extracted VARIANT/JSON data into normalized relational structures:
+- **Skills Normalization** ✅ **COMPLETED**: Two-pass normalization using LIGHTCAST SKILL TAXONOMY to standardize LLM-enriched skills with canonical forms and family classification
+- **Keywords Standardization** ✅ **COMPLETED**: Keywords normalized with industry and role type classifications for consistent terminology
 - **Location Standardization** ✅ **COMPLETED**: Geographic hierarchy and tech hub classification with work arrangement context
 - **Data Quality Validation** ✅ **COMPLETED**: Comprehensive quality monitoring, anomaly detection, and automated alerting
-- **Analytics Enablement** 📋 **PLANNED**: Pre-aggregated views and performance optimization for downstream analytics
+- **Analytics Enablement** ✅ **COMPLETED**: Pre-aggregated views and performance optimization for downstream analytics
 
 ##### Data Quality & Governance sub-layer ✅ **COMPLETED**
 ![Data Quality Governance sub-layer](media/4-stage_data_quality_dagsterpipeline.png)
@@ -117,14 +120,41 @@ The Data Quality Governance group provides comprehensive monitoring and validati
 **Next Phase:**
 - **Phase 5**: Analytics-optimized views and materialized tables for Gold layer integration
 
-#### GOLD (Presentation) Layer 🔮 **COMING SOON**
-*Diagram will be added as assets are developed*
+#### GOLD (Analytics) Layer ✅ **PRODUCTION READY**
+![Analytics Dimensions Pipeline](media/6-analytics-dimensions.png)
 
-The planned GOLD layer will provide business-ready analytics and reporting:
-- **Aggregated Job Market Metrics**: Daily, weekly, and monthly job posting trends
-- **Skills & Salary Analytics**: Market rates, in-demand skills, and compensation benchmarks
-- **Geographic Intelligence**: Location-based job market insights and remote work trends
-- **Industry Analysis**: Sector-specific hiring patterns and emerging job categories
+![Analytics Facts & Aggregates Pipeline](media/7-analytics-facts_aggregate.png)
+
+The GOLD layer provides business-ready analytics and reporting with comprehensive dimensional modeling:
+
+**Analytics Dimensions** ✅ **COMPLETED**:
+- **Company Intelligence**: Company profiles with industry classification and hiring patterns
+- **Date Intelligence**: Complete date dimension with business calendar support
+- **Geographic Intelligence**: Location hierarchy with tech hub classification and remote work context
+- **Job Family Intelligence**: Role classification with seniority and skill family mapping
+- **Platform Intelligence**: ATS platform characteristics and coverage analysis
+- **Skills Intelligence**: Comprehensive skills taxonomy with canonical forms and categories
+- **Salary Intelligence**: Compensation benchmarking with confidence scoring
+
+**Facts & Aggregates** ✅ **COMPLETED**:
+- **Job Postings Fact Table**: Core analytical foundation with job records and dimensional relationships
+- **Skills Demand Analytics**: Weekly skills trend analysis with market penetration and salary premiums
+- **Company Hiring Intelligence**: Weekly company hiring patterns and competitive analysis
+- **Market Summary Analytics**: Executive dashboard metrics with week-over-week growth tracking
+- **Bridge Tables**: Many-to-many relationships for skills, keywords, and job experience mapping
+
+#### SERVE (Application) Layer ✅ **PRODUCTION READY**
+![Serve Layer Pipeline](media/8-serve_layer.png)
+
+*Denormalized data optimized for application consumption*
+
+The SERVE layer provides denormalized, application-ready data for external consumption:
+- **Denormalized Job Postings**: Flattened job data with all related dimensions for fast application queries
+- **Denormalized Keywords**: Optimized keyword lookup table for UI autocomplete and filtering
+- **Denormalized Skills**: Skills lookup table with canonical forms for application integration
+- **Advanced Job Search**: Optimized data structure supporting the interactive HTML job search reports
+- **API-Ready Datasets**: Pre-aggregated and denormalized data for external applications and integrations
+- **Performance Optimization**: Single-table queries eliminate complex joins for application use cases
 
 #### Current Architecture Benefits:
 - **Parallel Processing**: 4-5x performance improvement through platform-specific assets
@@ -198,6 +228,8 @@ dagster dev
 ```
 
 #### Step 6: Snowflake Infrastructure Setup
+![Infrastructure Setup Pipeline](media/0-infra-setup_dagsterpipeline.png)
+
 Set up your complete Snowflake infrastructure using automated assets:
 - **For complete setup instructions, see: [SNOWFLAKE_SETUP.md](pipeline/docs/setup/SNOWFLAKE_SETUP.md)**
 

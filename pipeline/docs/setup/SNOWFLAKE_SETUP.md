@@ -13,6 +13,8 @@ Configure your environment variables using the provided `.env.example` under `pi
 
 ## Infrastructure Setup Procedure
 
+![Infrastructure Setup Pipeline](../../media/0-infra-setup_dagsterpipeline.png)
+
 Start the Dagster development environment if you haven't already:
 ```bash
 cd pipeline/dagster_betterjobs
