@@ -138,6 +138,7 @@ def analytics_fact_job_postings(context: AssetExecutionContext, snowflake: Snowf
                   AND ju.COMPANY_ID != ''
                   AND ju.DATE_POSTED >= '2020-01-01'
                   AND ju.DATE_POSTED <= CURRENT_DATE
+                  AND ju.IS_ENGLISH = TRUE -- BUGFIX: Filter out non-English jobs since we are focusing on only English jobs and non-english ones will not have any enriched data
             ),
 
             dimension_lookups AS (

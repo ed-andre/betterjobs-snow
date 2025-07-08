@@ -468,3 +468,119 @@ full_jobs_discovery_search_job = define_asset_job(
     config=full_jobs_discovery_search_partitioned_config
 )
 
+# ADVANCED JOB SEARCH
+#
+# WORK TYPE FILTERING USAGE EXAMPLES:
+# - Search for remote jobs only: "remote": True
+# - Search for hybrid and remote jobs: "remote": True, "hybrid": True
+# - Search for full-time contracts: "full_time": True, "contract": True
+# - Custom work types: "work_condition": ["Flexible", "Per Diem", "Seasonal"]
+# - Combine multiple: "remote": True, "full_time": True, "work_condition": ["Flexible Hours"]
+#
+# NOTE: Boolean flags use OR logic within each category. None = don't filter that type.
+# Available values in ENRICHED_WORK_TYPE field include: Remote, Hybrid, On-site, Full-Time,
+# Part-Time, Contract, Flexible, Per Diem, Seasonal, Field-based, etc.
+#
+## JOB
+advanced_data_jobs_search_job = define_asset_job(
+    name="advanced_data_jobs_search_job",
+    selection=AssetSelection.assets("advanced_jobs_search"),
+    description="Runs the advanced job search against SERVE.DENORM_JOB_POSTINGS with hierarchical skill/category filters and structured keywords.",
+    config=RunConfig(
+        ops={
+            "advanced_jobs_search": {
+                "config": {
+                    # NEW: HIERARCHICAL SKILLS FILTERING (with precedence and exclusions)
+                    "skill_categories": [],  # Highest precedence but do not use as it is extensive
+                    "skill_subcategories": ["Data Visualization", "Data Storage", "Data Science", "Data Management", "Data Collection", "Data Analyis", "Databases"],  # Middle precedence
+                    "skills": ["snowflake", "dbt"],  # Lowest precedence
+                    "exclude_skill_categories": [],  # Exclude entire categories
+                    "exclude_skill_subcategories": [],  # Exclude specific subcategories
+                    "exclude_skills": [],  # Exclude individual skills
+
+                    # NEW: STRUCTURED KEYWORDS from DENORM_KEYWORDS table
+                    "keywords": [],  # From DENORM_KEYWORDS - AND STATEMENT
+                    "exclude_keywords": [],  # Exclude specific keywords
+
+                    # Free-text search (renamed from keywords)
+                    "description_terms": [],  # Free-text search in descriptions - AND STATEMENT
+
+                    # Standard filters
+                    "job_titles": [], # AND STATEMENT
+                    "locations": [], # AND STATEMENT
+
+                    # NEW: Work Type Filtering (using ENRICHED_WORK_TYPE field)
+                    "remote": None,  # True to include remote jobs, False to exclude, None to ignore
+                    "hybrid": None,  # True to include hybrid jobs, False to exclude, None to ignore
+                    "on_site": None,  # True to include on-site jobs, False to exclude, None to ignore
+                    "full_time": None,  # True to include full-time jobs, False to exclude, None to ignore
+                    "part_time": None,  # True to include part-time jobs, False to exclude, None to ignore
+                    "contract": None,  # True to include contract jobs, False to exclude, None to ignore
+                    "work_condition": [],  # Custom work types: ["Flexible", "Per Diem", "Seasonal", etc.]
+
+                    "platforms": ["all"],
+                    "days_back": 15,
+                    "max_results": 500,
+                    "output_format": "html",
+                    "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "advanced_data_job_search_{date}.html"),
+                    "job_name": "Advanced Data Job Search",
+                    "rank_by_quality": True,  # Prioritize high-quality job postings
+                    "rank_by_recency": True  # Also prioritize recent postings
+                }
+            }
+        }
+    )
+)
+
+# ADVANCED JOB SEARCH
+## JOB
+advanced_legal_jobs_search_job = define_asset_job(
+    name="advanced_legal_jobs_search_job",
+    selection=AssetSelection.assets("advanced_jobs_search"),
+    description="Runs the advanced job search against SERVE.DENORM_JOB_POSTINGS with hierarchical skill/category filters and structured keywords.",
+    config=RunConfig(
+        ops={
+            "advanced_jobs_search": {
+                "config": {
+                    # NEW: HIERARCHICAL SKILLS FILTERING (with precedence and exclusions)
+                    "skill_categories": [],  # Highest precedence but do not use as it is extensive
+                    "skill_subcategories": [],  # Middle precedence
+                    "skills": ["law", "legal", "compliance", "ethics"],  # Lowest precedence
+                    "exclude_skill_categories": [],  # Exclude entire categories
+                    "exclude_skill_subcategories": [],  # Exclude specific subcategories
+                    "exclude_skills": [],  # Exclude individual skills
+
+                    # NEW: STRUCTURED KEYWORDS from DENORM_KEYWORDS table
+                    "keywords": [],  # From DENORM_KEYWORDS - AND STATEMENT
+                    "exclude_keywords": [],  # Exclude specific keywords
+
+                    # Free-text search (renamed from keywords)
+                    "description_terms": [],  # Free-text search in descriptions - AND STATEMENT
+
+                    # Standard filters
+                    "job_titles": [], # AND STATEMENT
+                    "locations": [], # AND STATEMENT
+
+                    # NEW: Work Type Filtering (using ENRICHED_WORK_TYPE field)
+                    "remote": True,  # True to include remote jobs, False to exclude, None to ignore
+                    "hybrid": None,  # True to include hybrid jobs, False to exclude, None to ignore
+                    "on_site": None,  # True to include on-site jobs, False to exclude, None to ignore
+                    "full_time": None,  # True to include full-time jobs, False to exclude, None to ignore
+                    "part_time": None,  # True to include part-time jobs, False to exclude, None to ignore
+                    "contract": None,  # True to include contract jobs, False to exclude, None to ignore
+                    "work_condition": [],  # Custom work types: ["Flexible", "Per Diem", "Seasonal", etc.]
+
+                    "platforms": ["all"],
+                    "days_back": 30,
+                    "max_results": 500,
+                    "output_format": "html",
+                    "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "advanced_legal_job_search_{date}.html"),
+                    "job_name": "Advanced Legal Job Search",
+                    "rank_by_quality": True,  # Prioritize high-quality job postings
+                    "rank_by_recency": True  # Also prioritize recent postings
+                }
+            }
+        }
+    )
+)
+

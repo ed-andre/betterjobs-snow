@@ -57,6 +57,8 @@ from dagster_betterjobs.jobs import (
     stage_data_quality_governance_job,
     infrastructure_setup_job,
     company_profiles_job,
+    advanced_data_jobs_search_job,
+    advanced_legal_jobs_search_job,
 )
 from dagster_betterjobs.schedules import (
     full_jobs_discovery_enrichment_and_search_schedule,
@@ -181,6 +183,8 @@ defs = Definitions(
         stage_data_quality_governance_job,
         infrastructure_setup_job,
         company_profiles_job,
+        advanced_data_jobs_search_job,
+        advanced_legal_jobs_search_job,
     ],
     schedules=[
         full_jobs_discovery_enrichment_and_search_schedule,

@@ -136,7 +136,14 @@ from dagster_betterjobs.assets.lightcast_taxonomy import (
 from dagster_betterjobs.assets.schema_validation import schema_drift_validation
 
 # SERVE ASSETS
-from dagster_betterjobs.assets.serve_denormalization import serve_denorm_skills, serve_denorm_keywords
+from dagster_betterjobs.assets.serve_denormalization import (
+    serve_denorm_skills,
+    serve_denorm_keywords,
+    serve_denorm_job_postings,
+    serve_denorm_skills_populate,
+    serve_denorm_keywords_populate
+)
+from dagster_betterjobs.assets.advanced_job_search import advanced_jobs_search
 
 
 __all__ = [
@@ -234,5 +241,9 @@ __all__ = [
     "schema_drift_validation",
     # ENHANCEMENT-041: SERVE ASSETS FOR ADVANCED JOB SEARCH
     "serve_denorm_skills",
-    "serve_denorm_keywords"
+    "serve_denorm_keywords",
+    "serve_denorm_job_postings",
+    "serve_denorm_skills_populate",
+    "serve_denorm_keywords_populate",
+    "advanced_jobs_search"
 ]

@@ -13,14 +13,300 @@ from dagster import (
 
 logger = get_dagster_logger()
 
-class JobSearchConfig(Config):
-    """Configuration parameters for job search using enhanced STAGE data."""
-    # Search parameters
-    keywords: List[str] = []  # List of keywords to search for
+def resolve_skills_with_hierarchy(
+    conn,
+    skill_categories: List[str],
+    skill_subcategories: List[str],
+    individual_skills: List[str],
+    exclude_skill_categories: List[str],
+    exclude_skill_subcategories: List[str],
+    exclude_individual_skills: List[str],
+    database_name: str
+) -> List[str]:
+    """
+    Resolve skills with hierarchical precedence and exclusion logic.
+
+    Precedence (highest to lowest):
+    1. skill_categories - gets ALL skills under specified categories
+    2. skill_subcategories - gets ALL skills under specified subcategories
+    3. individual_skills - specific skills listed
+
+    Exclusions are applied AFTER inclusion resolution.
+
+    Returns:
+        List of final skills to include in search query
+    """
+    final_skills: Set[str] = set()
+    excluded_skills: Set[str] = set()
+
+    with conn.cursor() as cursor:
+        # First, check if DENORM_SKILLS table has data
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.SERVE.DENORM_SKILLS")
+        skill_count = cursor.fetchone()[0]
+        if skill_count == 0:
+            logger.warning(f"⚠️ SERVE.DENORM_SKILLS table is empty - skills filtering will be skipped")
+            return []
+
+        logger.info(f"📊 SERVE.DENORM_SKILLS contains {skill_count} records")
+
+        # Step 1: Resolve excluded skills first
+        # Exclude skills from categories
+        if exclude_skill_categories:
+            categories_sql = ", ".join(["'" + c.replace("'", "''") + "'" for c in exclude_skill_categories])
+            exclude_query = f"""
+                SELECT SKILLS_CSV
+                FROM {database_name}.SERVE.DENORM_SKILLS
+                WHERE SKILL_CATEGORY IN ({categories_sql})
+            """
+            cursor.execute(exclude_query)
+            for row in cursor.fetchall():
+                if row and row[0]:
+                    excluded_skills.update([s.strip().lower() for s in row[0].split(',') if s.strip()])
+
+        # Exclude skills from subcategories
+        if exclude_skill_subcategories:
+            subcats_sql = ", ".join(["'" + s.replace("'", "''") + "'" for s in exclude_skill_subcategories])
+            exclude_query = f"""
+                SELECT SKILLS_CSV
+                FROM {database_name}.SERVE.DENORM_SKILLS
+                WHERE SKILL_SUBCATEGORY IN ({subcats_sql})
+            """
+            cursor.execute(exclude_query)
+            for row in cursor.fetchall():
+                if row and row[0]:
+                    excluded_skills.update([s.strip().lower() for s in row[0].split(',') if s.strip()])
+
+        # Exclude individual skills
+        excluded_skills.update([s.strip().lower() for s in exclude_individual_skills])
+
+        # Step 2: Resolve included skills by precedence
+
+        # Highest precedence: Categories
+        if skill_categories:
+            categories_sql = ", ".join(["'" + c.replace("'", "''") + "'" for c in skill_categories])
+            include_query = f"""
+                SELECT SKILLS_CSV
+                FROM {database_name}.SERVE.DENORM_SKILLS
+                WHERE SKILL_CATEGORY IN ({categories_sql})
+            """
+            cursor.execute(include_query)
+            for row in cursor.fetchall():
+                if row and row[0]:
+                    category_skills = [s.strip() for s in row[0].split(',') if s.strip()]
+                    # Add only skills not in exclusion list
+                    final_skills.update([s for s in category_skills if s.lower() not in excluded_skills])
+
+        # Middle precedence: Subcategories (only if no categories specified)
+        elif skill_subcategories:
+            subcats_sql = ", ".join(["'" + s.replace("'", "''") + "'" for s in skill_subcategories])
+            include_query = f"""
+                SELECT SKILLS_CSV
+                FROM {database_name}.SERVE.DENORM_SKILLS
+                WHERE SKILL_SUBCATEGORY IN ({subcats_sql})
+            """
+            cursor.execute(include_query)
+            for row in cursor.fetchall():
+                if row and row[0]:
+                    subcat_skills = [s.strip() for s in row[0].split(',') if s.strip()]
+                    # Add only skills not in exclusion list
+                    final_skills.update([s for s in subcat_skills if s.lower() not in excluded_skills])
+
+        # Lowest precedence: Individual skills (only if no categories or subcategories specified)
+        elif individual_skills:
+            # Add only skills not in exclusion list
+            final_skills.update([s for s in individual_skills if s.lower() not in excluded_skills])
+
+    return list(final_skills)
+
+def resolve_keywords_from_denorm_table(
+    conn,
+    include_keywords: List[str],
+    exclude_keywords: List[str],
+    database_name: str
+) -> List[str]:
+    """
+    Resolve keywords from SERVE.DENORM_KEYWORDS table with exclusion logic.
+
+    Args:
+        conn: Database connection
+        include_keywords: Keywords to include from DENORM_KEYWORDS table
+        exclude_keywords: Keywords to exclude from DENORM_KEYWORDS table
+        database_name: Database name
+
+    Returns:
+        List of final keywords to include in search query
+    """
+    final_keywords: Set[str] = set()
+    excluded_keywords: Set[str] = set(k.lower() for k in exclude_keywords)
+
+    if not include_keywords:
+        return []
+
+    with conn.cursor() as cursor:
+        # First, check if DENORM_KEYWORDS table has data
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.SERVE.DENORM_KEYWORDS")
+        keyword_count = cursor.fetchone()[0]
+        if keyword_count == 0:
+            logger.warning(f"⚠️ SERVE.DENORM_KEYWORDS table is empty - structured keywords filtering will be skipped")
+            return []
+
+        logger.info(f"📊 SERVE.DENORM_KEYWORDS contains {keyword_count} records")
+
+        # Get valid keywords from DENORM_KEYWORDS table
+        keywords_sql = ", ".join(["'" + k.replace("'", "''") + "'" for k in include_keywords])
+        query = f"""
+            SELECT DISTINCT KEYWORD
+            FROM {database_name}.SERVE.DENORM_KEYWORDS
+            WHERE UPPER(KEYWORD) IN ({', '.join(["UPPER('" + k.replace("'", "''") + "')" for k in include_keywords])})
+        """
+        cursor.execute(query)
+
+        for row in cursor.fetchall():
+            if row and row[0]:
+                keyword = row[0].strip()
+                # Add only keywords not in exclusion list
+                if keyword.lower() not in excluded_keywords:
+                    final_keywords.add(keyword)
+
+    return list(final_keywords)
+
+def build_skills_filter_clause(resolved_skills: List[str]) -> str:
+    """
+    Build SQL WHERE clause for skills filtering using SKILLS_CSV column.
+
+    Args:
+        resolved_skills: List of skills to search for
+
+    Returns:
+        SQL WHERE clause string or empty string if no skills
+    """
+    if not resolved_skills:
+        return ""
+
+    # Build conditions for each skill using CSV search
+    skill_conditions = []
+    for skill in resolved_skills:
+        escaped_skill = skill.replace("'", "''")
+        # Use LIKE with comma boundaries to avoid partial matches
+        # Check for: start of string + skill + comma, comma + skill + comma, comma + skill + end
+        skill_conditions.append(f"""(
+            LOWER(j.SKILLS_CSV) LIKE LOWER('{escaped_skill},%') OR
+            LOWER(j.SKILLS_CSV) LIKE LOWER('%,{escaped_skill},%') OR
+            LOWER(j.SKILLS_CSV) LIKE LOWER('%,{escaped_skill}') OR
+            LOWER(j.SKILLS_CSV) = LOWER('{escaped_skill}')
+        )""")
+
+    return f"({' OR '.join(skill_conditions)})"
+
+def build_keywords_filter_clause(resolved_keywords: List[str]) -> str:
+    """
+    Build SQL WHERE clause for keywords filtering using KEYWORDS_CSV column.
+
+    Args:
+        resolved_keywords: List of keywords to search for
+
+    Returns:
+        SQL WHERE clause string or empty string if no keywords
+    """
+    if not resolved_keywords:
+        return ""
+
+    # Build conditions for each keyword using CSV search
+    keyword_conditions = []
+    for keyword in resolved_keywords:
+        escaped_keyword = keyword.replace("'", "''")
+        # Use LIKE with comma boundaries to avoid partial matches
+        keyword_conditions.append(f"""(
+            LOWER(j.KEYWORDS_CSV) LIKE LOWER('{escaped_keyword},%') OR
+            LOWER(j.KEYWORDS_CSV) LIKE LOWER('%,{escaped_keyword},%') OR
+            LOWER(j.KEYWORDS_CSV) LIKE LOWER('%,{escaped_keyword}') OR
+            LOWER(j.KEYWORDS_CSV) = LOWER('{escaped_keyword}')
+        )""")
+
+    return f"({' OR '.join(keyword_conditions)})"
+
+def build_work_type_filter_clause(config: 'AdvancedJobSearchConfig') -> str:
+    """
+    Build SQL WHERE clause for work type filtering using ENRICHED_WORK_TYPE field.
+
+    Handles boolean flags (remote, hybrid, on_site, etc.) and custom work_condition list.
+    Multiple selections within the same category use OR logic.
+
+    Args:
+        config: AdvancedJobSearchConfig with work type settings
+
+    Returns:
+        SQL WHERE clause string or empty string if no work type filters
+    """
+    work_type_conditions = []
+
+    # Handle boolean flags with case-insensitive matching for variations
+    if config.remote:
+        work_type_conditions.extend([
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'REMOTE'"
+        ])
+
+    if config.hybrid:
+        work_type_conditions.extend([
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'HYBRID'"
+        ])
+
+    if config.on_site:
+        work_type_conditions.extend([
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'ON-SITE'"
+        ])
+
+        if config.full_time:
+            work_type_conditions.extend([
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'FULL-TIME'",
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'FULL TIME'",
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'FULL-TIME'",
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'FULLTIME'",
+            "UPPER(j.ENRICHED_WORK_TYPE) LIKE 'FULL-TIME%'",  # Handles "Full-Time or Part-time available"
+            "UPPER(j.ENRICHED_WORK_TYPE) LIKE 'FULL TIME%'"   # Handles variations
+        ])
+
+    if config.part_time:
+        work_type_conditions.extend([
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'PART-TIME'",
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'PART TIME'",
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'PARTTIME'",
+            "UPPER(j.ENRICHED_WORK_TYPE) LIKE '%PART-TIME%'",  # Handles "Full-Time or Part-time"
+            "UPPER(j.ENRICHED_WORK_TYPE) LIKE '%PART TIME%'"   # Handles variations
+        ])
+
+    if config.contract:
+        work_type_conditions.extend([
+            "UPPER(j.ENRICHED_WORK_TYPE) = 'CONTRACT'"
+        ])
+
+    # Handle custom work conditions (exact matching, case-insensitive)
+    if config.work_condition:
+        for condition in config.work_condition:
+            escaped_condition = condition.replace("'", "''")
+            work_type_conditions.append(f"UPPER(j.ENRICHED_WORK_TYPE) = UPPER('{escaped_condition}')")
+
+    # Return combined conditions with OR logic (any matching work type)
+    if work_type_conditions:
+        return f"({' OR '.join(work_type_conditions)})"
+
+    return ""
+
+class AdvancedJobSearchConfig(Config):
+    """Configuration parameters for advanced job search using SERVE denormalized data."""
+    # Search parameters - REDESIGNED
+    description_terms: List[str] = []  # Free-text search in job titles/descriptions (renamed from keywords)
     job_titles: List[str] = []  # Specific job titles to search for
-    excluded_keywords: List[str] = []  # Keywords to exclude
+    excluded_keywords: List[str] = []  # Keywords to exclude (legacy, use exclude_keywords instead)
     locations: List[str] = []  # Locations to include
+    # Work Type Filtering (using ENRICHED_WORK_TYPE field)
     remote: bool = None  # Include remote jobs (None = don't filter)
+    hybrid: bool = None  # Include hybrid jobs
+    on_site: bool = None  # Include on-site jobs
+    full_time: bool = None  # Include full-time jobs
+    part_time: bool = None  # Include part-time jobs
+    contract: bool = None  # Include contract jobs
+    work_condition: List[str] = []  # Custom work type conditions (for the 20+ other values)
 
     # ATS platforms to include
     platforms: List[str] = ["all"]  # Options: "all", "greenhouse", "bamboohr", "workday", "smartrecruiters"
@@ -71,31 +357,60 @@ class JobSearchConfig(Config):
     show_confidence_scores: bool = True  # Show confidence scores in UI
     highlight_high_confidence: bool = True  # Highlight high-confidence data
 
+    # NEW: HIERARCHICAL SKILLS FILTERING SYSTEM (with precedence and exclusions)
+    skill_categories: List[str] = []  # Highest precedence - gets ALL skills under categories
+    skill_subcategories: List[str] = []  # Middle precedence - gets ALL skills under subcategories
+    skills: List[str] = []  # Individual skills (lowest precedence)
+    exclude_skill_categories: List[str] = []  # Exclude entire categories
+    exclude_skill_subcategories: List[str] = []  # Exclude specific subcategories
+    exclude_skills: List[str] = []  # Exclude individual skills
+
+    # NEW: STRUCTURED KEYWORDS FILTERING SYSTEM (using DENORM_KEYWORDS)
+    keywords: List[str] = []  # Structured keywords from SERVE.DENORM_KEYWORDS
+    exclude_keywords: List[str] = []  # Exclude specific keywords from DENORM_KEYWORDS
+
+    # Work arrangement filters (DEPRECATED - use individual boolean flags and work_condition instead)
+    work_types: List[str] = []  # DEPRECATED: Use remote, hybrid, on_site, full_time, part_time, contract, work_condition instead
+    office_locations: List[str] = []  # Match ENRICHED_OFFICE_LOCATIONS
+    role_types: List[str] = []  # Match ENRICHED_ROLE_TYPE
+
+    # DEPRECATED: Legacy fields (kept for backward compatibility)
+    technical_skills: List[str] = []  # Use skills instead
+    soft_skills: List[str] = []  # Use skills instead
+
+    # Free-text description/title search (legacy)
+    # description_terms: List[str] = []  # Already defined above
+
+    # Skill & keyword exclusion (legacy - use exclude_* fields instead)
+    # exclude_skills: List[str] = []  # Already defined above
+    # exclude_skill_categories: List[str] = []  # Already defined above
+    # exclude_skill_subcategories: List[str] = []  # Already defined above
+
 @asset(
     group_name="job_search",
     kinds={"snowflake", "python"},
     required_resource_keys={"snowflake"},
-    deps=["stage_jobs_unified", "stage_jobs_llm_enriched_unified"]  # Changed from multiple RAW discovery assets to single STAGE asset
+    deps=["serve_denorm_job_postings", "serve_denorm_skills_populate", "serve_denorm_keywords_populate"]
 )
-def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.DataFrame:
+def advanced_jobs_search(context: AssetExecutionContext, config: AdvancedJobSearchConfig) -> pd.DataFrame:
     """
-    Search for jobs using cleaned, enriched, and deduplicated data from the STAGE layer.
+    Search for jobs using cleaned, enriched, and deduplicated data from the SERVE denormalized layer.
 
     This enhanced version provides:
     - Unified schema across all platforms
     - Cleaned job titles and descriptions
     - Deduplicated results (no cross-platform duplicates)
     - Quality scores for filtering and ranking
-    - Language detection for filtering
+    - Pre-aggregated skills and keywords for fast search
     - Standardized location data
     - Enhanced search capabilities
 
-    ENHANCEMENT-005: Job Search Layer Migration - Stage Data Integration
+    ENHANCEMENT-041: Job Search Layer Migration - SERVE Data Integration
     """
     # Initialize Snowflake connection
     conn = context.resources.snowflake.get_connection()
     database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
-    stage_schema = os.getenv("SNOWFLAKE_STAGE_SCHEMA", "STAGE")
+    stage_schema = "SERVE"  # Using Serve layer instead of STAGE
 
     # Initialize basic stats (will be completed after date variables are set)
     stats = {
@@ -106,20 +421,20 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
     }
 
     # Log basic search parameters (detailed params logged after date calculation)
-    context.log.info(f"🔍 Searching STAGE data with platforms: {config.platforms}, days_back: {config.days_back}")
+    context.log.info(f"🔍 Searching SERVE layer data with platforms: {config.platforms}, days_back: {config.days_back}")
 
     cursor = conn.cursor()
     start_time = datetime.now()
 
     try:
-        # Get the latest stage data materialization date for accurate date range reporting
+        # Get the latest SERVE data materialization date for accurate date range reporting
         cursor.execute(f"""
-        SELECT MAX(transformation_timestamp)::DATE as latest_stage_date
-        FROM {database_name}.{stage_schema}.jobs_unified
+        SELECT MAX(updated_timestamp)::DATE as latest_serve_date
+        FROM {database_name}.{stage_schema}.denorm_job_postings
         """)
 
-        latest_stage_result = cursor.fetchone()
-        latest_stage_date = latest_stage_result[0] if latest_stage_result and latest_stage_result[0] else datetime.now().date()
+        latest_serve_result = cursor.fetchone()
+        latest_serve_date = latest_serve_result[0] if latest_serve_result and latest_serve_result[0] else datetime.now().date()
 
         # Prepare date filters
         date_from = None
@@ -135,7 +450,8 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
 
         # Complete stats with date information
         stats["search_params"] = {
-            "keywords": config.keywords,
+            "description_terms": config.description_terms,  # Updated from keywords
+            "structured_keywords": config.keywords,         # New structured keywords
             "job_titles": config.job_titles,
             "locations": config.locations,
             "remote": config.remote,
@@ -145,171 +461,197 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
             "actual_date_range": {
                 "date_from": date_from,
                 "date_to": date_to,
-                "latest_stage_date": latest_stage_date.strftime("%Y-%m-%d") if isinstance(latest_stage_date, date) else str(latest_stage_date),
+                "latest_serve_date": latest_serve_date.strftime("%Y-%m-%d") if isinstance(latest_serve_date, date) else str(latest_serve_date),
                 "days_back_requested": config.days_back
+            },
+            # NEW: Hierarchical filtering stats
+            "skills_filtering": {
+                "skill_categories": config.skill_categories,
+                "skill_subcategories": config.skill_subcategories,
+                "individual_skills": config.skills,
+                "exclude_skill_categories": config.exclude_skill_categories,
+                "exclude_skill_subcategories": config.exclude_skill_subcategories,
+                "exclude_skills": config.exclude_skills,
+            },
+            "keywords_filtering": {
+                "include_keywords": config.keywords,
+                "exclude_keywords": config.exclude_keywords
+            },
+            # NEW: Work type filtering stats
+            "work_type_filtering": {
+                "remote": config.remote,
+                "hybrid": config.hybrid,
+                "on_site": config.on_site,
+                "full_time": config.full_time,
+                "part_time": config.part_time,
+                "contract": config.contract,
+                "custom_conditions": config.work_condition
             }
         }
 
         # Log complete search parameters
         context.log.info(f"📊 Search parameters: {stats['search_params']['date_range']}, platforms: {config.platforms}")
 
-        # Build the unified search query using STAGE.jobs_unified with LLM enriched data (ENHANCEMENT-032)
+        # ------------------------------------------------------------------
+        # NEW: HIERARCHICAL SKILLS RESOLUTION with precedence and exclusions
+        # ------------------------------------------------------------------
+        resolved_skills = resolve_skills_with_hierarchy(
+            conn=conn,
+            skill_categories=config.skill_categories,
+            skill_subcategories=config.skill_subcategories,
+            individual_skills=config.skills,
+            exclude_skill_categories=config.exclude_skill_categories,
+            exclude_skill_subcategories=config.exclude_skill_subcategories,
+            exclude_individual_skills=config.exclude_skills,
+            database_name=database_name
+        )
+
+        context.log.info(f"🔧 Resolved {len(resolved_skills)} skills from hierarchical filtering")
+        if resolved_skills:
+            context.log.debug(f"Skills to include: {resolved_skills[:10]}{'...' if len(resolved_skills) > 10 else ''}")
+        elif config.skill_categories or config.skill_subcategories or config.skills:
+            context.log.warning(f"⚠️ No skills resolved despite config specifying categories: {config.skill_categories}, subcategories: {config.skill_subcategories}, individual: {config.skills}")
+            context.log.warning("This may indicate SERVE.DENORM_SKILLS table is empty or skill names don't match")
+
+        # ------------------------------------------------------------------
+        # NEW: STRUCTURED KEYWORDS RESOLUTION from DENORM_KEYWORDS
+        # ------------------------------------------------------------------
+        resolved_keywords = resolve_keywords_from_denorm_table(
+            conn=conn,
+            include_keywords=config.keywords,
+            exclude_keywords=config.exclude_keywords,
+            database_name=database_name
+        )
+
+        context.log.info(f"🏷️ Resolved {len(resolved_keywords)} keywords from DENORM_KEYWORDS table")
+        if resolved_keywords:
+            context.log.debug(f"Keywords to include: {resolved_keywords[:10]}{'...' if len(resolved_keywords) > 10 else ''}")
+
+        # Update stats with resolved filtering results
+        stats["search_params"]["resolved_filtering"] = {
+            "resolved_skills_count": len(resolved_skills),
+            "resolved_keywords_count": len(resolved_keywords),
+            "resolved_skills": resolved_skills[:20],  # First 20 for logging
+            "resolved_keywords": resolved_keywords[:20]  # First 20 for logging
+        }
+
+        # Build the advanced search query using SERVE.DENORM_JOB_POSTINGS (denormalised)
         query = f"""
         SELECT
-            j.job_uid,
-            j.job_id,
-            j.platform,
-            j.company_id,
-            j.company_name_clean as company_name,
-            j.job_title_clean as job_title,
-            {"j.job_description_clean as job_description," if config.include_descriptions else ""}
-            j.location_standardized as location,
-            j.job_url,
-            j.date_posted as posting_date,
-            j.date_retrieved,
-            j.is_active,
-            j.employment_status,
-            j.department,
-            j.detected_language,
-            j.language_confidence,
-            j.is_english,
-            j.data_quality_score,
-            {"j.raw_data," if config.include_raw_data else ""}
-            j.transformation_timestamp,
+            j.JOB_UID                               AS job_uid,
+            j.JOB_ID                                AS job_id,
+            j.PLATFORM                              AS platform,
+            j.COMPANY_ID                            AS company_id,
+            j.COMPANY_NAME                          AS company_name,
+            j.JOB_TITLE                             AS job_title,
+            {"j.JOB_DESCRIPTION AS job_description," if config.include_descriptions else ""}
+            j.ENRICHED_OFFICE_LOCATIONS             AS location,
+            j.JOB_URL                               AS job_url,
+            j.DATE_POSTED                           AS posting_date,
+            j.DATE_RETRIEVED,
+            j.IS_ACTIVE,
+            NULL                                    AS employment_status,
+            NULL                                    AS department,
+            NULL                                    AS detected_language,
+            NULL                                    AS language_confidence,
+            NULL                                    AS is_english,
+            j.DATA_QUALITY_SCORE,
+            NULL                                    AS raw_data,
+            j.TRANSFORMATION_TIMESTAMP,
 
-            -- NEW: LLM enriched fields with confidence filtering (ENHANCEMENT-032)
-            CASE
-                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_MIN
-                ELSE NULL
-            END as enriched_salary_min,
-            CASE
-                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_MAX
-                ELSE NULL
-            END as enriched_salary_max,
-            CASE
-                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_CURRENCY
-                ELSE NULL
-            END as enriched_salary_currency,
-            CASE
-                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_PERIOD
-                ELSE NULL
-            END as enriched_salary_period,
-            CASE
-                WHEN llm.LLM_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN llm.SALARY_TYPE
-                ELSE NULL
-            END as enriched_salary_type,
+            -- Salary (confidence filtered)
+            CASE WHEN j.ENRICHED_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN j.ENRICHED_SALARY_MIN END  AS enriched_salary_min,
+            CASE WHEN j.ENRICHED_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN j.ENRICHED_SALARY_MAX END  AS enriched_salary_max,
+            CASE WHEN j.ENRICHED_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN j.ENRICHED_SALARY_CURRENCY END AS enriched_salary_currency,
+            CASE WHEN j.ENRICHED_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN j.ENRICHED_SALARY_PERIOD END    AS enriched_salary_period,
+            CASE WHEN j.ENRICHED_OVERALL_CONFIDENCE >= {config.min_salary_confidence} THEN j.ENRICHED_SALARY_TYPE END      AS enriched_salary_type,
 
-            CASE
-                WHEN llm.EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN llm.MIN_YEARS_EXPERIENCE
-                ELSE NULL
-            END as enriched_min_years_experience,
-            CASE
-                WHEN llm.EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN llm.MAX_YEARS_EXPERIENCE
-                ELSE NULL
-            END as enriched_max_years_experience,
-            CASE
-                WHEN llm.EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN llm.EXPERIENCE_LEVEL
-                ELSE NULL
-            END as enriched_experience_level,
+            -- Experience (confidence filtered)
+            CASE WHEN j.ENRICHED_EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN j.ENRICHED_MIN_YEARS_EXPERIENCE END AS enriched_min_years_experience,
+            CASE WHEN j.ENRICHED_EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN j.ENRICHED_MAX_YEARS_EXPERIENCE END AS enriched_max_years_experience,
+            CASE WHEN j.ENRICHED_EXPERIENCE_CONFIDENCE >= {config.min_experience_confidence} THEN j.ENRICHED_EXPERIENCE_LEVEL END    AS enriched_experience_level,
 
-            CASE
-                WHEN llm.SKILLS_CONFIDENCE >= {config.min_skills_confidence} THEN llm.TECHNICAL_SKILLS
-                ELSE NULL
-            END as enriched_technical_skills,
+            -- Skills CSV fields (already aggregated)
+            j.TECHNICAL_SKILLS_CSV                 AS enriched_technical_skills,
+            j.SOFT_SKILLS_CSV                      AS enriched_soft_skills,
 
-            CASE
-                WHEN llm.SKILLS_CONFIDENCE >= {config.min_skills_confidence} THEN llm.SOFT_SKILLS
-                ELSE NULL
-            END as enriched_soft_skills,
+            -- Keywords and classification
+            j.ENRICHED_PRIMARY_KEYWORDS,
+            j.ENRICHED_INDUSTRY_KEYWORDS,
+            j.ENRICHED_WORK_TYPE,
+            j.ENRICHED_OFFICE_LOCATIONS            AS enriched_office_locations,
+            j.ENRICHED_ROLE_TYPE,
+            j.ENRICHED_TEAM_SIZE,
 
-            CASE
-                WHEN llm.WORK_ARRANGEMENT_CONFIDENCE >= {config.min_work_arrangement_confidence} THEN llm.WORK_TYPE
-                ELSE NULL
-            END as enriched_work_type,
-            CASE
-                WHEN llm.WORK_ARRANGEMENT_CONFIDENCE >= {config.min_work_arrangement_confidence} THEN llm.OFFICE_LOCATIONS
-                ELSE NULL
-            END as enriched_office_locations,
+            -- Confidence indicators
+            j.ENRICHED_OVERALL_CONFIDENCE,
+            j.ENRICHED_SALARY_CONFIDENCE,
+            j.ENRICHED_EXPERIENCE_CONFIDENCE,
+            j.ENRICHED_SKILLS_CONFIDENCE,
+            j.ENRICHED_WORK_ARRANGEMENT_CONFIDENCE,
+            j.ENRICHED_CLASSIFICATION_CONFIDENCE,
 
-            CASE
-                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.PRIMARY_KEYWORDS
-                ELSE NULL
-            END as enriched_primary_keywords,
-            CASE
-                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.INDUSTRY_KEYWORDS
-                ELSE NULL
-            END as enriched_industry_keywords,
-            CASE
-                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.ROLE_TYPE
-                ELSE NULL
-            END as enriched_role_type,
-            CASE
-                WHEN llm.CLASSIFICATION_CONFIDENCE >= {config.min_classification_confidence} THEN llm.TEAM_SIZE
-                ELSE NULL
-            END as enriched_team_size,
+            -- Aggregated lists for search optimisation
+            j.SKILLS_CSV,
+            j.KEYWORDS_CSV
 
-            -- Confidence indicators for display decisions
-            llm.LLM_OVERALL_CONFIDENCE as enriched_overall_confidence,
-            llm.SALARY_CONFIDENCE as enriched_salary_confidence,
-            llm.EXPERIENCE_CONFIDENCE as enriched_experience_confidence,
-            llm.SKILLS_CONFIDENCE as enriched_skills_confidence,
-            llm.WORK_ARRANGEMENT_CONFIDENCE as enriched_work_arrangement_confidence,
-            llm.CLASSIFICATION_CONFIDENCE as enriched_classification_confidence,
-
-            -- Processing metadata
-            llm.LLM_PROCESSED as has_llm_enrichment,
-            llm.LLM_PROCESSING_TIMESTAMP as enriched_processing_date
-
-        FROM {database_name}.{stage_schema}.jobs_unified j
-        LEFT JOIN {database_name}.{stage_schema}.jobs_llm_enriched llm
-            ON j.job_uid = llm.job_uid
-        WHERE j.is_active = TRUE
+        FROM {database_name}.{stage_schema}.DENORM_JOB_POSTINGS j
+        WHERE j.IS_ACTIVE = TRUE
         """
 
         # Add date filters
         if date_from:
-            query += f" AND date_posted >= '{date_from}'"
+            query += f" AND DATE_POSTED >= '{date_from}'"
         if date_to:
-            query += f" AND date_posted <= '{date_to}'"
+            query += f" AND DATE_POSTED <= '{date_to}'"
 
         # Add platform filters
         if config.platforms and "all" not in config.platforms:
             platform_list = "', '".join(config.platforms)
-            query += f" AND platform IN ('{platform_list}')"
+            query += f" AND PLATFORM IN ('{platform_list}')"
 
-        # Add language filters using enhanced STAGE data
-        if config.language_filter == "english":
-            query += f" AND is_english = TRUE"
-            if config.language_confidence_min > 0:
-                query += f" AND language_confidence >= {config.language_confidence_min}"
-        elif config.language_filter != "all":
-            query += f" AND detected_language = '{config.language_filter}'"
-            if config.language_confidence_min > 0:
-                query += f" AND language_confidence >= {config.language_confidence_min}"
+        # Add language filters using enhanced data
+        # Language filters not applicable on SERVE layer – skip
 
         # Add quality score filter
         if config.min_quality_score > 0:
             query += f" AND data_quality_score >= {config.min_quality_score}"
 
-                # Add keyword filters with word boundary checking
-        if config.keywords:
+        # ------------------------------------------------------------------
+        # NEW: Apply resolved skills filtering using SKILLS_CSV column
+        # ------------------------------------------------------------------
+        skills_filter_clause = build_skills_filter_clause(resolved_skills)
+        if skills_filter_clause:
+            query += f" AND {skills_filter_clause}"
+            context.log.info(f"Applied skills filter for {len(resolved_skills)} skills")
+
+        # ------------------------------------------------------------------
+        # NEW: Apply resolved keywords filtering using KEYWORDS_CSV column
+        # ------------------------------------------------------------------
+        keywords_filter_clause = build_keywords_filter_clause(resolved_keywords)
+        if keywords_filter_clause:
+            query += f" AND {keywords_filter_clause}"
+            context.log.info(f"Applied keywords filter for {len(resolved_keywords)} keywords")
+
+        # Add description terms filters (free-text search) with word boundary checking
+        if config.description_terms:
             keyword_conditions = []
-            for keyword in config.keywords:
+            for keyword in config.description_terms:
                 kw_lower = keyword.lower()
 
                 # Handle single words vs multi-word phrases differently
                 if ' ' in kw_lower:
                     # Multi-word phrase: use simple substring matching
-                    keyword_conditions.append(f"LOWER(job_title_clean) LIKE '%{kw_lower}%'")
+                    keyword_conditions.append(f"LOWER(job_title) LIKE '%{kw_lower}%'")
                     if config.include_descriptions:
-                        keyword_conditions.append(f"LOWER(job_description_clean) LIKE '%{kw_lower}%'")
+                        keyword_conditions.append(f"LOWER(job_description) LIKE '%{kw_lower}%'")
                 else:
                     # Single word: use word boundary checking
-                    title_condition = f"(LOWER(job_title_clean) LIKE '% {kw_lower} %' OR LOWER(job_title_clean) LIKE '{kw_lower} %' OR LOWER(job_title_clean) LIKE '% {kw_lower}' OR LOWER(job_title_clean) = '{kw_lower}')"
+                    title_condition = f"(LOWER(job_title) LIKE '% {kw_lower} %' OR LOWER(job_title) LIKE '{kw_lower} %' OR LOWER(job_title) LIKE '% {kw_lower}' OR LOWER(job_title) = '{kw_lower}')"
                     keyword_conditions.append(title_condition)
 
                     if config.include_descriptions:
-                        desc_condition = f"(LOWER(job_description_clean) LIKE '% {kw_lower} %' OR LOWER(job_description_clean) LIKE '{kw_lower} %' OR LOWER(job_description_clean) LIKE '% {kw_lower}' OR LOWER(job_description_clean) = '{kw_lower}')"
+                        desc_condition = f"(LOWER(job_description) LIKE '% {kw_lower} %' OR LOWER(job_description) LIKE '{kw_lower} %' OR LOWER(job_description) LIKE '% {kw_lower}' OR LOWER(job_description) = '{kw_lower}')"
                         keyword_conditions.append(desc_condition)
 
             # Combine with OR (any keyword match)
@@ -320,13 +662,13 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
         if config.job_titles:
             title_conditions = []
             for title in config.job_titles:
-                title_conditions.append(f"LOWER(job_title_clean) LIKE LOWER('%{title}%')")
+                title_conditions.append(f"LOWER(job_title) LIKE LOWER('%{title}%')")
 
             query += f" AND ({' OR '.join(title_conditions)})"
             context.log.info(f"Applied job title conditions: {len(title_conditions)} total")
 
-        # Add location filters using standardized location data
-        location_or_remote_conditions = []
+        # Add location filters using standardized location data (separate from work type)
+        location_conditions = []
 
         if config.locations:
             for location in config.locations:
@@ -334,45 +676,51 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
                 safe_location = location.replace("'", "''")
                 if location == "":
                     # Empty location means "No Location"
-                    location_or_remote_conditions.append("(location_standardized IS NULL OR TRIM(location_standardized) = '')")
+                    location_conditions.append("(ENRICHED_OFFICE_LOCATIONS IS NULL OR TRIM(ENRICHED_OFFICE_LOCATIONS) = '')")
                 elif location == "Location":
                     # "Location" config value means "Various Locations" (e.g., "2 Locations", "3 Locations")
-                    location_or_remote_conditions.append("REGEXP_LIKE(location_standardized, '[0-9]+\\\\s+[Ll]ocations')")
+                    location_conditions.append("REGEXP_LIKE(ENRICHED_OFFICE_LOCATIONS, '[0-9]+\\\\s+[Ll]ocations')")
                 else:
                     # Handle state abbreviations (2-3 chars) with word boundaries to avoid false positives
                     if len(safe_location) <= 3 and safe_location.isupper():
                         # State abbreviation: use word boundary with space
-                        loc_condition = f"(LOWER(location_standardized) LIKE LOWER('% {safe_location} %') OR LOWER(location_standardized) LIKE LOWER('{safe_location} %') OR LOWER(location_standardized) LIKE LOWER('% {safe_location}') OR LOWER(location_standardized) = LOWER('{safe_location}'))"
-                        location_or_remote_conditions.append(loc_condition)
+                        loc_condition = f"(LOWER(ENRICHED_OFFICE_LOCATIONS) LIKE LOWER('% {safe_location} %') OR LOWER(ENRICHED_OFFICE_LOCATIONS) LIKE LOWER('{safe_location} %') OR LOWER(ENRICHED_OFFICE_LOCATIONS) LIKE LOWER('% {safe_location}') OR LOWER(ENRICHED_OFFICE_LOCATIONS) = LOWER('{safe_location}'))"
+                        location_conditions.append(loc_condition)
                     else:
                         # Regular location: use substring matching
-                        location_or_remote_conditions.append(f"LOWER(location_standardized) LIKE LOWER('%{safe_location}%')")
+                        location_conditions.append(f"LOWER(ENRICHED_OFFICE_LOCATIONS) LIKE LOWER('%{safe_location}%')")
 
-        # Add remote filter
-        if config.remote is not None and config.remote:
-            # Include jobs that mention remote in title or location
-            location_or_remote_conditions.extend([
-                "LOWER(location_standardized) LIKE LOWER('%remote%')",
-                "LOWER(job_title_clean) LIKE LOWER('%remote%')"
-            ])
-            context.log.info("Adding remote filter: Include remote jobs")
-        elif config.remote is not None and not config.remote:
-            # Exclude jobs that mention remote in title or location
-            query += f" AND NOT (LOWER(location_standardized) LIKE LOWER('%remote%') OR LOWER(job_title_clean) LIKE LOWER('%remote%'))"
-            context.log.info("Adding remote filter: Exclude remote jobs")
+        # Apply location conditions
+        if location_conditions:
+            query += f" AND ({' OR '.join(location_conditions)})"
+            context.log.info(f"Applied location conditions: {len(location_conditions)} total")
 
-        # Apply location/remote conditions
-        if location_or_remote_conditions:
-            query += f" AND ({' OR '.join(location_or_remote_conditions)})"
-            context.log.info(f"Applied location/remote conditions: {len(location_or_remote_conditions)} total")
+        # ------------------------------------------------------------------
+        # NEW: Apply work type filtering using ENRICHED_WORK_TYPE field
+        # ------------------------------------------------------------------
+        work_type_filter_clause = build_work_type_filter_clause(config)
+        if work_type_filter_clause:
+            query += f" AND {work_type_filter_clause}"
+
+            # Log which work types are being filtered
+            active_work_types = []
+            if config.remote: active_work_types.append("Remote")
+            if config.hybrid: active_work_types.append("Hybrid")
+            if config.on_site: active_work_types.append("On-Site")
+            if config.full_time: active_work_types.append("Full-Time")
+            if config.part_time: active_work_types.append("Part-Time")
+            if config.contract: active_work_types.append("Contract")
+            if config.work_condition: active_work_types.extend(config.work_condition)
+
+            context.log.info(f"Applied work type filter for: {', '.join(active_work_types)}")
 
         # Add exclusion filters
         if config.excluded_keywords:
             exclusion_conditions = []
             for keyword in config.excluded_keywords:
-                exclusion_title = f"LOWER(job_title_clean) LIKE LOWER('%{keyword}%')"
+                exclusion_title = f"LOWER(job_title) LIKE LOWER('%{keyword}%')"
                 if config.include_descriptions:
-                    exclusion_desc = f"LOWER(job_description_clean) LIKE LOWER('%{keyword}%')"
+                    exclusion_desc = f"LOWER(job_description) LIKE LOWER('%{keyword}%')"
                     exclusion_conditions.append(f"({exclusion_title} OR {exclusion_desc})")
                 else:
                     exclusion_conditions.append(exclusion_title)
@@ -399,7 +747,7 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
         query += f" LIMIT {sql_limit}"
 
         # Execute the query
-        context.log.info("📊 Executing unified stage data query...")
+        context.log.info("📊 Executing SERVE layer denormalized query...")
         context.log.debug(f"Query: {query}")
 
         cursor.execute(query)
@@ -409,16 +757,16 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
         # Convert to DataFrame
         combined_results = pd.DataFrame(results, columns=column_names)
 
-        context.log.info(f"✅ Found {len(combined_results)} results from unified stage data")
+        context.log.info(f"✅ Found {len(combined_results)} results from SERVE denormalized table")
 
         # Calculate execution time
         execution_time = (datetime.now() - start_time).total_seconds() * 1000
         stats["execution_time_ms"] = int(execution_time)
 
-        # Calculate relevance scores if keywords are provided
-        if config.keywords and not combined_results.empty:
+        # Calculate relevance scores if description terms are provided
+        if config.description_terms and not combined_results.empty:
             combined_results["relevance_score"] = combined_results.apply(
-                lambda row: calculate_relevance_score(row, config.keywords, config.job_titles, config.locations),
+                lambda row: calculate_relevance_score(row, config.description_terms, config.job_titles, config.locations),
                 axis=1
             )
 
@@ -489,15 +837,38 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
                 import traceback
                 context.log.error(f"Traceback: {traceback.format_exc()}")
 
-        # Enhanced metadata with stage data benefits
+        # Enhanced metadata with SERVE data benefits and new filtering system
         metadata = {
             "total_results": MetadataValue.int(stats["total_results"]),
             "filtered_results": MetadataValue.int(stats["filtered_results"]),
             "platforms_searched": MetadataValue.json(stats["query_platforms"]),
             "execution_time_ms": MetadataValue.int(stats["execution_time_ms"]),
-            "data_source": MetadataValue.text("STAGE.jobs_unified (cleaned & deduplicated)"),
+            "data_source": MetadataValue.text("SERVE.DENORM_JOB_POSTINGS (enhanced with skills & keywords filtering)"),
             "language_filter": MetadataValue.text(config.language_filter),
             "min_quality_score": MetadataValue.float(config.min_quality_score),
+            "resolved_skills_count": MetadataValue.int(len(resolved_skills)),
+            "resolved_keywords_count": MetadataValue.int(len(resolved_keywords)),
+            "skills_hierarchy": MetadataValue.json({
+                "categories": config.skill_categories,
+                "subcategories": config.skill_subcategories,
+                "individual": config.skills[:10],  # Limit for display
+                "excluded_categories": config.exclude_skill_categories,
+                "excluded_subcategories": config.exclude_skill_subcategories,
+                "excluded_skills": config.exclude_skills[:10]
+            }),
+            "keywords_filtering": MetadataValue.json({
+                "included": config.keywords[:10],  # Limit for display
+                "excluded": config.exclude_keywords[:10]
+            }),
+            "work_type_filtering": MetadataValue.json({
+                "remote": config.remote,
+                "hybrid": config.hybrid,
+                "on_site": config.on_site,
+                "full_time": config.full_time,
+                "part_time": config.part_time,
+                "contract": config.contract,
+                "custom_conditions": config.work_condition[:5]  # Limit for display
+            }),
             "preview": MetadataValue.md(generate_results_preview(combined_results))
         }
 
@@ -515,7 +886,7 @@ def search_jobs(context: AssetExecutionContext, config: JobSearchConfig) -> pd.D
             return combined_results
 
     except Exception as e:
-        context.log.error(f"Error executing job search: {str(e)}")
+        context.log.error(f"Error executing advanced job search: {str(e)}")
         raise
 
     finally:
@@ -590,13 +961,13 @@ def generate_results_preview(results: pd.DataFrame) -> str:
     return preview
 
 # NEW: Enriched data processing functions (ENHANCEMENT-032)
-def process_enriched_data(job_row: pd.Series, config: JobSearchConfig) -> Dict[str, Any]:
+def process_enriched_data(job_row: pd.Series, config: AdvancedJobSearchConfig) -> Dict[str, Any]:
     """
     Process enriched LLM data for display with confidence-based filtering.
 
     Args:
         job_row: Pandas Series containing job data with enriched fields
-        config: JobSearchConfig with confidence thresholds
+        config: AdvancedJobSearchConfig with confidence thresholds
 
     Returns:
         Dictionary containing processed enriched data sections
@@ -634,7 +1005,14 @@ def process_enriched_data(job_row: pd.Series, config: JobSearchConfig) -> Dict[s
         pd.notna(job_row.get('enriched_skills_confidence')) and
         job_row.get('enriched_skills_confidence', 0) >= config.min_skills_confidence):
         try:
-            skills_data = json.loads(job_row['enriched_technical_skills']) if isinstance(job_row['enriched_technical_skills'], str) else job_row['enriched_technical_skills']
+            raw_val = job_row['enriched_technical_skills']
+            if isinstance(raw_val, str):
+                try:
+                    skills_data = json.loads(raw_val)
+                except json.JSONDecodeError:
+                    skills_data = [s.strip() for s in raw_val.split(',') if s.strip()]
+            else:
+                skills_data = raw_val
             if skills_data and len(skills_data) > 0:
                 # Limit skills to max display and ensure they're strings
                 skills_list = [str(skill) for skill in skills_data[:config.max_skills_display]]
@@ -642,7 +1020,7 @@ def process_enriched_data(job_row: pd.Series, config: JobSearchConfig) -> Dict[s
                     'skills': skills_list,
                     'confidence': float(job_row.get('enriched_skills_confidence', 0)) if pd.notna(job_row.get('enriched_skills_confidence')) else 0.0
                 }
-        except (json.JSONDecodeError, TypeError, AttributeError):
+        except (TypeError, AttributeError):
             pass
 
     # Soft skills (confidence-based filtering)
@@ -650,14 +1028,21 @@ def process_enriched_data(job_row: pd.Series, config: JobSearchConfig) -> Dict[s
         pd.notna(job_row.get('enriched_skills_confidence')) and
         job_row.get('enriched_skills_confidence', 0) >= config.min_skills_confidence):
         try:
-            soft_skills_data = json.loads(job_row['enriched_soft_skills']) if isinstance(job_row['enriched_soft_skills'], str) else job_row['enriched_soft_skills']
+            raw_val = job_row['enriched_soft_skills']
+            if isinstance(raw_val, str):
+                try:
+                    soft_skills_data = json.loads(raw_val)
+                except json.JSONDecodeError:
+                    soft_skills_data = [s.strip() for s in raw_val.split(',') if s.strip()]
+            else:
+                soft_skills_data = raw_val
             if soft_skills_data and len(soft_skills_data) > 0:
                 skills_list = [str(skill) for skill in soft_skills_data[:config.max_skills_display]]
                 enriched['soft_skills'] = {
                     'skills': skills_list,
                     'confidence': float(job_row.get('enriched_skills_confidence', 0)) if pd.notna(job_row.get('enriched_skills_confidence')) else 0.0
                 }
-        except (json.JSONDecodeError, TypeError, AttributeError):
+        except (TypeError, AttributeError):
             pass
 
     # Work arrangements (confidence-based filtering)
@@ -717,10 +1102,19 @@ def process_enriched_data(job_row: pd.Series, config: JobSearchConfig) -> Dict[s
             classification['confidence'] = float(job_row.get('enriched_classification_confidence', 0)) if pd.notna(job_row.get('enriched_classification_confidence')) else 0.0
             enriched['classification'] = classification
 
-    # Overall metadata
-    enriched['has_enrichment'] = bool(job_row.get('has_llm_enrichment', False))
-    enriched['overall_confidence'] = float(job_row.get('enriched_overall_confidence', 0)) if pd.notna(job_row.get('enriched_overall_confidence')) else 0.0
-    enriched['processing_date'] = job_row.get('enriched_processing_date')
+    # Overall metadata / presence detection – SERVE layer has no LLM_PROCESSED flag.
+    overall_conf = job_row.get('enriched_overall_confidence')
+    enriched['overall_confidence'] = float(overall_conf) if pd.notna(overall_conf) else 0.0
+
+    # Mark enrichment present if we have any confidence value or at least one enriched field populated
+    enriched['has_enrichment'] = (
+        pd.notna(overall_conf) and overall_conf is not None
+    ) or (
+        bool(enriched.get('technical_skills')) or bool(enriched.get('soft_skills')) or bool(enriched.get('salary')) or bool(enriched.get('experience')) or bool(enriched.get('work_arrangement')) or bool(enriched.get('classification'))
+    )
+
+    # Processing date – use transformation_timestamp which is always present
+    enriched['processing_date'] = job_row.get('transformation_timestamp')
 
     return enriched
 
@@ -754,7 +1148,7 @@ def format_experience_display(exp_data: Dict) -> str:
 
     return f"{years_text}" + (f" ({level})" if level else "")
 
-def generate_salary_section_html(salary_data: Dict, config: JobSearchConfig) -> str:
+def generate_salary_section_html(salary_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate inline text for salary information."""
     if not salary_data:
         return ""
@@ -763,7 +1157,7 @@ def generate_salary_section_html(salary_data: Dict, config: JobSearchConfig) -> 
 
     return f"💰 <strong>Salary Range:</strong> {salary_display}"
 
-def generate_experience_section_html(exp_data: Dict, config: JobSearchConfig) -> str:
+def generate_experience_section_html(exp_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate inline text for experience requirements."""
     if not exp_data:
         return ""
@@ -772,7 +1166,7 @@ def generate_experience_section_html(exp_data: Dict, config: JobSearchConfig) ->
 
     return f"🎯 <strong>Experience Required:</strong> {experience_display}"
 
-def generate_skills_section_html(skills_data: Dict, config: JobSearchConfig) -> str:
+def generate_skills_section_html(skills_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate inline text for technical skills with badges."""
     if not skills_data or not skills_data.get('skills'):
         return ""
@@ -786,7 +1180,7 @@ def generate_skills_section_html(skills_data: Dict, config: JobSearchConfig) -> 
 
     return f"🛠️ <strong>Technical Skills:</strong> {skill_badges}"
 
-def generate_soft_skills_section_html(soft_skills_data: Dict, config: JobSearchConfig) -> str:
+def generate_soft_skills_section_html(soft_skills_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate inline text for soft skills with badges."""
     if not soft_skills_data or not soft_skills_data.get('skills'):
         return ""
@@ -799,7 +1193,7 @@ def generate_soft_skills_section_html(soft_skills_data: Dict, config: JobSearchC
 
     return f"🤝 <strong>Soft Skills:</strong> {skill_badges}"
 
-def generate_work_arrangement_section_html(work_data: Dict, config: JobSearchConfig) -> str:
+def generate_work_arrangement_section_html(work_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate inline text for work arrangement."""
     if not work_data:
         return ""
@@ -818,7 +1212,7 @@ def generate_work_arrangement_section_html(work_data: Dict, config: JobSearchCon
 
     return f"🏢 <strong>Work Arrangement:</strong> {content_text}"
 
-def generate_classification_section_html(classification_data: Dict, config: JobSearchConfig) -> str:
+def generate_classification_section_html(classification_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate inline text for job classification (role type and team size only)."""
     if not classification_data:
         return ""
@@ -839,7 +1233,7 @@ def generate_classification_section_html(classification_data: Dict, config: JobS
     # Join the parts
     return ' '.join(content_parts)
 
-def generate_keywords_section_html(classification_data: Dict, config: JobSearchConfig) -> str:
+def generate_keywords_section_html(classification_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate keywords section for display on separate line."""
     if not classification_data or not classification_data.get('keywords'):
         return ""
@@ -851,7 +1245,7 @@ def generate_keywords_section_html(classification_data: Dict, config: JobSearchC
 
     return f"🏷️ <strong>Keywords:</strong> {keyword_badges}"
 
-def generate_enriched_insights_section_html(enriched_data: Dict, config: JobSearchConfig) -> str:
+def generate_enriched_insights_section_html(enriched_data: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate complete enriched job insights section HTML with keywords on separate line."""
     if not enriched_data.get('has_enrichment') or not config.show_enriched_data:
         return ""
@@ -936,7 +1330,7 @@ def sanitize_html_description(description: str) -> str:
 
     return sanitized
 
-def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: JobSearchConfig) -> str:
+def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: AdvancedJobSearchConfig) -> str:
     """Generate a modern, responsive HTML report with client-side filtering (ENHANCEMENT-006 Phase 2)."""
 
     # Modern CSS with improved design, typography, and responsiveness
@@ -1259,27 +1653,28 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
             font-size: 1rem;
             color: var(--primary-color);
             font-weight: 500;
-            margin-bottom: 1rem;
+            margin-bottom: 0.5rem;
         }
 
         .job-meta {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 0.75rem;
-            margin-bottom: 1rem;
+            display: none;
         }
 
-        .job-meta-item {
+        /* Compact meta (date + platform) positioned under badges */
+        .job-meta-right {
+            position: absolute;
+            top: 3.2rem;
+            right: 1.5rem;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
-            font-size: 0.875rem;
+            gap: 0.35rem;
+            font-size: 0.825rem;
             color: var(--text-secondary);
         }
 
-        .job-meta-icon {
-            width: 16px;
-            height: 16px;
+        .job-meta-right .job-meta-icon {
+            width: 14px;
+            height: 14px;
             opacity: 0.7;
         }
 
@@ -1287,7 +1682,7 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
             display: flex;
             flex-wrap: wrap;
             gap: 0.5rem;
-            margin-bottom: 1rem;
+
         }
 
         .job-tag {
@@ -1651,11 +2046,11 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
     actual_range = stats['search_params']['actual_date_range']
     date_from_display = datetime.strptime(actual_range['date_from'], "%Y-%m-%d").strftime("%B %d, %Y") if actual_range['date_from'] else "N/A"
     date_to_display = datetime.strptime(actual_range['date_to'], "%Y-%m-%d").strftime("%B %d, %Y") if actual_range['date_to'] else "N/A"
-    latest_stage_display = datetime.strptime(actual_range['latest_stage_date'], "%Y-%m-%d").strftime("%B %d, %Y")
+    latest_serve_display = datetime.strptime(actual_range['latest_serve_date'], "%Y-%m-%d").strftime("%B %d, %Y")
     days_back = actual_range['days_back_requested']
 
     # Extract filter data for display
-    keywords = stats['search_params']['keywords']
+    keywords = stats['search_params']['structured_keywords']
     job_titles = stats['search_params']['job_titles']
     locations = stats['search_params']['locations']
     remote = stats['search_params'].get('remote', None)
@@ -1723,7 +2118,7 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
     <head>
         <meta charset="UTF-8">
         <title>{job_name} Results - {today}</title>
-        <meta name="description" content="Professional job search results from enhanced STAGE data with quality scoring and deduplication">
+        <meta name="description" content="Professional advanced job search results from SERVE denormalized data with quality scoring and deduplication">
         {css}
     </head>
     <body>
@@ -1749,7 +2144,7 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
                         </div>
                         <div class="header-stat">
                             <div class="header-stat-label">Latest Data</div>
-                            <div class="header-stat-value">{latest_stage_display}</div>
+                            <div class="header-stat-value">{latest_serve_display}</div>
                         </div>
                     </div>
                 </div>
@@ -1800,7 +2195,7 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
                         <div class="filter-content">
                             <strong>From:</strong> {date_from_display}<br>
                             <strong>To:</strong> {date_to_display}<br>
-                            <small style="opacity: 0.7;">Latest stage data: {latest_stage_display}</small>
+                            <small style="opacity: 0.7;">Latest SERVE data: {latest_serve_display}</small>
                         </div>
                     </div>
 
@@ -1879,21 +2274,14 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
                             <h3 class="job-title">{job_title}</h3>
                             {f'<div class="job-company">{company_name}</div>' if company_name else ''}
 
-                            <div class="job-meta">
-                                <div class="job-meta-item">
+                            <div class="job-meta-right">
+                                <div class="job-meta-item" style="gap:0.3rem;">
                                     <svg class="job-meta-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 20C7.59 20 4 16.41 4 12C4 7.59 7.59 4 12 4C16.41 4 20 7.59 20 12C20 16.41 16.41 20 12 20Z" fill="currentColor"/>
                                         <path d="M12.5 7H11V13L16.2 16.2L17 14.9L12.5 12.2V7Z" fill="currentColor"/>
                                     </svg>
                                     {posting_date}
-                                </div>
-                                <div class="job-meta-item">
-                                    <svg class="job-meta-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path d="M12 2C8.13 2 5 5.13 5 9C5 14.25 12 22 12 22C12 22 19 14.25 19 9C19 5.13 15.87 2 12 2ZM12 11.5C10.62 11.5 9.5 10.38 9.5 9C9.5 7.62 10.62 6.5 12 6.5C13.38 6.5 14.5 7.62 14.5 9C14.5 10.38 13.38 11.5 12 11.5Z" fill="currentColor"/>
-                                    </svg>
-                                    {location}
-                                </div>
-                                <div class="job-meta-item">
+                                    &bull;
                                     <svg class="job-meta-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                                         <path d="M20 6H16V4C16 2.89 15.11 2 14 2H10C8.89 2 8 2.89 8 4V6H4C2.89 6 2 6.89 2 8V19C2 20.11 2.89 21 4 21H20C21.11 21 22 20.11 22 19V8C22 6.89 21.11 6 20 6ZM10 4H14V6H10V4ZM20 19H4V8H20V19Z" fill="currentColor"/>
                                     </svg>
@@ -1913,9 +2301,6 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
 
             if job.get('detected_language'):
                 html += f'<span class="job-tag tag-language">🌐 {job.get("detected_language", "").title()}</span>'
-
-            if job.get('job_uid'):
-                html += f'<span class="job-tag tag-uid">🔗 ID: {job.get("job_uid", "")[:8]}...</span>'
 
             html += f"""
                              </div>
@@ -2134,4 +2519,3 @@ def generate_enhanced_html_report(results: pd.DataFrame, stats: Dict, config: Jo
     """
 
     return html
-

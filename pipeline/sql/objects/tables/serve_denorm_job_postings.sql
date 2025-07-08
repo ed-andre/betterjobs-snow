@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS SERVE.ADVANCED_JOB_SEARCH (
+CREATE TABLE IF NOT EXISTS SERVE.DENORM_JOB_POSTINGS (
     -- Primary Identifiers
     JOB_UID STRING PRIMARY KEY,              -- Natural key from STAGE.JOBS_UNIFIED
     JOB_ID STRING,
@@ -8,14 +8,11 @@ CREATE TABLE IF NOT EXISTS SERVE.ADVANCED_JOB_SEARCH (
 
     -- Job Details
     JOB_TITLE STRING,
-    JOB_DESCRIPTION_CLEAN TEXT,
-    LOCATION STRING,
+    JOB_DESCRIPTION STRING,
     JOB_URL STRING,
-    POSTING_DATE DATE,
+    DATE_POSTED DATE,
     DATE_RETRIEVED DATE,
     IS_ACTIVE BOOLEAN,
-    EMPLOYMENT_STATUS STRING,
-    DEPARTMENT STRING,
     DATA_QUALITY_SCORE FLOAT,
     TRANSFORMATION_TIMESTAMP TIMESTAMP_NTZ,
 
@@ -32,7 +29,8 @@ CREATE TABLE IF NOT EXISTS SERVE.ADVANCED_JOB_SEARCH (
     ENRICHED_EXPERIENCE_LEVEL STRING,
 
     -- Enriched Skills & Keywords (comma-separated lists for quick search)
-    ENRICHED_TECHNICAL_SKILLS STRING,
+    TECHNICAL_SKILLS_CSV STRING,       -- Aggregated technical skills list
+    SOFT_SKILLS_CSV STRING,            -- Aggregated soft skills list
     ENRICHED_PRIMARY_KEYWORDS STRING,
     ENRICHED_INDUSTRY_KEYWORDS STRING,
 
@@ -51,7 +49,7 @@ CREATE TABLE IF NOT EXISTS SERVE.ADVANCED_JOB_SEARCH (
     ENRICHED_CLASSIFICATION_CONFIDENCE FLOAT,
 
     -- Aggregated Lists for Search Optimisation
-    SKILLS_CSV STRING,          -- Pre-flattened skills list (lowercase, comma-separated)
+    SKILLS_CSV STRING,          -- All skills list
     KEYWORDS_CSV STRING,        -- Pre-flattened keywords list (lowercase, comma-separated)
 
     -- Audit Fields
@@ -60,4 +58,4 @@ CREATE TABLE IF NOT EXISTS SERVE.ADVANCED_JOB_SEARCH (
 
     -- Partitioning / Clustering
     PARTITION_DATE DATE          -- Typically POSTING_DATE truncated to month for clustering
-) CLUSTER BY (PARTITION_DATE, PLATFORM, LOCATION);
+) CLUSTER BY (PARTITION_DATE, PLATFORM);

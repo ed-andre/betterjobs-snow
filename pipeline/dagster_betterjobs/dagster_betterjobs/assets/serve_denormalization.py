@@ -1,6 +1,8 @@
 from typing import Dict, Any
-from dagster import asset, AssetExecutionContext, MetadataValue
+from dagster import asset, AssetExecutionContext, MetadataValue, MaterializeResult
 from dagster_snowflake import SnowflakeResource
+import os
+from datetime import datetime
 
 from dagster_betterjobs.utils.schema_utils import ensure_object_exists
 
@@ -10,7 +12,6 @@ from dagster_betterjobs.utils.schema_utils import ensure_object_exists
     description="Denormalised skills lookup table for UI autocomplete/search (category, subcategory, skills_csv). Incremental MERGE against SERVE.DENORM_SKILLS.",
     group_name="4_serve_layer",
     kinds={"snowflake", "SQL"},
-
 )
 def serve_denorm_skills(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
     """Builds/updates the SERVE.DENORM_SKILLS table from ANALYTICS.DIM_SKILLS.
@@ -198,3 +199,472 @@ def serve_denorm_keywords(context: AssetExecutionContext, snowflake: SnowflakeRe
 
         finally:
             cur.close()
+
+
+@asset(
+    deps=[
+        "analytics_fact_job_postings",
+        "analytics_dim_company",
+        "analytics_dim_location",
+        "analytics_dim_job_description",
+        "analytics_job_skills_bridge",
+        "analytics_dim_skills",
+        "analytics_job_keywords_bridge",
+        "analytics_dim_keywords",
+    ],
+    description="Denormalised job postings table for UI/API search (flattened skills & keywords). Incremental MERGE against SERVE.DENORM_JOB_POSTINGS.",
+    group_name="4_serve_layer",
+    kinds={"snowflake", "SQL"},
+)
+
+def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """Builds/updates the SERVE.DENORM_JOB_POSTINGS table from Analytics layer.
+
+    The asset joins fact and dimension tables to produce a flattened record per job posting with
+    aggregated lists of skills and keywords. Uses MERGE for incremental upsert and deletes
+    obsolete job_uids that disappeared from the analytics fact.
+    """
+
+    table_name = ensure_object_exists("tables/serve_denorm_job_postings.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cur = conn.cursor()
+        try:
+            context.log.info("Preparing denormalised job postings snapshot …")
+
+            cur.execute(
+                """
+                CREATE OR REPLACE TEMPORARY TABLE denorm_job_postings_current AS
+                WITH base AS (
+                    SELECT
+                        fp.JOB_UID,
+                        dp.PLATFORM_NAME            AS PLATFORM,
+                        fp.JOB_POSTING_KEY          AS JOB_ID,
+                        dc.COMPANY_ID,
+                        dc.COMPANY_NAME,
+                        fp.JOB_TITLE                AS JOB_TITLE,
+                        dj.DESCRIPTION_CLEAN        AS JOB_DESCRIPTION,
+                        fp.POSTING_URL              AS JOB_URL,
+                        fp.FIRST_POSTED_DATE        AS DATE_POSTED,
+                        fp.DATE_RETRIEVED,
+                        fp.IS_ACTIVE_POSTING        AS IS_ACTIVE,
+                        fp.DATA_QUALITY_SCORE,
+                        fp.UPDATED_TIMESTAMP        AS TRANSFORMATION_TIMESTAMP
+                    FROM BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fp
+                    JOIN BETTERJOBS_DB.ANALYTICS.DIM_COMPANY dc        ON fp.COMPANY_KEY = dc.COMPANY_KEY
+                    JOIN BETTERJOBS_DB.ANALYTICS.DIM_JOB_DESCRIPTION dj ON dj.JOB_UID    = fp.JOB_UID
+                    LEFT JOIN BETTERJOBS_DB.ANALYTICS.DIM_PLATFORM dp ON dp.PLATFORM_KEY = fp.PLATFORM_KEY
+                ),
+                enriched AS (
+                    SELECT
+                        jle.JOB_UID,
+                        jle.SALARY_MIN                 AS ENRICHED_SALARY_MIN,
+                        jle.SALARY_MAX                 AS ENRICHED_SALARY_MAX,
+                        jle.SALARY_CURRENCY            AS ENRICHED_SALARY_CURRENCY,
+                        jle.SALARY_PERIOD              AS ENRICHED_SALARY_PERIOD,
+                        jle.SALARY_TYPE                AS ENRICHED_SALARY_TYPE,
+                        jle.MIN_YEARS_EXPERIENCE       AS ENRICHED_MIN_YEARS_EXPERIENCE,
+                        jle.MAX_YEARS_EXPERIENCE       AS ENRICHED_MAX_YEARS_EXPERIENCE,
+                        jle.EXPERIENCE_LEVEL           AS ENRICHED_EXPERIENCE_LEVEL,
+                        jle.PRIMARY_KEYWORDS           AS ENRICHED_PRIMARY_KEYWORDS,
+                        jle.INDUSTRY_KEYWORDS          AS ENRICHED_INDUSTRY_KEYWORDS,
+                        jle.WORK_TYPE                  AS ENRICHED_WORK_TYPE,
+                        jle.OFFICE_LOCATIONS           AS ENRICHED_OFFICE_LOCATIONS,
+                        jle.ROLE_TYPE                  AS ENRICHED_ROLE_TYPE,
+                        jle.TEAM_SIZE                  AS ENRICHED_TEAM_SIZE,
+                        jle.LLM_OVERALL_CONFIDENCE     AS ENRICHED_OVERALL_CONFIDENCE,
+                        jle.SALARY_CONFIDENCE          AS ENRICHED_SALARY_CONFIDENCE,
+                        jle.EXPERIENCE_CONFIDENCE      AS ENRICHED_EXPERIENCE_CONFIDENCE,
+                        jle.SKILLS_CONFIDENCE          AS ENRICHED_SKILLS_CONFIDENCE,
+                        jle.WORK_ARRANGEMENT_CONFIDENCE AS ENRICHED_WORK_ARRANGEMENT_CONFIDENCE,
+                        jle.CLASSIFICATION_CONFIDENCE  AS ENRICHED_CLASSIFICATION_CONFIDENCE
+                    FROM BETTERJOBS_DB.STAGE.JOBS_LLM_ENRICHED jle
+                ),
+                skills AS (
+                    SELECT
+                        fp.JOB_UID,
+                        LISTAGG(DISTINCT ds.SKILL_NAME, ', ') AS SKILLS_CSV,
+                        LISTAGG(DISTINCT CASE WHEN ds.SKILL_TYPE = 'technical' THEN ds.SKILL_NAME END, ', ') AS TECHNICAL_SKILLS_CSV,
+                        LISTAGG(DISTINCT CASE WHEN ds.SKILL_TYPE = 'soft' THEN ds.SKILL_NAME END, ', ')       AS SOFT_SKILLS_CSV
+                    FROM BETTERJOBS_DB.ANALYTICS.JOB_SKILLS_BRIDGE jsb
+                    JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON ds.SKILL_KEY = jsb.SKILL_KEY
+                    JOIN BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fp ON fp.JOB_POSTING_KEY = jsb.JOB_POSTING_KEY
+                    GROUP BY fp.JOB_UID
+                ),
+                keywords AS (
+                    SELECT
+                        fp.JOB_UID,
+                        LISTAGG(DISTINCT dk.KEYWORD_TEXT_CLEAN, ', ') AS KEYWORDS_CSV
+                    FROM BETTERJOBS_DB.ANALYTICS.JOB_KEYWORDS_BRIDGE jkb
+                    JOIN BETTERJOBS_DB.ANALYTICS.DIM_KEYWORDS dk ON dk.KEYWORD_KEY = jkb.KEYWORD_KEY
+                    JOIN BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fp ON fp.JOB_POSTING_KEY = jkb.JOB_POSTING_KEY
+                    GROUP BY fp.JOB_UID
+                )
+                SELECT
+                    b.JOB_UID,
+                    b.JOB_ID,
+                    b.PLATFORM,
+                    b.COMPANY_ID,
+                    b.COMPANY_NAME,
+                    b.JOB_TITLE,
+                    b.JOB_DESCRIPTION,
+                    b.JOB_URL,
+                    b.DATE_POSTED,
+                    b.DATE_RETRIEVED,
+                    b.IS_ACTIVE,
+                    b.DATA_QUALITY_SCORE,
+                    b.TRANSFORMATION_TIMESTAMP,
+                    e.ENRICHED_SALARY_MIN,
+                    e.ENRICHED_SALARY_MAX,
+                    e.ENRICHED_SALARY_CURRENCY,
+                    e.ENRICHED_SALARY_PERIOD,
+                    e.ENRICHED_SALARY_TYPE,
+                    e.ENRICHED_MIN_YEARS_EXPERIENCE,
+                    e.ENRICHED_MAX_YEARS_EXPERIENCE,
+                    e.ENRICHED_EXPERIENCE_LEVEL,
+                    sk.TECHNICAL_SKILLS_CSV,
+                    sk.SOFT_SKILLS_CSV,
+                    e.ENRICHED_PRIMARY_KEYWORDS,
+                    e.ENRICHED_INDUSTRY_KEYWORDS,
+                    e.ENRICHED_WORK_TYPE,
+                    e.ENRICHED_OFFICE_LOCATIONS,
+                    e.ENRICHED_ROLE_TYPE,
+                    e.ENRICHED_TEAM_SIZE,
+                    e.ENRICHED_OVERALL_CONFIDENCE,
+                    e.ENRICHED_SALARY_CONFIDENCE,
+                    e.ENRICHED_EXPERIENCE_CONFIDENCE,
+                    e.ENRICHED_SKILLS_CONFIDENCE,
+                    e.ENRICHED_WORK_ARRANGEMENT_CONFIDENCE,
+                    e.ENRICHED_CLASSIFICATION_CONFIDENCE,
+                    COALESCE(sk.SKILLS_CSV, '')   AS SKILLS_CSV,
+                    COALESCE(kw.KEYWORDS_CSV, '') AS KEYWORDS_CSV,
+                    CURRENT_TIMESTAMP             AS UPDATED_TIMESTAMP,
+                    DATE_TRUNC('MONTH', b.DATE_POSTED) AS PARTITION_DATE
+                FROM base b
+                LEFT JOIN enriched e ON e.JOB_UID = b.JOB_UID
+                LEFT JOIN skills sk   ON sk.JOB_UID = b.JOB_UID
+                LEFT JOIN keywords kw ON kw.JOB_UID = b.JOB_UID
+                """
+            )
+
+            # MERGE incremental changes
+            context.log.info("Merging snapshot into SERVE.DENORM_JOB_POSTINGS …")
+            merge_sql = f"""
+            MERGE INTO {table_name} AS tgt
+            USING denorm_job_postings_current AS src
+            ON tgt.JOB_UID = src.JOB_UID
+
+            WHEN MATCHED AND (
+                   tgt.JOB_TITLE      <> src.JOB_TITLE OR
+                   tgt.JOB_DESCRIPTION<> src.JOB_DESCRIPTION OR
+                   tgt.DATE_POSTED    <> src.DATE_POSTED OR
+                   tgt.IS_ACTIVE      <> src.IS_ACTIVE OR
+                   tgt.SKILLS_CSV     <> src.SKILLS_CSV OR
+                   tgt.KEYWORDS_CSV   <> src.KEYWORDS_CSV
+            ) THEN
+                UPDATE SET
+                    JOB_ID         = src.JOB_ID,
+                    PLATFORM       = src.PLATFORM,
+                    COMPANY_ID     = src.COMPANY_ID,
+                    COMPANY_NAME   = src.COMPANY_NAME,
+                    JOB_TITLE      = src.JOB_TITLE,
+                    JOB_DESCRIPTION= src.JOB_DESCRIPTION,
+                    JOB_URL        = src.JOB_URL,
+                    DATE_POSTED    = src.DATE_POSTED,
+                    DATE_RETRIEVED = src.DATE_RETRIEVED,
+                    IS_ACTIVE      = src.IS_ACTIVE,
+                    DATA_QUALITY_SCORE = src.DATA_QUALITY_SCORE,
+                    TRANSFORMATION_TIMESTAMP = src.TRANSFORMATION_TIMESTAMP,
+                    ENRICHED_SALARY_MIN = src.ENRICHED_SALARY_MIN,
+                    ENRICHED_SALARY_MAX = src.ENRICHED_SALARY_MAX,
+                    ENRICHED_SALARY_CURRENCY = src.ENRICHED_SALARY_CURRENCY,
+                    ENRICHED_SALARY_PERIOD = src.ENRICHED_SALARY_PERIOD,
+                    ENRICHED_SALARY_TYPE = src.ENRICHED_SALARY_TYPE,
+                    ENRICHED_MIN_YEARS_EXPERIENCE = src.ENRICHED_MIN_YEARS_EXPERIENCE,
+                    ENRICHED_MAX_YEARS_EXPERIENCE = src.ENRICHED_MAX_YEARS_EXPERIENCE,
+                    ENRICHED_EXPERIENCE_LEVEL = src.ENRICHED_EXPERIENCE_LEVEL,
+                    TECHNICAL_SKILLS_CSV = src.TECHNICAL_SKILLS_CSV,
+                    SOFT_SKILLS_CSV = src.SOFT_SKILLS_CSV,
+                    ENRICHED_PRIMARY_KEYWORDS = src.ENRICHED_PRIMARY_KEYWORDS,
+                    ENRICHED_INDUSTRY_KEYWORDS = src.ENRICHED_INDUSTRY_KEYWORDS,
+                    ENRICHED_WORK_TYPE = src.ENRICHED_WORK_TYPE,
+                    ENRICHED_OFFICE_LOCATIONS = src.ENRICHED_OFFICE_LOCATIONS,
+                    ENRICHED_ROLE_TYPE = src.ENRICHED_ROLE_TYPE,
+                    ENRICHED_TEAM_SIZE = src.ENRICHED_TEAM_SIZE,
+                    ENRICHED_OVERALL_CONFIDENCE = src.ENRICHED_OVERALL_CONFIDENCE,
+                    ENRICHED_SALARY_CONFIDENCE = src.ENRICHED_SALARY_CONFIDENCE,
+                    ENRICHED_EXPERIENCE_CONFIDENCE = src.ENRICHED_EXPERIENCE_CONFIDENCE,
+                    ENRICHED_SKILLS_CONFIDENCE = src.ENRICHED_SKILLS_CONFIDENCE,
+                    ENRICHED_WORK_ARRANGEMENT_CONFIDENCE = src.ENRICHED_WORK_ARRANGEMENT_CONFIDENCE,
+                    ENRICHED_CLASSIFICATION_CONFIDENCE = src.ENRICHED_CLASSIFICATION_CONFIDENCE,
+                    SKILLS_CSV     = src.SKILLS_CSV,
+                    KEYWORDS_CSV   = src.KEYWORDS_CSV,
+                    UPDATED_TIMESTAMP = src.UPDATED_TIMESTAMP,
+                    PARTITION_DATE = src.PARTITION_DATE
+
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    JOB_UID, JOB_ID, PLATFORM, COMPANY_ID, COMPANY_NAME, JOB_TITLE,
+                    JOB_DESCRIPTION, JOB_URL, DATE_POSTED, DATE_RETRIEVED, IS_ACTIVE,
+                    DATA_QUALITY_SCORE, TRANSFORMATION_TIMESTAMP,
+                    ENRICHED_SALARY_MIN, ENRICHED_SALARY_MAX, ENRICHED_SALARY_CURRENCY, ENRICHED_SALARY_PERIOD, ENRICHED_SALARY_TYPE,
+                    ENRICHED_MIN_YEARS_EXPERIENCE, ENRICHED_MAX_YEARS_EXPERIENCE, ENRICHED_EXPERIENCE_LEVEL,
+                    TECHNICAL_SKILLS_CSV, SOFT_SKILLS_CSV, ENRICHED_PRIMARY_KEYWORDS, ENRICHED_INDUSTRY_KEYWORDS,
+                    ENRICHED_WORK_TYPE, ENRICHED_OFFICE_LOCATIONS, ENRICHED_ROLE_TYPE, ENRICHED_TEAM_SIZE,
+                    ENRICHED_OVERALL_CONFIDENCE, ENRICHED_SALARY_CONFIDENCE, ENRICHED_EXPERIENCE_CONFIDENCE,
+                    ENRICHED_SKILLS_CONFIDENCE, ENRICHED_WORK_ARRANGEMENT_CONFIDENCE, ENRICHED_CLASSIFICATION_CONFIDENCE,
+                    SKILLS_CSV, KEYWORDS_CSV, UPDATED_TIMESTAMP, PARTITION_DATE
+                ) VALUES (
+                    src.JOB_UID, src.JOB_ID, src.PLATFORM, src.COMPANY_ID, src.COMPANY_NAME, src.JOB_TITLE,
+                    src.JOB_DESCRIPTION, src.JOB_URL, src.DATE_POSTED, src.DATE_RETRIEVED, src.IS_ACTIVE,
+                    src.DATA_QUALITY_SCORE, src.TRANSFORMATION_TIMESTAMP,
+                    src.ENRICHED_SALARY_MIN, src.ENRICHED_SALARY_MAX, src.ENRICHED_SALARY_CURRENCY, src.ENRICHED_SALARY_PERIOD, src.ENRICHED_SALARY_TYPE,
+                    src.ENRICHED_MIN_YEARS_EXPERIENCE, src.ENRICHED_MAX_YEARS_EXPERIENCE, src.ENRICHED_EXPERIENCE_LEVEL,
+                    src.TECHNICAL_SKILLS_CSV, src.SOFT_SKILLS_CSV, src.ENRICHED_PRIMARY_KEYWORDS, src.ENRICHED_INDUSTRY_KEYWORDS,
+                    src.ENRICHED_WORK_TYPE, src.ENRICHED_OFFICE_LOCATIONS, src.ENRICHED_ROLE_TYPE, src.ENRICHED_TEAM_SIZE,
+                    src.ENRICHED_OVERALL_CONFIDENCE, src.ENRICHED_SALARY_CONFIDENCE, src.ENRICHED_EXPERIENCE_CONFIDENCE,
+                    src.ENRICHED_SKILLS_CONFIDENCE, src.ENRICHED_WORK_ARRANGEMENT_CONFIDENCE, src.ENRICHED_CLASSIFICATION_CONFIDENCE,
+                    src.SKILLS_CSV, src.KEYWORDS_CSV, src.UPDATED_TIMESTAMP, src.PARTITION_DATE
+                );
+            """
+            cur.execute(merge_sql)
+            upserts = cur.rowcount
+
+            # Delete obsolete job_uids
+            context.log.info("Pruning obsolete job_uids …")
+            cur.execute(
+                f"""
+                DELETE FROM {table_name}
+                WHERE JOB_UID NOT IN (SELECT JOB_UID FROM denorm_job_postings_current)
+                """
+            )
+            deletes = cur.rowcount
+
+            # Stats
+            cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+            total_rows = cur.fetchone()[0]
+
+            context.add_output_metadata({
+                "rows_upserted": MetadataValue.int(upserts),
+                "rows_deleted": MetadataValue.int(deletes),
+                "total_rows": MetadataValue.int(total_rows)
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_upserted": upserts,
+                "rows_deleted": deletes,
+                "total_rows": total_rows
+            }
+
+        finally:
+            cur.close()
+
+
+@asset(
+    group_name="serve_layer",
+    kinds={"snowflake"},
+    required_resource_keys={"snowflake"},
+    deps=["analytics_dim_skills"]
+)
+def serve_denorm_skills_populate(context: AssetExecutionContext) -> MaterializeResult:
+    """
+    Populate SERVE.DENORM_SKILLS table from ANALYTICS.DIM_SKILLS for fast hierarchical search.
+
+    This table enables the advanced job search to quickly resolve skill categories and subcategories
+    into specific skills for filtering.
+    """
+    conn = context.resources.snowflake.get_connection()
+    database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
+
+    cursor = conn.cursor()
+    start_time = datetime.now()
+
+    try:
+        # First, check if analytics dim_skills has data
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.ANALYTICS.DIM_SKILLS")
+        source_count = cursor.fetchone()[0]
+
+        if source_count == 0:
+            context.log.warning("⚠️ ANALYTICS.DIM_SKILLS is empty - skipping DENORM_SKILLS population")
+            return MaterializeResult(
+                metadata={
+                    "source_records": MetadataValue.int(0),
+                    "denorm_records": MetadataValue.int(0),
+                    "execution_time_ms": MetadataValue.int(0),
+                    "status": MetadataValue.text("SKIPPED - No source data")
+                }
+            )
+
+        context.log.info(f"📊 Processing {source_count} skills from ANALYTICS.DIM_SKILLS")
+
+        # Clear and repopulate DENORM_SKILLS table
+        context.log.info("🗑️ Clearing existing DENORM_SKILLS data")
+        cursor.execute(f"DELETE FROM {database_name}.SERVE.DENORM_SKILLS")
+
+        # Aggregate skills by category and subcategory into CSV lists
+        context.log.info("📝 Aggregating skills by category and subcategory")
+        insert_query = f"""
+        INSERT INTO {database_name}.SERVE.DENORM_SKILLS (
+            SKILL_CATEGORY,
+            SKILL_SUBCATEGORY,
+            SKILLS_CSV,
+            SKILL_COUNT,
+            UPDATED_AT
+        )
+        SELECT
+            SKILL_CATEGORY,
+            SKILL_SUBCATEGORY,
+            LISTAGG(SKILL_NAME, ',') WITHIN GROUP (ORDER BY SKILL_NAME) AS SKILLS_CSV,
+            COUNT(*) AS SKILL_COUNT,
+            CURRENT_TIMESTAMP() AS UPDATED_AT
+        FROM {database_name}.ANALYTICS.DIM_SKILLS
+        WHERE SKILL_CATEGORY IS NOT NULL
+          AND SKILL_SUBCATEGORY IS NOT NULL
+          AND SKILL_NAME IS NOT NULL
+          AND TRIM(SKILL_NAME) != ''
+        GROUP BY SKILL_CATEGORY, SKILL_SUBCATEGORY
+        ORDER BY SKILL_CATEGORY, SKILL_SUBCATEGORY
+        """
+
+        cursor.execute(insert_query)
+
+        # Get final count
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.SERVE.DENORM_SKILLS")
+        final_count = cursor.fetchone()[0]
+
+        # Get sample data for verification
+        cursor.execute(f"""
+        SELECT SKILL_CATEGORY, SKILL_SUBCATEGORY, SKILL_COUNT
+        FROM {database_name}.SERVE.DENORM_SKILLS
+        ORDER BY SKILL_COUNT DESC
+        LIMIT 5
+        """)
+        sample_data = cursor.fetchall()
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+
+        context.log.info(f"✅ Successfully populated DENORM_SKILLS with {final_count} category/subcategory combinations")
+        context.log.info(f"📈 Top skill categories: {[f'{row[0]}/{row[1]} ({row[2]} skills)' for row in sample_data]}")
+
+        return MaterializeResult(
+            metadata={
+                "source_records": MetadataValue.int(source_count),
+                "denorm_records": MetadataValue.int(final_count),
+                "execution_time_ms": MetadataValue.int(execution_time),
+                "sample_categories": MetadataValue.json([
+                    {"category": row[0], "subcategory": row[1], "skill_count": row[2]}
+                    for row in sample_data
+                ]),
+                "status": MetadataValue.text("SUCCESS")
+            }
+        )
+
+    except Exception as e:
+        context.log.error(f"❌ Error populating DENORM_SKILLS: {str(e)}")
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@asset(
+    group_name="serve_layer",
+    kinds={"snowflake"},
+    required_resource_keys={"snowflake"},
+    deps=["analytics_dim_keywords"]
+)
+def serve_denorm_keywords_populate(context: AssetExecutionContext) -> MaterializeResult:
+    """
+    Populate SERVE.DENORM_KEYWORDS table from ANALYTICS.DIM_KEYWORDS for fast keyword search.
+
+    This table enables the advanced job search to validate and filter by structured keywords.
+    """
+    conn = context.resources.snowflake.get_connection()
+    database_name = os.getenv("SNOWFLAKE_DATABASE", "BETTERJOBS_DB")
+
+    cursor = conn.cursor()
+    start_time = datetime.now()
+
+    try:
+        # First, check if analytics dim_keywords has data
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.ANALYTICS.DIM_KEYWORDS")
+        source_count = cursor.fetchone()[0]
+
+        if source_count == 0:
+            context.log.warning("⚠️ ANALYTICS.DIM_KEYWORDS is empty - skipping DENORM_KEYWORDS population")
+            return MaterializeResult(
+                metadata={
+                    "source_records": MetadataValue.int(0),
+                    "denorm_records": MetadataValue.int(0),
+                    "execution_time_ms": MetadataValue.int(0),
+                    "status": MetadataValue.text("SKIPPED - No source data")
+                }
+            )
+
+        context.log.info(f"📊 Processing {source_count} keywords from ANALYTICS.DIM_KEYWORDS")
+
+        # Clear and repopulate DENORM_KEYWORDS table
+        context.log.info("🗑️ Clearing existing DENORM_KEYWORDS data")
+        cursor.execute(f"DELETE FROM {database_name}.SERVE.DENORM_KEYWORDS")
+
+        # Insert keywords into DENORM table
+        context.log.info("📝 Populating DENORM_KEYWORDS")
+        insert_query = f"""
+        INSERT INTO {database_name}.SERVE.DENORM_KEYWORDS (
+            KEYWORD,
+            KEYWORD_TYPE,
+            UPDATED_AT
+        )
+        SELECT DISTINCT
+            COALESCE(KEYWORD_TEXT_CLEAN, KEYWORD_TEXT) AS KEYWORD,
+            COALESCE(KEYWORD_TYPE, 'general') AS KEYWORD_TYPE,
+            CURRENT_TIMESTAMP() AS UPDATED_AT
+        FROM {database_name}.ANALYTICS.DIM_KEYWORDS
+        WHERE COALESCE(KEYWORD_TEXT_CLEAN, KEYWORD_TEXT) IS NOT NULL
+          AND TRIM(COALESCE(KEYWORD_TEXT_CLEAN, KEYWORD_TEXT)) != ''
+          AND (CONFIDENCE_SCORE IS NULL OR CONFIDENCE_SCORE >= 0.5)  -- Only include high-confidence keywords
+        ORDER BY KEYWORD
+        """
+
+        cursor.execute(insert_query)
+
+        # Get final count
+        cursor.execute(f"SELECT COUNT(*) FROM {database_name}.SERVE.DENORM_KEYWORDS")
+        final_count = cursor.fetchone()[0]
+
+        # Get sample data by keyword type
+        cursor.execute(f"""
+        SELECT KEYWORD_TYPE, COUNT(*) as keyword_count
+        FROM {database_name}.SERVE.DENORM_KEYWORDS
+        GROUP BY KEYWORD_TYPE
+        ORDER BY keyword_count DESC
+        LIMIT 10
+        """)
+        type_breakdown = cursor.fetchall()
+
+        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+
+        context.log.info(f"✅ Successfully populated DENORM_KEYWORDS with {final_count} keywords")
+        context.log.info(f"📈 Keyword types: {[f'{row[0]}: {row[1]}' for row in type_breakdown]}")
+
+        return MaterializeResult(
+            metadata={
+                "source_records": MetadataValue.int(source_count),
+                "denorm_records": MetadataValue.int(final_count),
+                "execution_time_ms": MetadataValue.int(execution_time),
+                "keyword_types": MetadataValue.json([
+                    {"type": row[0], "count": row[1]}
+                    for row in type_breakdown
+                ]),
+                "status": MetadataValue.text("SUCCESS")
+            }
+        )
+
+    except Exception as e:
+        context.log.error(f"❌ Error populating DENORM_KEYWORDS: {str(e)}")
+        raise
+    finally:
+        cursor.close()
+        conn.close()
