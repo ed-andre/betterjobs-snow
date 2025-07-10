@@ -19,15 +19,14 @@ from dagster_betterjobs.assets.stage_jobs_unified import stage_jobs_unified
 # PHASE-1.5: Company profiles transformation
 from dagster_betterjobs.assets.stage_company_profiles import stage_company_profiles
 
-# PHASE-2.3: LLM enrichment for structured information extraction
-# from dagster_betterjobs.assets.stage_jobs_llm_enriched import stage_jobs_llm_enriched
-# Removed as part of ENHANCEMENT-010
 
 # ENHANCEMENT-010: Platform-specific LLM enrichment assets for parallel processing
-from dagster_betterjobs.assets.stage_jobs_llm_enriched_bamboohr import stage_jobs_llm_enriched_bamboohr
-from dagster_betterjobs.assets.stage_jobs_llm_enriched_greenhouse import stage_jobs_llm_enriched_greenhouse
-from dagster_betterjobs.assets.stage_jobs_llm_enriched_workday import stage_jobs_llm_enriched_workday
-from dagster_betterjobs.assets.stage_jobs_llm_enriched_smartrecruiters import stage_jobs_llm_enriched_smartrecruiters
+from dagster_betterjobs.assets.stage_jobs_llm_enriched_platforms import (
+    stage_jobs_llm_enriched_bamboohr,
+    stage_jobs_llm_enriched_greenhouse,
+    stage_jobs_llm_enriched_workday,
+    stage_jobs_llm_enriched_smartrecruiters
+)
 
 # ENHANCEMENT-010: LLM enrichment coordinator asset
 from dagster_betterjobs.assets.stage_jobs_llm_enriched_unified import stage_jobs_llm_enriched_unified
