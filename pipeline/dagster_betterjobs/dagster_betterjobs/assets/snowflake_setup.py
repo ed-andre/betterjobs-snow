@@ -147,7 +147,7 @@ def load_table_creation_order(objects_dir: Path, context: AssetExecutionContext)
 
         # Combine all layers in dependency order
         ordered_files = []
-        for layer in ['raw_layer', 'stage_layer', 'analytics_layer']:
+        for layer in ['raw_layer', 'stage_layer', 'analytics_layer', 'serve_layer']:
             if layer in config:
                 ordered_files.extend(config[layer])
                 context.log.info(f"Loaded {len(config[layer])} tables from {layer}")
