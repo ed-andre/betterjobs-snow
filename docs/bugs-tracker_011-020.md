@@ -862,7 +862,7 @@ CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.STAGE.JOB_EXPERIENCE_BRIDGE (
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten experience requirements from LLM VARIANT columns",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -886,7 +886,7 @@ def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflak
 @asset(
     deps=["stage_llm_experience_raw_extraction"],
     description="Create normalized experience master table with standardized levels",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_experience_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -910,7 +910,7 @@ def stage_experience_normalized(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["stage_experience_normalized", "stage_jobs_unified"],
     description="Create job-experience relationships with requirement context",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_experience_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

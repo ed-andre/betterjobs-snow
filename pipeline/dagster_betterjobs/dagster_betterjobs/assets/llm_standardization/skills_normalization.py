@@ -50,7 +50,7 @@ def _convert_decimal(obj: Union[Decimal, List, Dict, Any]) -> Union[float, List,
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten skills from LLM VARIANT columns using schema-as-code",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization_skills",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -177,7 +177,7 @@ def stage_llm_skills_raw_extraction(context: AssetExecutionContext, snowflake: S
 @asset(
     deps=["stage_llm_skills_raw_extraction"],
     description="Process orphaned skills through Gemini API for Lightcast taxonomy categorization",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization_skills",
     kinds={"snowflake", "python", "gemini"},
 
 )
@@ -418,7 +418,7 @@ def stage_manual_skill_taxonomy(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["stage_llm_skills_raw_extraction", "stage_manual_skill_taxonomy"],
     description="Apply standardization rules to create skills master table (standardization only) using schema-as-code",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization_skills",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -694,7 +694,7 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
 @asset(
     deps=["stage_skills_normalized", "stage_jobs_unified"],
     description="Create job-skill relationships using normalized skills with context tracking using schema-as-code",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization_skills",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

@@ -1833,7 +1833,7 @@ SKILLS_RAW_EXTRACTION → SKILLS_NORMALIZED (standardization only)
 @asset(
     deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
     description="Apply standardization rules to create skills master table (standardization only)",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1894,7 +1894,7 @@ FROM standardized_skills;
 @asset(
     deps=["stage_skills_normalized"],
     description="Apply intelligent consolidation to standardized skills",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_consolidated(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1947,7 +1947,7 @@ SELECT ... FROM consolidation_results;
 @asset(
     deps=["stage_skills_consolidated", "stage_jobs_unified"],  # Changed dependency
     description="Create job-skill relationships using consolidated skills",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

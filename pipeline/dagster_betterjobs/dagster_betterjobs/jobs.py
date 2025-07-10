@@ -171,9 +171,9 @@ stage_jobs_unified_job = define_asset_job(
 
 # STAGE LLM STANDARDIZATION VALIDATION GROUP
 ## JOB
-stage_llm_standardization_validation_job = define_asset_job(
-    name="stage_llm_standardization_validation_job",
-    selection=AssetSelection.groups("2b_stage_llm_standardization_validation"),
+stage_normalization_job = define_asset_job(
+    name="stage_normalization_job",
+    selection=AssetSelection.groups("2b_stage_normalization_experience", "2b_stage_normalization_locations", "2b_stage_normalization_salary", "2b_stage_normalization_skills"),
     description="Job that validates the standardization of job listings from all platforms",
 )
 

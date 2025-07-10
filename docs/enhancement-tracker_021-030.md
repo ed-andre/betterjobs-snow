@@ -384,7 +384,7 @@ touch pipeline/sql/objects/tables/stage_job_salary_bridge.sql
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten salary data from LLM enriched jobs for normalization",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_salary_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -406,7 +406,7 @@ def stage_salary_raw_extraction(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["stage_salary_raw_extraction"],
     description="Create normalized salary master table with annual USD conversion",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_salary_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -428,7 +428,7 @@ def stage_salary_normalized(context: AssetExecutionContext, snowflake: Snowflake
 @asset(
     deps=["stage_salary_normalized", "stage_jobs_unified"],
     description="Create job-to-salary bridge relationships",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_salary_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:

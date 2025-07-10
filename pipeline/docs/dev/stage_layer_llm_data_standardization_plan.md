@@ -102,7 +102,7 @@ stage_llm_analytics_views (Phase 5)
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten skills from LLM VARIANT columns",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_skills_raw_extraction(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -129,7 +129,7 @@ def stage_llm_skills_raw_extraction(context, snowflake: SnowflakeResource) -> Di
 
 @asset(
     description="Maintain skill standardization rules and aliases",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"},
     freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)  # Weekly updates
 )
@@ -157,7 +157,7 @@ def stage_skills_standardization_rules(context, snowflake: SnowflakeResource) ->
 @asset(
     deps=["stage_llm_skills_raw_extraction", "stage_skills_standardization_rules"],
     description="Create normalized skills master table with market intelligence",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_skills_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -186,7 +186,7 @@ def stage_skills_normalized(context, snowflake: SnowflakeResource) -> Dict[str, 
 @asset(
     deps=["stage_skills_normalized", "stage_jobs_unified"],
     description="Create job-skill relationships with context tracking",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_skills_bridge(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -217,7 +217,7 @@ def stage_job_skills_bridge(context, snowflake: SnowflakeResource) -> Dict[str, 
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten experience requirements from LLM VARIANT columns",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -247,7 +247,7 @@ def stage_llm_experience_raw_extraction(context: AssetExecutionContext, snowflak
 ```python
 @asset(
     description="Create experience level standardization rules with market intelligence",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"},
     freshness_policy=FreshnessPolicy(maximum_lag_minutes=60 * 24 * 7)
 )
@@ -275,7 +275,7 @@ def stage_experience_standardization_rules(context: AssetExecutionContext, snowf
 @asset(
     deps=["stage_llm_experience_raw_extraction", "stage_experience_standardization_rules"],
     description="Create normalized experience master table with market intelligence",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_experience_normalized(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -307,7 +307,7 @@ def stage_experience_normalized(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["stage_experience_normalized", "stage_jobs_unified"],
     description="Create job-experience relationships with requirement context",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_job_experience_bridge(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -347,7 +347,7 @@ def stage_job_experience_bridge(context: AssetExecutionContext, snowflake: Snowf
 @asset(
     deps=["stage_llm_skills_raw_extraction"],
     description="Standardize job posting keywords and classifications",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_keywords_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -379,7 +379,7 @@ def stage_keywords_normalized(context, snowflake: SnowflakeResource) -> Dict[str
 @asset(
     deps=["jobs_llm_enriched", "jobs_unified"],
     description="Standardize location data with geographic intelligence",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_locations_normalized(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -416,7 +416,7 @@ def stage_locations_normalized(context, snowflake: SnowflakeResource) -> Dict[st
 @asset(
     deps=["stage_skills_normalized", "stage_keywords_normalized", "stage_locations_normalized"],
     description="Comprehensive data quality validation for LLM standardization",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_data_quality_validation(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -449,7 +449,7 @@ def stage_llm_data_quality_validation(context, snowflake: SnowflakeResource) -> 
 @asset(
     deps=["stage_job_skills_bridge", "stage_job_keywords_bridge", "stage_job_locations_bridge"],
     description="Create analytics-optimized views for downstream consumption",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_analytics_views(context, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1226,7 +1226,7 @@ Phase 2 focused on standardizing business and contextual keywords that are disti
 @asset(
     deps=["stage_jobs_llm_enriched_unified"],
     description="Extract and flatten keywords from LLM VARIANT columns",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_keywords_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
@@ -1457,7 +1457,7 @@ Phase 3 successfully implemented comprehensive location standardization and enri
 @asset(
     deps=["stage_jobs_llm_enriched_unified", "stage_jobs_unified"],
     description="Extract and flatten locations from multiple data sources",
-    group_name="2b_stage_llm_standardization_validation",
+    group_name="2b_stage_normalization",
     kinds={"snowflake", "python", "SQL"}
 )
 def stage_llm_locations_raw_extraction(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
