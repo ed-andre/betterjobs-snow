@@ -10,6 +10,11 @@ raw_layer:
   - raw_greenhouse_jobs.sql
   - raw_smartrecruiters_jobs.sql
   - raw_workday_jobs.sql
+  - raw_company_profiles.sql
+  - raw_company_profiles_file_log.sql
+  - raw_master_company_urls_deduped.sql
+  - raw_master_company_urls_temp_s3.sql
+
 
 stage_layer:
   # Core foundation tables (no foreign key dependencies)
@@ -100,5 +105,6 @@ analytics_layer:
 serve_layer:
   # Serving layer tables (reference analytics layer)
   - serve_denorm_skills.sql
-  - serve_advanced_job_search.sql
+  - serve_denorm_keywords.sql
+  - serve_denorm_job_postings.sql
 

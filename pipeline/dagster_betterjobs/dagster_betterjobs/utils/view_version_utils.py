@@ -153,6 +153,9 @@ def extract_view_name_from_file(view_file: str) -> str:
     elif base_name.startswith('raw_'):
         schema = 'RAW'
         view_name = base_name.replace('raw_', '').upper()
+    elif base_name.startswith('internal_'):
+        schema = 'INTERNAL'
+        view_name = base_name.replace('internal_', '').upper()
     else:
         schema = 'ANALYTICS'  # Default
         view_name = base_name.upper()

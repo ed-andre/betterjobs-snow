@@ -565,6 +565,7 @@ def views_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) ->
     Creates/Updates:
     - STAGE schema views for data transformation
     - ANALYTICS schema views for business insights
+    - INTERNAL schema views for internal use
     - Lookup and summary views
 
     Uses hash-based change detection to only update views when definitions change.
