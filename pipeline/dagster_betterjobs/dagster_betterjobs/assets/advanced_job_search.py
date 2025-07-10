@@ -390,7 +390,7 @@ class AdvancedJobSearchConfig(Config):
     group_name="job_search",
     kinds={"snowflake", "python"},
     required_resource_keys={"snowflake"},
-    deps=["serve_denorm_job_postings", "serve_denorm_skills_populate", "serve_denorm_keywords_populate"]
+    deps=["serve_denorm_job_postings", "serve_denorm_skills", "serve_denorm_keywords"]
 )
 def advanced_jobs_search(context: AssetExecutionContext, config: AdvancedJobSearchConfig) -> pd.DataFrame:
     """
