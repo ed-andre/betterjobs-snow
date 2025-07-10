@@ -9,7 +9,7 @@ from dagster import asset, AssetExecutionContext, AssetMaterialization
 from dagster_betterjobs.resources import SnowflakeResource
 from typing import Dict, List, Any
 from datetime import datetime
-from dagster_betterjobs.assets.snowflake_setup import views_setup
+from dagster_betterjobs.assets.infrastructure_setup import views_setup
 
 
 @asset(

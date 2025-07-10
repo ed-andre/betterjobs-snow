@@ -2750,7 +2750,7 @@ def extract_view_name_from_file(view_file: str) -> str:
 
 1. **Update views_setup Asset**:
 ```python
-# Modify: pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py
+# Modify: pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py
 
 from ..utils.view_version_utils import (
     calculate_view_content_hash, view_needs_update, update_view_hash,
@@ -2994,7 +2994,7 @@ def test_view_update_workflow():
 - `pipeline/dagster_betterjobs/dagster_betterjobs/utils/test_view_version_utils.py` - Unit tests
 
 **Modified Files**:
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - Enhanced views_setup asset
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` - Enhanced views_setup asset
 - `pipeline/dagster_betterjobs/dagster_betterjobs/assets/__init__.py` - Import new utilities
 
 ### Success Criteria
@@ -3329,7 +3329,7 @@ return results
 ### Files Modified
 
 **Modified Files**:
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - All setup assets enhanced
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` - All setup assets enhanced
 - Error handling logic added to each infrastructure asset function
 - Consistent error message formatting implemented
 

@@ -477,7 +477,7 @@ The current schema-as-code system handles view updates well but lacks a safe mec
 ### Files to Investigate and Modify
 
 **Phase 1 Files:**
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - Extend table creation logic
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` - Extend table creation logic
 - `pipeline/dagster_betterjobs/dagster_betterjobs/utils/schema_utils.py` - Add schema change detection
 - `pipeline/sql/schema_setup/` - Add table migration tracking
 
@@ -684,7 +684,7 @@ VIEW_VERSIONING_CONFIG = {
 **Modified Files**:
 - `pipeline/sql/objects/tables/stage_view_version_tracking.sql` - Enhanced table schema
 - `pipeline/dagster_betterjobs/dagster_betterjobs/utils/view_version_utils.py` - Add optional versioning
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - Integrate with views_setup
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` - Integrate with views_setup
 
 ### Success Criteria
 

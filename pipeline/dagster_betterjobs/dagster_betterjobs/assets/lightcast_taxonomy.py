@@ -22,7 +22,7 @@ from dagster import asset, AssetExecutionContext
 from dagster_snowflake import SnowflakeResource
 
 # Import required infrastructure dependency
-from .snowflake_setup import tables_setup
+from .infrastructure_setup import tables_setup
 # Import schema-as-code utility for self-healing table creation
 from ..utils.schema_utils import ensure_object_exists
 

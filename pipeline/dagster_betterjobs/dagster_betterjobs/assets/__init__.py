@@ -115,7 +115,7 @@ from dagster_betterjobs.assets.analytics_bridges import (
 )
 
 # Infrastructure Setup Assets
-from dagster_betterjobs.assets.snowflake_setup import (
+from dagster_betterjobs.assets.infrastructure_setup import (
     database_schema_setup,
     infrastructure_setup,
     tables_setup,

@@ -360,7 +360,7 @@ context.log.info(f"🛡️ [{platform.upper()}] Recursion protection enabled: ma
 
 **Status:** RESOLVED ✅
 **Severity:** Critical
-**Component:** Database Infrastructure Setup - Schema-as-Code (`snowflake_setup.py`, `schema_utils.py`, `analytics_dimensions.py`)
+**Component:** Database Infrastructure Setup - Schema-as-Code (`infrastructure_setup.py`, `schema_utils.py`, `analytics_dimensions.py`)
 **Date Reported:** 2025-06-17
 **Date Resolved:** 2025-06-17
 
@@ -413,7 +413,7 @@ ERROR: Failed to execute statement 3: 'SnowflakeConnection' object has no attrib
 ### Technical Details
 **Files Affected and Root Cause**:
 
-1. **`snowflake_setup.py`**:
+1. **`infrastructure_setup.py`**:
    - `execute_sql_file()` function (lines 160-170)
    - `setup_validation()` asset (lines 495-499)
 
@@ -436,12 +436,12 @@ ERROR: Failed to execute statement 3: 'SnowflakeConnection' object has no attrib
 
 ### Resolution
 **Fixed in**:
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py`
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py`
 - `pipeline/dagster_betterjobs/dagster_betterjobs/utils/schema_utils.py`
 
 **Changes Made**:
 
-**Phase 1 - `snowflake_setup.py` Fixes**:
+**Phase 1 - `infrastructure_setup.py` Fixes**:
 1. **Fixed `execute_sql_file()` function**: Added cursor creation and proper error handling
 2. **Fixed `setup_validation()` asset**: Added cursor pattern for validation queries
 
@@ -480,7 +480,7 @@ with snowflake.get_connection() as conn:
 - ✅ **Resource Management**: Proper cursor cleanup prevents connection leaks
 
 ### Files Affected
-- ✅ `dagster_betterjobs/assets/snowflake_setup.py` - Fixed execute_sql_file() and setup_validation()
+- ✅ `dagster_betterjobs/assets/infrastructure_setup.py` - Fixed execute_sql_file() and setup_validation()
 - ✅ `dagster_betterjobs/utils/schema_utils.py` - Fixed execute_sql_file() and object_exists()
 - ✅ `dagster_betterjobs/assets/analytics_dimensions.py` - Fixed analytics_dim_date() asset
 
@@ -1353,7 +1353,7 @@ Screenshot shows same `JOB_POSTING_KEY` (JP_bc5aa293e7c13eddce2e0fef7acbaf30) ap
 The `tables_setup` asset fails when creating tables due to foreign key constraint violations. Tables are currently processed in alphabetical order within each schema layer (raw, stage, analytics), but this doesn't respect foreign key dependencies. Tables with foreign key references get created before their referenced tables exist, causing creation failures.
 
 ### Root Cause Analysis
-**File**: `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` (lines 320-340)
+**File**: `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` (lines 320-340)
 **Method**: `tables_setup()` asset
 
 **Current Sorting Logic**:
@@ -1405,7 +1405,7 @@ SQL compilation error: Object 'BETTERJOBS_DB.STAGE.JOBS_UNIFIED' does not exist
 **Actual**: Tables created alphabetically, foreign key constraints fail, setup process crashes
 
 ### Files Affected
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` (sorting logic)
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` (sorting logic)
 - All table SQL files in `pipeline/sql/objects/tables/` (dependency relationships)
 
 ### Proposed Resolution - Table Dependency Configuration
@@ -1498,7 +1498,7 @@ analytics_layer:
 ```
 
 **Phase 2 - Code Changes**:
-Update `snowflake_setup.py` to use configuration:
+Update `infrastructure_setup.py` to use configuration:
 ```python
 import yaml
 from pathlib import Path
@@ -1586,7 +1586,7 @@ def tables_setup(context: AssetExecutionContext, snowflake: SnowflakeResource) -
 ### Resolution
 **Fixed in**:
 - `pipeline/sql/objects/tables/table_creation_order.yaml` (Configuration file)
-- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` (Implementation)
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` (Implementation)
 
 **Changes Made**:
 
@@ -1633,7 +1633,7 @@ else:
 
 ### Files Affected
 - ✅ `pipeline/sql/objects/tables/table_creation_order.yaml` - New dependency configuration
-- ✅ `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py` - Enhanced ordering logic
+- ✅ `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py` - Enhanced ordering logic
 
 ### Verification Steps
 1. ✅ Run `tables_setup` asset on fresh database - all tables create successfully

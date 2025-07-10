@@ -1824,7 +1824,7 @@ pipeline/sql/
 
 ### Core Asset Implementation
 
-✅ **IMPLEMENTED** - See `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py`
+✅ **IMPLEMENTED** - See `pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py`
 
 **Asset Dependency Chain:**
 1. `database_schema_setup` → Creates database, schemas, roles (no dependencies)
@@ -1868,7 +1868,7 @@ def database_schema_setup(context: AssetExecutionContext, snowflake: SnowflakeRe
 
 **✅ DELIVERED COMPONENTS:**
 
-1. **Complete Snowflake Setup Assets** (`pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_setup.py`):
+1. **Complete Snowflake Setup Assets** (`pipeline/dagster_betterjobs/dagster_betterjobs/assets/infrastructure_setup.py`):
    - `database_schema_setup` - Creates database, schemas, and roles
    - `raw_schema_setup` - Creates RAW schema objects (Bronze layer)
    - `stage_schema_setup` - Creates STAGE schema objects (Silver layer)
