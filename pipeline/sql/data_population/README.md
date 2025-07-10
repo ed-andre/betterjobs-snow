@@ -1,258 +1,129 @@
-# LLM Standardization Static Data Management
+# Static Data Population Scripts
 
-This directory contains SQL files for managing static data used in the LLM standardization process. This keeps static data separate from Dagster asset logic for better maintainability and version control.
+This directory contains SQL scripts for populating reference and mapping tables used in the BetterJobs data pipeline. These scripts ensure consistent data normalization and standardization across the platform.
 
-## Coverage
+## Purpose
 
-- **Phase 1: Skills Normalization** - Complete configuration files for skills standardization
-- **Phase 2: Keywords Normalization** - Complete configuration files for keywords and classification
-
-## Philosophy
-
-**Static data should be managed separately from application code to:**
-- ✅ Avoid conflicts when multiple developers need to modify rules
+**Static data population is managed separately from Dagster assets to:**
 - ✅ Enable easy rule updates without code changes
-- ✅ Maintain clear separation of concerns
+- ✅ Maintain clear separation of data from logic
 - ✅ Support database-driven configuration
-- ✅ Enable rule versioning and audit trails
+- ✅ Allow version control of business rules
+- ✅ Facilitate team collaboration on data rules
 
 ## File Structure
 
 ```
-pipeline/sql/llm_standardization/
+pipeline/sql/data_population/
 ├── README.md                                    # This file
+├── data_population_order.yaml                  # Execution order configuration
 │
-├─── Phase 1: Skills Normalization ─────
-├── insert_skill_standardization_rules.sql      # Comprehensive skill aliases and variants
-├── insert_skill_category_patterns.sql          # Skill category detection patterns
-├── insert_skill_family_mappings.sql            # Skill family classification mappings
+├─── Foundation Data ─────
+├── insert_countries_mapping.sql                # World countries and territories
+├── insert_us_states_mapping.sql               # US states and territories
 │
-├─── Phase 2: Keywords Normalization ───
-├── insert_keyword_standardization_rules.sql    # Keyword standardization and aliases
-├── insert_keyword_type_mappings.sql            # Keyword type and category classifications
+├─── Location Mappings ───
+├── insert_location_metro_area_mapping.sql     # Metropolitan area classifications
+├── insert_location_region_mapping.sql         # Regional groupings (US regions, etc.)
+├── insert_location_tech_hub_mapping.sql       # Technology hub classifications
 │
-├─── Phase 3: Location Standardization ───────────
-├── insert_location_standardization_rules.sql   # Location standardization rules
-├── insert_us_states_mapping.sql               # US states for automatic country inference
-├── insert_countries_mapping.sql               # World countries for international location parsing
+├─── Standardization Rules ───
+├── insert_experience_standardization_rules.sql # Experience level normalization
+├── insert_location_standardization_rules.sql  # Location name standardization
+├── insert_keyword_standardization_rules.sql   # Job keyword standardization
 │
-└── migrations/                                 # Version-controlled rule updates
-    ├── 001_initial_skill_rules.sql
-    ├── 002_add_microsoft_tools.sql
-    ├── 003_update_confidence_scores.sql
-    └── 004_add_keyword_rules.sql
+└─── Complex Mappings ───
+    └── insert_keyword_type_mappings.sql       # Keyword type classifications
 ```
 
-## Standard Process
+## Execution Order
 
-### 1. Initial Setup
+Scripts are executed in dependency order as defined in `data_population_order.yaml`:
 
-Run the comprehensive rule files once during initial setup:
+1. **Foundation Data** - Core reference tables (countries, states)
+2. **Location Mappings** - Geographic classifications and groupings
+3. **Standardization Rules** - Data normalization rules
+4. **Complex Mappings** - Advanced type classifications
+
+## Adding New Data Population Scripts
+
+### 1. Create the SQL File
+
+Create a new SQL file in this directory following the naming convention:
 
 ```sql
--- Phase 1: Skills Normalization
-@insert_skill_standardization_rules.sql
-@insert_skill_category_patterns.sql
-@insert_skill_family_mappings.sql
-
--- Phase 2: Keywords Normalization
-@insert_keyword_standardization_rules.sql
-@insert_keyword_type_mappings.sql
-
--- Phase 3: Location Standardization
-@insert_location_standardization_rules.sql
-@insert_us_states_mapping.sql
-@insert_countries_mapping.sql
+-- Example: insert_new_mapping_table.sql
+INSERT INTO STAGE.NEW_MAPPING_TABLE
+    (ID, NAME, CATEGORY, CREATED_DATE)
+VALUES
+    ('001', 'Example Entry', 'sample_category', CURRENT_TIMESTAMP),
+    ('002', 'Another Entry', 'sample_category', CURRENT_TIMESTAMP);
 ```
 
-### 2. Adding New Rules
+### 2. Update Configuration
 
-**Option A: Direct INSERT (for small changes)**
-```sql
-INSERT INTO SKILL_STANDARDIZATION_RULES VALUES
-('rule_new_001', 'rust', 'Rust', 'languages', 'system_language', 1.0, 'exact_match', CURRENT_TIMESTAMP);
+Add your new file to `data_population_order.yaml` in the appropriate dependency group:
+
+```yaml
+# Add to the correct section based on dependencies
+standardization_rules:
+  - insert_experience_standardization_rules.sql
+  - insert_location_standardization_rules.sql
+  - insert_keyword_standardization_rules.sql
+  - insert_new_mapping_table.sql  # Your new file
 ```
 
-**Option B: Migration Script (recommended for larger changes)**
-```sql
--- Create: pipeline/sql/llm_standardization/migrations/004_add_rust_language.sql
-INSERT INTO SKILL_STANDARDIZATION_RULES VALUES
-('rule_new_001', 'rust', 'Rust', 'languages', 'system_language', 1.0, 'exact_match', CURRENT_TIMESTAMP),
-('rule_new_002', 'rust-lang', 'Rust', 'languages', 'system_language', 0.9, 'exact_match', CURRENT_TIMESTAMP);
-```
+### 3. Test the Script
 
-### 3. Updating Existing Rules
+Verify your script works by running it individually in Snowflake before deploying.
 
-```sql
-UPDATE SKILL_STANDARDIZATION_RULES
-SET CONFIDENCE_SCORE = 0.95,
-    UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
-WHERE RULE_ID = 'rule_006';
-```
+## Best Practices
 
-### 4. Asset Integration
+### 1. File Naming Convention
+- Use descriptive names starting with `insert_`
+- Group related data by prefix (e.g., `insert_location_*`)
+- Include table purpose in filename
 
-The Dagster assets check for rule existence but don't manage the rules themselves:
+### 2. Data Structure Guidelines
+- Include `CREATED_DATE` or `UPDATED_DATE` timestamps
+- Use consistent ID patterns and data types
+- Add meaningful comments in SQL files
+- Test with small datasets first
 
-```python
-# In skills_normalization.py
-def stage_skills_standardization_rules():
-    """
-    Ensure standardization rules table exists and validate rules are present.
-    Rules are managed via SQL files, not hardcoded in assets.
-    """
-    # Check if table exists and has rules
-    # Log warning if no rules found
-    # Don't insert rules (managed separately)
-```
+### 3. Dependency Management
+- Place files in correct YAML section based on dependencies
+- Foundation data should have no dependencies
+- Complex mappings should reference simpler tables
+- Avoid circular dependencies
 
-## Rule Management Best Practices
+### 4. Version Control
+- Commit all changes to git with descriptive messages
+- Test scripts before committing
+- Review changes with team for business rule updates
 
-### 1. Rule Naming Convention
-- **Pattern**: `rule_XXX` where XXX is sequential number
-- **Categories**: Use consistent category names
-- **Confidence**: Score from 0.0 to 1.0 based on match accuracy
+## Current Data Categories
 
-### 2. Version Control
-- Commit all rule changes to git
-- Use migration scripts for production changes
-- Document rule changes in commit messages
+### Foundation Data
+- **Countries Mapping**: International countries with official names and ISO codes
+- **US States Mapping**: All 50 US states plus territories for location parsing
 
-### 3. Testing
-Always test new rules against sample data:
+### Location Intelligence
+- **Metro Area Mapping**: Major metropolitan area classifications
+- **Region Mapping**: Geographic regional groupings (US regions, international zones)
+- **Tech Hub Mapping**: Technology center classifications for market analysis
+- **Location Standardization**: Rules for normalizing location names and formats
 
-```sql
--- Test query: How many skills would match the new rule?
-SELECT COUNT(*)
-FROM SKILLS_RAW_EXTRACTION
-WHERE LOWER(SKILL_NAME_RAW) = 'rust';
-```
+### Job Data Standardization
+- **Experience Rules**: Standardizes experience levels (entry, mid, senior, etc.)
+- **Keyword Rules**: Normalizes job-related keywords and terminology
+- **Keyword Type Mapping**: Classifies keywords by type and category
 
-### 4. Conflict Resolution
-- Use database constraints to prevent duplicate patterns
-- Review confidence scores regularly
-- Monitor standardization quality metrics
+## Key Benefits
 
-## Integration with Dagster Assets
-
-The assets follow this pattern:
-
-```python
-@asset(deps=["stage_skills_standardization_rules"])
-def stage_skills_normalized():
-    """
-    Uses rules from SKILL_STANDARDIZATION_RULES table.
-    Rules are managed separately via SQL files.
-    """
-    # Query existing rules from database
-    # Apply standardization logic
-    # No hardcoded rules in asset code
-```
-
-## Maintenance Commands
-
-### Check Rule Coverage
-```sql
-SELECT
-    SKILL_CATEGORY,
-    COUNT(*) as RULE_COUNT,
-    AVG(CONFIDENCE_SCORE) as AVG_CONFIDENCE
-FROM SKILL_STANDARDIZATION_RULES
-GROUP BY SKILL_CATEGORY;
-```
-
-### Find Missing Rules
-```sql
--- Skills that don't match any standardization rule
-SELECT DISTINCT SKILL_NAME_RAW, COUNT(*) as FREQUENCY
-FROM SKILLS_RAW_EXTRACTION sre
-LEFT JOIN SKILL_STANDARDIZATION_RULES sr
-    ON LOWER(sre.SKILL_NAME_RAW) = LOWER(sr.PATTERN)
-WHERE sr.PATTERN IS NULL
-GROUP BY SKILL_NAME_RAW
-ORDER BY FREQUENCY DESC
-LIMIT 20;
-```
-
-### Validate Rule Quality
-```sql
--- Check for duplicate patterns
-SELECT PATTERN, COUNT(*) as DUPLICATES
-FROM SKILL_STANDARDIZATION_RULES
-GROUP BY PATTERN
-HAVING COUNT(*) > 1;
-```
-
-## US States Country Inference
-
-The `insert_us_states_mapping.sql` file creates a comprehensive lookup table for automatically inferring country as "United States" when state information is present:
-
-### Problem Solved
-Many locations like "Sunnyvale, CA" or "Bozeman, MT" don't have explicit rules in the location standardization table, resulting in null country values despite having clear US state indicators.
-
-### Solution
-- **Comprehensive Mapping**: All 50 US states + territories (DC, PR, VI, GU, AS, MP)
-- **Dual Format Support**: Both full names ("California") and abbreviations ("CA")
-- **Automatic Inference**: During location normalization, if state matches any US state, country is set to "United States"
-- **Efficient Lookup**: Uses `US_STATES_LOOKUP` view that combines both formats for fast matching
-
-### Usage in Location Normalization
-```sql
--- Enhanced country inference logic
-COALESCE(
-    lsr.COUNTRY,                    -- First try explicit rules
-    CASE
-        WHEN usl.COUNTRY IS NOT NULL THEN usl.COUNTRY  -- Then US states lookup
-        ELSE NULL
-    END
-) as country
-```
-
-## International Location Parsing
-
-The `insert_countries_mapping.sql` file enables intelligent parsing of international locations like "gurugram, india" and "singapore, singapore":
-
-### Problem Solved
-Previously, international locations like:
-- `"gurugram, india"` → CITY: "Gurugram", STATE_PROVINCE: "India", COUNTRY: null
-- `"singapore, singapore"` → CITY: "Singapore", STATE_PROVINCE: "Singapore", COUNTRY: null
-
-Were incorrectly parsed with countries ending up in the STATE_PROVINCE field.
-
-### Enhanced Solution
-- **Comprehensive Countries Database**: 100+ countries with official names, common variations, and ISO codes
-- **Tech Hub Classification**: Major technology centers marked for business intelligence
-- **Smart Parsing Logic**: Priority-based parsing (US states > Countries > Fallback)
-- **Combined Lookup View**: `LOCATION_PARSING_LOOKUP` includes both US states and countries
-
-### New Parsing Logic
-```sql
--- Priority-based location parsing
-CASE
-    -- 1. Check if second part is a US state
-    WHEN lpl_state.LOCATION_TYPE = 'US_STATE' THEN
-        CITY: first_part, STATE: second_part, COUNTRY: "United States"
-
-    -- 2. Check if second part is a country
-    WHEN lpl_country.LOCATION_TYPE = 'COUNTRY' THEN
-        CITY: first_part, STATE: null, COUNTRY: second_part
-
-    -- 3. Fallback to existing logic
-    ELSE original_parsing_logic
-END
-```
-
-### Expected Results After Implementation
-- `"gurugram, india"` → CITY: "Gurugram", STATE_PROVINCE: null, COUNTRY: "India"
-- `"singapore, singapore"` → CITY: "Singapore", STATE_PROVINCE: null, COUNTRY: "Singapore"
-- `"toronto, canada"` → CITY: "Toronto", STATE_PROVINCE: null, COUNTRY: "Canada"
-- `"sunnyvale, ca"` → CITY: "Sunnyvale", STATE_PROVINCE: "CA", COUNTRY: "United States" (unchanged)
-
-This approach provides:
+This data population approach provides:
 - 🎯 **Clean separation** between static data and application logic
 - 🔄 **Easy maintenance** of rules without code changes
 - 📊 **Database-driven** configuration that can be queried and analyzed
 - 🚀 **Scalable** approach that supports growing rule sets
 - 🔒 **Version controlled** rule changes with audit trails
-- 🇺🇸 **Automatic country inference** for US locations based on state data
-- 🌍 **International location parsing** for worldwide coverage with smart city/country detection
+- 🌍 **Comprehensive location parsing** for worldwide coverage

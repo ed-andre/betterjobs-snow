@@ -161,6 +161,53 @@ def load_table_creation_order(objects_dir: Path, context: AssetExecutionContext)
         return None
 
 
+def load_data_population_order(data_population_dir: Path, context: AssetExecutionContext) -> List[str]:
+    """
+    Load data population order from YAML configuration file.
+
+    Args:
+        data_population_dir: Path to the data_population directory
+        context: Dagster execution context for logging
+
+    Returns:
+        List of full file paths relative to project root in dependency order
+
+    Raises:
+        FileNotFoundError: If configuration file doesn't exist
+        ValueError: If configuration is invalid or empty
+    """
+    config_file = data_population_dir / "data_population_order.yaml"
+
+    if not config_file.exists():
+        raise FileNotFoundError(f"Data population order config not found: {config_file}")
+
+    try:
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+
+        if not config:
+            raise ValueError("Data population configuration is empty")
+
+        # Combine all groups in dependency order
+        ordered_files = []
+        for group in ['foundation_data', 'location_mappings', 'standardization_rules', 'complex_mappings']:
+            if group in config:
+                # Convert filenames to full paths relative to project root
+                group_files = [f"pipeline/sql/data_population/{filename}" for filename in config[group]]
+                ordered_files.extend(group_files)
+                context.log.info(f"Loaded {len(config[group])} scripts from {group}")
+
+        if not ordered_files:
+            raise ValueError("No data population scripts found in configuration")
+
+        context.log.info(f"Successfully loaded data population order: {len(ordered_files)} scripts total")
+        return ordered_files
+
+    except Exception as e:
+        context.log.error(f"Failed to load data population order config: {str(e)}")
+        raise
+
+
 def execute_sql_file(snowflake: SnowflakeResource, file_path: str, context: AssetExecutionContext) -> Dict[str, Any]:
     """
     Utility function to execute SQL files with proper error handling (for legacy schema setup)
@@ -635,20 +682,19 @@ def static_data_population(context: AssetExecutionContext, snowflake: SnowflakeR
     - Configuration tables
     """
 
-    # Define the order of data population scripts
-    data_population_files = [
-        "pipeline/sql/data_population/insert_countries_mapping.sql",
-        "pipeline/sql/data_population/insert_keyword_standardization_rules.sql",
-        "pipeline/sql/data_population/insert_keyword_type_mappings.sql",
-        "pipeline/sql/data_population/insert_location_metro_area_mapping.sql",
-        "pipeline/sql/data_population/insert_location_region_mapping.sql",
-        "pipeline/sql/data_population/insert_location_tech_hub_mapping.sql",
-        "pipeline/sql/data_population/insert_location_standardization_rules.sql",
-        "pipeline/sql/data_population/insert_skill_family_mappings.sql",
-        "pipeline/sql/data_population/insert_skill_standardization_rules.sql",
-        "pipeline/sql/data_population/insert_skill_category_patterns.sql",
-        "pipeline/sql/data_population/insert_us_states_mapping.sql"
-    ]
+    # Get the path to data population directory
+    current_dir = Path(__file__).parent
+    project_root = current_dir.parent.parent.parent.parent
+    data_population_dir = project_root / "pipeline" / "sql" / "data_population"
+
+    # Load dependency-ordered data population list from configuration
+    data_population_files = load_data_population_order(data_population_dir, context)
+
+    if not data_population_files:
+        context.log.error("Data population order configuration is required but not found")
+        raise FileNotFoundError("data_population_order.yaml configuration file is required for static data population")
+
+    context.log.info(f"🔧 Using dependency-ordered data population: {len(data_population_files)} files")
 
     results = []
     total_statements = 0

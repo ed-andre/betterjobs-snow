@@ -1,0 +1,24 @@
+# Data Population Order Configuration
+# Scripts listed in dependency order - referenced data must be populated before referencing data
+# This prevents foreign key constraint violations and ensures proper data relationships
+
+foundation_data:
+  # Core foundation data - basic lookups with no dependencies
+  - insert_countries_mapping.sql
+  - insert_us_states_mapping.sql
+
+location_mappings:
+  # Geographic mappings that may reference foundation data
+  - insert_location_metro_area_mapping.sql
+  - insert_location_region_mapping.sql
+  - insert_location_tech_hub_mapping.sql
+
+standardization_rules:
+  # Standardization rules that may reference mapping data
+  - insert_experience_standardization_rules.sql
+  - insert_location_standardization_rules.sql
+  - insert_keyword_standardization_rules.sql
+
+complex_mappings:
+  # Complex type mappings that may depend on standardization rules
+  - insert_keyword_type_mappings.sql
