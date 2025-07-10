@@ -59,7 +59,7 @@ BETTERJOBS_DB.STAGE.LLM_CONFIDENCE_ANALYSIS           -- Confidence score analys
 BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE                 -- Job-salary relationships with review flags
 
 -- Review queue views for troubleshooting
-BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE             -- Salary items flagged for review
+BETTERJOBS_DB.INTERNAL.1_REVIEW_SALARY_QUEUE             -- Salary items flagged for review
 ```
 
 ## Finding Data Quality Issues
@@ -315,7 +315,7 @@ Review salary data issues using the dedicated review queue view:
 SELECT
     COUNT(*) as total_salary_items_needing_review,
     AVG(SALARY_CONFIDENCE) as avg_confidence
-FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE;
+FROM BETTERJOBS_DB.INTERNAL.1_REVIEW_SALARY_QUEUE;
 
 -- Sample problematic salary entries from source data for investigation
 SELECT
@@ -509,7 +509,7 @@ GROUP BY ln.LOCATION_ID, ln.LOCATION_NAME, ln.CITY, ln.STATE_PROVINCE, ln.COUNTR
 **Salary Review:**
 ```sql
 -- Use the dedicated salary review queue view for items flagged for review
-SELECT * FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE
+SELECT * FROM BETTERJOBS_DB.INTERNAL.1_REVIEW_SALARY_QUEUE
 ORDER BY SALARY_CONFIDENCE ASC
 LIMIT 10;
 
@@ -701,7 +701,7 @@ SET
     UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
 WHERE BRIDGE_ID IN (
     SELECT BRIDGE_ID
-    FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE zsrq
+    FROM BETTERJOBS_DB.INTERNAL.1_REVIEW_SALARY_QUEUE zsrq
     JOIN BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb ON zsrq.JOB_UID = jsb.JOB_UID
     WHERE zsrq.SALARY_CONFIDENCE >= 0.8  -- High confidence items that just need review flag cleared
 );
@@ -801,7 +801,7 @@ SET
     VALIDATION_STATUS = 'auto_validated',
     REVIEW_NOTES = 'Auto-cleared: high confidence salary within market range',
     UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
-FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE zsrq
+FROM BETTERJOBS_DB.INTERNAL.1_REVIEW_SALARY_QUEUE zsrq
 WHERE jsb.JOB_UID = zsrq.JOB_UID
   AND zsrq.SALARY_CONFIDENCE >= 0.9
   AND zsrq.SALARY_MIN_ANNUAL_USD BETWEEN 30000 AND 400000  -- Reasonable range
@@ -819,7 +819,7 @@ SET
     UPDATED_TIMESTAMP = CURRENT_TIMESTAMP
 WHERE BRIDGE_ID IN (
     SELECT jsb.BRIDGE_ID
-    FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE zsrq
+    FROM BETTERJOBS_DB.INTERNAL.1_REVIEW_SALARY_QUEUE zsrq
     JOIN BETTERJOBS_DB.STAGE.JOB_SALARY_BRIDGE jsb ON zsrq.JOB_UID = jsb.JOB_UID
     WHERE zsrq.SALARY_CONFIDENCE < 0.5
        OR zsrq.SALARY_MIN > zsrq.SALARY_MAX
@@ -1044,7 +1044,7 @@ UNION ALL
 SELECT
     'Items in Review Queue' as issue_type,
     COUNT(*) as issue_count
-FROM BETTERJOBS_DB.STAGE.Z_REVIEW_SALARY_QUEUE;
+FROM BETTERJOBS_DB.INTERNAL.1_REVIEW_SALARY_QUEUE;
 ```
 **Solutions**:
 - Review LLM salary extraction prompts and confidence scoring
