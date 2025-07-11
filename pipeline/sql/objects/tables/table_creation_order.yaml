@@ -107,4 +107,5 @@ serve_layer:
   - serve_denorm_skills.sql
   - serve_denorm_keywords.sql
   - serve_denorm_job_postings.sql
+  - serve_skill_job_counts.sql  # Simple lookup for skill job counts
 

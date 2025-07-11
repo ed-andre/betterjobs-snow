@@ -139,6 +139,7 @@ from dagster_betterjobs.assets.serve_denormalization import (
     serve_denorm_skills,
     serve_denorm_keywords,
     serve_denorm_job_postings,
+    serve_skill_job_counts
 )
 from dagster_betterjobs.assets.advanced_job_search import advanced_jobs_search
 
@@ -240,5 +241,6 @@ __all__ = [
     "serve_denorm_skills",
     "serve_denorm_keywords",
     "serve_denorm_job_postings",
+    "serve_skill_job_counts",
     "advanced_jobs_search"
 ]

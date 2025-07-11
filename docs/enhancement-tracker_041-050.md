@@ -21,7 +21,7 @@ This document tracks planned enhancements and architectural improvements for the
 
 - **OPEN**
 
-    - None
+    - ENHANCEMENT-044: Add Category and Subcategory Job Counts to Serve Layer
 
 - **IN PROGRESS**
 
@@ -30,6 +30,7 @@ This document tracks planned enhancements and architectural improvements for the
 - **COMPLETED**
     - ENHANCEMENT-041: Refactor Job Search to Leverage Analytics Layer
     - ENHANCEMENT-042: Add Skills Category and Subcategory Aggregation to Denormalized Job Postings
+    - ENHANCEMENT-043: Add Skill Job Counts Table to Serve Layer
 
 - **NO ACTION REQUIRED**
 
@@ -151,6 +152,122 @@ The current `SERVE.DENORM_JOB_POSTINGS` table contains a `SKILLS_CSV` column wit
 • Update the MERGE statement's change detection to include the new columns
 
 ---
+
+## ENHANCEMENT-043: Add Skill Job Counts Table to Serve Layer
+
+**Status:** Completed
+**Priority:** Medium
+**Component:** Serve Layer – `serve_skill_job_counts` asset and `SERVE.SKILL_JOB_COUNTS` table
+**Date Planned:** 2025-07-11
+**Date Completed:** 2025-07-11
+**Estimated Effort:** 1 day
+
+### Problem Statement
+The frontend job search application needs a simple way to display the number of active jobs associated with each skill. While this information exists in `ANALYTICS.DIM_SKILLS` as `FREQUENCY_COUNT`, we need a dedicated table in the SERVE layer to maintain separation of concerns and provide a clean interface for the frontend.
+
+### Solution Overview
+1. **New Table:** Create `SERVE.SKILL_JOB_COUNTS` with schema:
+   ```sql
+   CREATE TABLE SERVE.SKILL_JOB_COUNTS (
+       SKILL_NAME STRING NOT NULL,
+       ACTIVE_JOB_COUNT INTEGER NOT NULL,
+       LAST_UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP,
+       PRIMARY KEY (SKILL_NAME)
+   ) COMMENT = 'Simple lookup table for UI to show number of active jobs per skill';
+   ```
+
+2. **Asset Creation:** New asset `serve_skill_job_counts` in `serve_denormalization.py` that will:
+   • Read from `ANALYTICS.DIM_SKILLS`
+   • Transform and filter the data as needed
+   • Maintain the `SERVE.SKILL_JOB_COUNTS` table via MERGE operations
+
+3. **Data Flow:**
+   • Source data from `ANALYTICS.DIM_SKILLS.FREQUENCY_COUNT`
+   • Filter out inactive or low-frequency skills
+   • Update counts daily through the asset
+
+### Implementation Plan
+• **Phase 1 – Schema Definition**
+  – Create `serve_skill_job_counts.sql` table definition
+  – Add to `table_creation_order.yaml` in serve_layer section
+• **Phase 2 – Asset Implementation**
+  – Add new asset to `serve_denormalization.py`
+  – Implement MERGE logic to update counts
+  – Add appropriate logging and monitoring
+• **Phase 3 – Testing & Validation**
+  – Test asset execution
+  – Verify count accuracy
+  – Validate performance
+
+### Success Criteria
+• Table correctly reflects skill job counts from analytics layer
+• Asset executes successfully in under 30 seconds
+• Data refreshes maintain accuracy and consistency
+• Frontend can efficiently query job counts by skill
+
+### Technical Notes
+• Use MERGE for efficient updates
+• Include appropriate indexes for query performance
+• Maintain consistency with `SERVE.DENORM_SKILLS` naming
+• Consider adding a minimum job count threshold to filter noise
+
+---
+
+## ENHANCEMENT-044: Add Category and Subcategory Job Counts to Serve Layer
+
+**Status:** Open
+**Priority:** Medium
+**Component:** Serve Layer – `serve_denorm_skills` table
+**Date Planned:** 2025-07-12
+**Estimated Effort:** 1 day
+
+### Problem Statement
+While we now have job counts for individual skills in `SERVE.SKILL_JOB_COUNTS`, the frontend also needs aggregated job counts at the skill category and subcategory levels. This information would help users understand which skill areas have the most job opportunities and guide their skill development priorities.
+
+### Solution Overview
+1. **Table Enhancement:** Add job count columns to `SERVE.DENORM_SKILLS`:
+   ```sql
+   ALTER TABLE SERVE.DENORM_SKILLS
+   ADD COLUMN CATEGORY_JOB_COUNT INTEGER,
+   ADD COLUMN SUBCATEGORY_JOB_COUNT INTEGER;
+   ```
+
+2. **Asset Enhancement:** Modify `serve_denorm_skills` asset to:
+   • Calculate aggregated job counts from `ANALYTICS.DIM_SKILLS`
+   • Roll up individual skill counts to subcategory level
+   • Roll up subcategory counts to category level
+   • Update the counts during regular refresh
+
+3. **Data Flow:**
+   • Source individual skill counts from `ANALYTICS.DIM_SKILLS.FREQUENCY_COUNT`
+   • Aggregate to subcategory using skill-to-subcategory mapping
+   • Aggregate to category using subcategory-to-category mapping
+   • Update both counts in single transaction
+
+### Implementation Plan
+• **Phase 1 – Schema Update**
+  – Add new columns to `serve_denorm_skills.sql`
+  – Update table comments to document new columns
+• **Phase 2 – Asset Enhancement**
+  – Modify `serve_denorm_skills` asset aggregation logic
+  – Add job count calculation CTEs
+  – Update MERGE statement to handle new columns
+• **Phase 3 – Testing & Validation**
+  – Verify count accuracy at all levels
+  – Ensure performance remains acceptable
+  – Test edge cases (zero counts, missing mappings)
+
+### Success Criteria
+• Category and subcategory job counts accurately reflect sum of constituent skills
+• Counts update correctly with skill count changes
+• Query performance remains under 1 second for frontend requests
+• Edge cases handled gracefully
+
+### Technical Notes
+• Consider materialized views if performance becomes an issue
+• Add appropriate indexes for query optimization
+• Maintain consistency with `SERVE.SKILL_JOB_COUNTS` naming and patterns
+• Consider adding minimum count thresholds to filter noise
 
 
 

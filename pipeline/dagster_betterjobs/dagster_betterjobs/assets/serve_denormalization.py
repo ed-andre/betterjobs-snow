@@ -470,3 +470,104 @@ def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: Snowfla
         finally:
             cur.close()
 
+
+@asset(
+    deps=["analytics_dim_skills"],
+    description="Simple lookup table for UI to show number of active jobs per skill. Incremental MERGE against SERVE.SKILL_JOB_COUNTS.",
+    group_name="4_serve_layer",
+    kinds={"snowflake", "SQL"},
+    metadata={
+        "owner": "data_engineering",
+        "layer": "serve",
+        "purpose": "Frontend lookup table for skill job counts",
+        "type": "table",
+        "update_schedule": "daily",
+        "dependencies": ["analytics_dim_skills"],
+        "consumers": ["job_search_ui"],
+        "SLA": "24 hour",
+        "data_quality_rules": {
+            "active_job_count": "must be >= 0",
+            "skill_name": "must not be null"
+        }
+    }
+)
+def serve_skill_job_counts(context: AssetExecutionContext, snowflake: SnowflakeResource) -> Dict[str, Any]:
+    """Asset that maintains SERVE.SKILL_JOB_COUNTS table with current job counts per skill."""
+
+    table_name = ensure_object_exists("tables/serve_skill_job_counts.sql", snowflake, context)
+
+    with snowflake.get_connection() as conn:
+        cur = conn.cursor()
+        try:
+            context.log.info("Aggregating skill counts from ANALYTICS.DIM_SKILLS …")
+
+            # Create temp table with current state
+            cur.execute(
+                """
+                CREATE OR REPLACE TEMPORARY TABLE skill_job_counts_current AS
+                WITH deduplicated_skills AS (
+                    SELECT
+                        SKILL_NAME,
+                        MAX(FREQUENCY_COUNT) as ACTIVE_JOB_COUNT  -- Take the highest count if duplicates exist
+                    FROM ANALYTICS.DIM_SKILLS
+                    WHERE FREQUENCY_COUNT > 0  -- Only include skills that have active jobs
+                    GROUP BY SKILL_NAME
+                )
+                SELECT
+                    SKILL_NAME,
+                    ACTIVE_JOB_COUNT,
+                    CURRENT_TIMESTAMP() as LAST_UPDATED_AT
+                FROM deduplicated_skills;
+                """
+            )
+
+            # MERGE incremental changes
+            context.log.info("Merging aggregated results into SERVE.SKILL_JOB_COUNTS …")
+            merge_sql = f"""
+            MERGE INTO {table_name} AS tgt
+            USING skill_job_counts_current AS src
+            ON tgt.SKILL_NAME = src.SKILL_NAME
+            WHEN MATCHED AND tgt.ACTIVE_JOB_COUNT <> src.ACTIVE_JOB_COUNT THEN
+                UPDATE SET
+                    ACTIVE_JOB_COUNT = src.ACTIVE_JOB_COUNT,
+                    LAST_UPDATED_AT = src.LAST_UPDATED_AT
+            WHEN NOT MATCHED THEN
+                INSERT (SKILL_NAME, ACTIVE_JOB_COUNT, LAST_UPDATED_AT)
+                VALUES (src.SKILL_NAME, src.ACTIVE_JOB_COUNT, src.LAST_UPDATED_AT);
+            """
+            cur.execute(merge_sql)
+            affected_rows = cur.rowcount
+
+            # Remove skills that no longer exist or have zero count
+            context.log.info("Pruning obsolete or zero-count skills …")
+            cur.execute(
+                f"""
+                DELETE FROM {table_name}
+                WHERE SKILL_NAME NOT IN (
+                    SELECT SKILL_NAME FROM skill_job_counts_current
+                )
+                """
+            )
+            deleted_rows = cur.rowcount
+
+            # Stats for metadata
+            cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+            total_rows = cur.fetchone()[0]
+
+            context.add_output_metadata({
+                "rows_upserted": MetadataValue.int(affected_rows),
+                "rows_deleted": MetadataValue.int(deleted_rows),
+                "total_rows": MetadataValue.int(total_rows)
+            })
+
+            return {
+                "status": "success",
+                "table_name": table_name,
+                "rows_upserted": affected_rows,
+                "rows_deleted": deleted_rows,
+                "total_rows": total_rows
+            }
+
+        finally:
+            cur.close()
+
