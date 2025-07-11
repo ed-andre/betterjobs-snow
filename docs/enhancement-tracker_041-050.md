@@ -21,13 +21,15 @@ This document tracks planned enhancements and architectural improvements for the
 
 - **OPEN**
 
-    - ENHANCEMENT-041: Refactor Job Search to Leverage Analytics Layer
+    - None
 
 - **IN PROGRESS**
 
     - None
 
 - **COMPLETED**
+    - ENHANCEMENT-041: Refactor Job Search to Leverage Analytics Layer
+    - ENHANCEMENT-042: Add Skills Category and Subcategory Aggregation to Denormalized Job Postings
 
 - **NO ACTION REQUIRED**
 
@@ -36,10 +38,11 @@ This document tracks planned enhancements and architectural improvements for the
 
 ## ENHANCEMENT-041: Implement Advanced Job Search Asset to leverage Analytics Layer
 
-**Status:** Planned
+**Status:** Completed
 **Priority:** High
 **Component:** Application – `serve_denorm_job_postings` and `advanced_job_search` asset, denormalised tables (job_postings, skills, keywords)
 **Date Planned:** 2025-07-06
+**Date Completed:** 2025-07-10
 **Estimated Effort:** 2–3 days
 
 ### Problem Statement
@@ -89,6 +92,63 @@ The existing `search_jobs` asset executes heavyweight text filters directly agai
 • Result relevance within ±3 % of legacy search.
 • Config verbosity reduced by ≥ 80 %.
 • Adoption: ≥ 80 % of front-end requests use the new asset within 2 weeks.
+
+---
+
+## ENHANCEMENT-042: Add Skills Category and Subcategory Aggregation to Denormalized Job Postings
+
+**Status:** Completed
+**Priority:** Medium
+**Component:** Serve Layer – `serve_denorm_job_postings` asset and `SERVE.DENORM_JOB_POSTINGS` table
+**Date Planned:** 2025-07-10
+**Date Completed:** 2025-07-10
+**Estimated Effort:** 1 day
+
+### Problem Statement
+The current `SERVE.DENORM_JOB_POSTINGS` table contains a `SKILLS_CSV` column with all skills associated with each job posting. However, for enhanced filtering and analytics capabilities, we need to also provide aggregated lists of the skill categories and subcategories that these skills belong to. This would enable users to filter jobs by broader skill categories (e.g., "Programming Languages", "Databases") or subcategories without having to know all the specific skills within those groups.
+
+### Solution Overview
+1. **Table Schema Enhancement:** Add two new columns to `SERVE.DENORM_JOB_POSTINGS`:
+   • `SKILLS_CATEGORY_CSV` – Comma-separated list of distinct skill categories
+   • `SKILLS_SUBCATEGORY_CSV` – Comma-separated list of distinct skill subcategories
+
+2. **Asset Logic Enhancement:** Modify the `serve_denorm_job_postings` asset to:
+   • Use `SKILL_CATEGORY` and `SKILL_SUBCATEGORY` fields from `ANALYTICS.DIM_SKILLS` to derive category and subcategory mappings
+   • Aggregate distinct subcategories for skills associated with each job posting
+   • Aggregate distinct categories from those subcategories
+   • Populate the new CSV columns using `LISTAGG`
+
+3. **Data Flow:** For each job posting:
+   • Extract skills from existing `SKILLS_CSV` logic
+   • Derive category and subcategory directly from `ANALYTICS.DIM_SKILLS` (no additional join required)
+   • Aggregate distinct `SUBCATEGORY_NAME` values → `SKILLS_SUBCATEGORY_CSV`
+   • Aggregate distinct `CATEGORY_NAME` values → `SKILLS_CATEGORY_CSV`
+
+### Implementation Plan
+• **Phase 1 – Schema Update**
+  – Update `serve_denorm_job_postings.sql` table definition
+  – Add the two new STRING columns with appropriate positioning
+• **Phase 2 – Asset Logic Enhancement**
+  – Modify the CTE in `serve_denorm_job_postings` asset
+  – Leverage `SKILL_CATEGORY` and `SKILL_SUBCATEGORY` columns already present in `ANALYTICS.DIM_SKILLS` for category/subcategory lookup
+  – Implement `LISTAGG` aggregation for the new columns
+  – Update MERGE statement to handle the new columns
+• **Phase 3 – Testing & Validation**
+  – Test asset execution with sample data
+  – Verify correct category/subcategory aggregation
+  – Ensure backward compatibility with existing functionality
+
+### Success Criteria
+• New columns are correctly populated with distinct category/subcategory lists
+• No performance degradation in asset execution time
+• Existing functionality remains unchanged
+• Data quality validation passes for the new columns
+
+### Technical Notes
+• Use `LISTAGG(DISTINCT category_name, ', ')` for aggregation
+• Handle NULL values appropriately when `SKILL_CATEGORY` or `SKILL_SUBCATEGORY` is NULL
+• Consider ordering in the CSV lists for consistent output
+• Update the MERGE statement's change detection to include the new columns
 
 ---
 

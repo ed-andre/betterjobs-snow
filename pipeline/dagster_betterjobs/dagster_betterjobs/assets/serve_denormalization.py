@@ -211,6 +211,7 @@ def serve_denorm_keywords(context: AssetExecutionContext, snowflake: SnowflakeRe
         "analytics_dim_skills",
         "analytics_job_keywords_bridge",
         "analytics_dim_keywords",
+        "stage_lightcast_skills"
     ],
     description="Denormalised job postings table for UI/API search (flattened skills & keywords). Incremental MERGE against SERVE.DENORM_JOB_POSTINGS.",
     group_name="4_serve_layer",
@@ -285,7 +286,9 @@ def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: Snowfla
                         fp.JOB_UID,
                         LISTAGG(DISTINCT ds.SKILL_NAME, ', ') AS SKILLS_CSV,
                         LISTAGG(DISTINCT CASE WHEN ds.SKILL_TYPE = 'technical' THEN ds.SKILL_NAME END, ', ') AS TECHNICAL_SKILLS_CSV,
-                        LISTAGG(DISTINCT CASE WHEN ds.SKILL_TYPE = 'soft' THEN ds.SKILL_NAME END, ', ')       AS SOFT_SKILLS_CSV
+                        LISTAGG(DISTINCT CASE WHEN ds.SKILL_TYPE = 'soft' THEN ds.SKILL_NAME END, ', ')       AS SOFT_SKILLS_CSV,
+                        LISTAGG(DISTINCT ds.SKILL_CATEGORY, ', ') WITHIN GROUP (ORDER BY ds.SKILL_CATEGORY) AS SKILLS_CATEGORY_CSV,
+                        LISTAGG(DISTINCT ds.SKILL_SUBCATEGORY, ', ') WITHIN GROUP (ORDER BY ds.SKILL_SUBCATEGORY) AS SKILLS_SUBCATEGORY_CSV
                     FROM BETTERJOBS_DB.ANALYTICS.JOB_SKILLS_BRIDGE jsb
                     JOIN BETTERJOBS_DB.ANALYTICS.DIM_SKILLS ds ON ds.SKILL_KEY = jsb.SKILL_KEY
                     JOIN BETTERJOBS_DB.ANALYTICS.FACT_JOB_POSTINGS fp ON fp.JOB_POSTING_KEY = jsb.JOB_POSTING_KEY
@@ -337,6 +340,8 @@ def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: Snowfla
                     e.ENRICHED_WORK_ARRANGEMENT_CONFIDENCE,
                     e.ENRICHED_CLASSIFICATION_CONFIDENCE,
                     COALESCE(sk.SKILLS_CSV, '')   AS SKILLS_CSV,
+                    COALESCE(sk.SKILLS_CATEGORY_CSV, '') AS SKILLS_CATEGORY_CSV,
+                    COALESCE(sk.SKILLS_SUBCATEGORY_CSV, '') AS SKILLS_SUBCATEGORY_CSV,
                     COALESCE(kw.KEYWORDS_CSV, '') AS KEYWORDS_CSV,
                     CURRENT_TIMESTAMP             AS UPDATED_TIMESTAMP,
                     DATE_TRUNC('MONTH', b.DATE_POSTED) AS PARTITION_DATE
@@ -360,6 +365,8 @@ def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: Snowfla
                    tgt.DATE_POSTED    <> src.DATE_POSTED OR
                    tgt.IS_ACTIVE      <> src.IS_ACTIVE OR
                    tgt.SKILLS_CSV     <> src.SKILLS_CSV OR
+                   tgt.SKILLS_CATEGORY_CSV <> src.SKILLS_CATEGORY_CSV OR
+                   tgt.SKILLS_SUBCATEGORY_CSV <> src.SKILLS_SUBCATEGORY_CSV OR
                    tgt.KEYWORDS_CSV   <> src.KEYWORDS_CSV
             ) THEN
                 UPDATE SET
@@ -398,6 +405,8 @@ def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: Snowfla
                     ENRICHED_WORK_ARRANGEMENT_CONFIDENCE = src.ENRICHED_WORK_ARRANGEMENT_CONFIDENCE,
                     ENRICHED_CLASSIFICATION_CONFIDENCE = src.ENRICHED_CLASSIFICATION_CONFIDENCE,
                     SKILLS_CSV     = src.SKILLS_CSV,
+                    SKILLS_CATEGORY_CSV = src.SKILLS_CATEGORY_CSV,
+                    SKILLS_SUBCATEGORY_CSV = src.SKILLS_SUBCATEGORY_CSV,
                     KEYWORDS_CSV   = src.KEYWORDS_CSV,
                     UPDATED_TIMESTAMP = src.UPDATED_TIMESTAMP,
                     PARTITION_DATE = src.PARTITION_DATE
@@ -413,7 +422,7 @@ def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: Snowfla
                     ENRICHED_WORK_TYPE, ENRICHED_OFFICE_LOCATIONS, ENRICHED_ROLE_TYPE, ENRICHED_TEAM_SIZE,
                     ENRICHED_OVERALL_CONFIDENCE, ENRICHED_SALARY_CONFIDENCE, ENRICHED_EXPERIENCE_CONFIDENCE,
                     ENRICHED_SKILLS_CONFIDENCE, ENRICHED_WORK_ARRANGEMENT_CONFIDENCE, ENRICHED_CLASSIFICATION_CONFIDENCE,
-                    SKILLS_CSV, KEYWORDS_CSV, UPDATED_TIMESTAMP, PARTITION_DATE
+                    SKILLS_CSV, SKILLS_CATEGORY_CSV, SKILLS_SUBCATEGORY_CSV, KEYWORDS_CSV, UPDATED_TIMESTAMP, PARTITION_DATE
                 ) VALUES (
                     src.JOB_UID, src.JOB_ID, src.PLATFORM, src.COMPANY_ID, src.COMPANY_NAME, src.JOB_TITLE,
                     src.JOB_DESCRIPTION, src.JOB_URL, src.DATE_POSTED, src.DATE_RETRIEVED, src.IS_ACTIVE,
@@ -424,7 +433,7 @@ def serve_denorm_job_postings(context: AssetExecutionContext, snowflake: Snowfla
                     src.ENRICHED_WORK_TYPE, src.ENRICHED_OFFICE_LOCATIONS, src.ENRICHED_ROLE_TYPE, src.ENRICHED_TEAM_SIZE,
                     src.ENRICHED_OVERALL_CONFIDENCE, src.ENRICHED_SALARY_CONFIDENCE, src.ENRICHED_EXPERIENCE_CONFIDENCE,
                     src.ENRICHED_SKILLS_CONFIDENCE, src.ENRICHED_WORK_ARRANGEMENT_CONFIDENCE, src.ENRICHED_CLASSIFICATION_CONFIDENCE,
-                    src.SKILLS_CSV, src.KEYWORDS_CSV, src.UPDATED_TIMESTAMP, src.PARTITION_DATE
+                    src.SKILLS_CSV, src.SKILLS_CATEGORY_CSV, src.SKILLS_SUBCATEGORY_CSV, src.KEYWORDS_CSV, src.UPDATED_TIMESTAMP, src.PARTITION_DATE
                 );
             """
             cur.execute(merge_sql)

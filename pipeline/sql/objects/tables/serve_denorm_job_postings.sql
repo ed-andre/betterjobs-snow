@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS SERVE.DENORM_JOB_POSTINGS (
 
     -- Aggregated Lists for Search Optimisation
     SKILLS_CSV STRING,          -- All skills list
+    SKILLS_CATEGORY_CSV STRING,    -- Distinct categories of skills (comma-separated)
+    SKILLS_SUBCATEGORY_CSV STRING, -- Distinct subcategories of skills (comma-separated)
     KEYWORDS_CSV STRING,        -- Pre-flattened keywords list (lowercase, comma-separated)
 
     -- Audit Fields

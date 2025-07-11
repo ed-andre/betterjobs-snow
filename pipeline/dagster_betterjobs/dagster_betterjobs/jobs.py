@@ -503,7 +503,8 @@ advanced_data_jobs_search_job = define_asset_job(
                     "exclude_keywords": [],  # Exclude specific keywords
 
                     # Free-text search (renamed from keywords)
-                    "description_terms": [],  # Free-text search in descriptions - AND STATEMENT
+                    "all_description_terms": ["data", "analytics"],  # ALL these terms must be present
+                    "any_description_terms": ["ETL", "pipeline", "SQL", "database", "snowflake", "dbt", "airflow", "dagster", "BigQuery", "SQL Server", "SSIS"],  # ANY of these terms can be present
 
                     # Standard filters
                     "job_titles": [], # AND STATEMENT
@@ -543,9 +544,9 @@ advanced_legal_jobs_search_job = define_asset_job(
             "advanced_jobs_search": {
                 "config": {
                     # NEW: HIERARCHICAL SKILLS FILTERING (with precedence and exclusions)
-                    "skill_categories": [],  # Highest precedence but do not use as it is extensive
-                    "skill_subcategories": [],  # Middle precedence
-                    "skills": ["law", "legal", "compliance", "ethics"],  # Lowest precedence
+                    "skill_categories": ["Law, Regulation, and Compliance", "Economics, Policy, and Social Studies"],
+                    "skill_subcategories": ["Legal Support", "Legal Proceedings", "Litigation and Civil Justice", "Policy Analysis, Research, and Development", "Social Studies"],  # Middle precedence
+                    "skills": [],  # Lowest precedence
                     "exclude_skill_categories": [],  # Exclude entire categories
                     "exclude_skill_subcategories": [],  # Exclude specific subcategories
                     "exclude_skills": [],  # Exclude individual skills
@@ -555,14 +556,15 @@ advanced_legal_jobs_search_job = define_asset_job(
                     "exclude_keywords": [],  # Exclude specific keywords
 
                     # Free-text search (renamed from keywords)
-                    "description_terms": [],  # Free-text search in descriptions - AND STATEMENT
+                    "all_description_terms": ["counsel", "policy"],  # ALL these terms must be present
+                    "any_description_terms": ["corporate", "international", "humanitarian", "humanitarian law", "legal affairs", "rule of law", "international arbitration", "ESG legal", "compliance", "ethics", "corporate social responsibility", "business and human rights", "transnational justice", "public policy law", "access to justice", "peacebuilding", "gender justice", "UN legal", "NGO legal", "Africa legal", "Geneva legal", "Brussels legal", "remote legal", "sustainability", "sustainability law", "corporate social responsibility", "Public International Law", "human rights"],  # ANY of these terms can be present
 
                     # Standard filters
                     "job_titles": [], # AND STATEMENT
                     "locations": [], # AND STATEMENT
 
                     # NEW: Work Type Filtering (using ENRICHED_WORK_TYPE field)
-                    "remote": True,  # True to include remote jobs, False to exclude, None to ignore
+                    "remote": None,  # True to include remote jobs, False to exclude, None to ignore
                     "hybrid": None,  # True to include hybrid jobs, False to exclude, None to ignore
                     "on_site": None,  # True to include on-site jobs, False to exclude, None to ignore
                     "full_time": None,  # True to include full-time jobs, False to exclude, None to ignore
@@ -573,6 +575,7 @@ advanced_legal_jobs_search_job = define_asset_job(
                     "platforms": ["all"],
                     "days_back": 30,
                     "max_results": 500,
+                    "min_relevance_score": 0.1,
                     "output_format": "html",
                     "output_file": os.path.join(os.getenv("JOB_SEARCH_OUTPUT_FOLDER", "output"), "advanced_legal_job_search_{date}.html"),
                     "job_name": "Advanced Legal Job Search",
