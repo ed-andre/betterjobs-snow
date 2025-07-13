@@ -22,6 +22,7 @@ This document tracks planned enhancements and architectural improvements for the
 - **OPEN**
 
     - ENHANCEMENT-044: Add Category and Subcategory Job Counts to Serve Layer
+    - ENHANCEMENT-045: Implement OpenMetadata Integration POC
 
 - **IN PROGRESS**
 
@@ -268,6 +269,94 @@ While we now have job counts for individual skills in `SERVE.SKILL_JOB_COUNTS`, 
 • Add appropriate indexes for query optimization
 • Maintain consistency with `SERVE.SKILL_JOB_COUNTS` naming and patterns
 • Consider adding minimum count thresholds to filter noise
+
+## ENHANCEMENT-045: Implement OpenMetadata Integration POC
+
+**Status:** Open
+**Priority:** Medium
+**Component:** Infrastructure - Data Catalog and Governance
+**Date Planned:** 2025-07-13
+**Estimated Effort:** 5-7 days
+
+### Problem Statement
+As this data project grows, it needs better tools for data discovery, lineage tracking, and governance. While it has decent documentation and SQL-based metadata, it lacks:
+- Automated data discovery and documentation
+- Visual data lineage 
+- Centralized data quality metrics and monitoring
+- Standardized data governance practices
+- Self-service data discovery for analysts
+
+OpenMetadata could provide these capabilities through its modern data catalog platform.
+
+### Solution Overview
+1. **Infrastructure Setup:**
+   • Deploy OpenMetadata using Docker Compose for POC
+   • Configure Snowflake connector for metadata ingestion
+   • Set up Dagster integration for pipeline metadata
+   • Configure authentication and basic security
+
+2. **Metadata Integration Points:**
+   • Snowflake tables, views, and procedures
+   • Dagster assets and their dependencies
+   • Data quality metrics from our validation framework
+   • Custom metadata for business glossary and governance
+
+3. **Key Features to Test:**
+   • Automated schema inference and documentation
+   • Data lineage visualization
+   • Data profiling and quality metrics
+   • Usage analytics and popularity tracking
+   • Search and discovery interface
+   • API integration capabilities
+
+### Implementation Plan
+• **Phase 1 – Infrastructure (2 days)**
+  – Set up OpenMetadata development environment
+  – Configure Snowflake connector and test basic ingestion
+  – Implement authentication and security baseline
+  – Document deployment process
+
+• **Phase 2 – Data Integration (2 days)**
+  – Configure metadata extractors for each layer:
+    • RAW tables and staging
+    • ANALYTICS dimensional model
+    • SERVE layer denormalized views
+  – Set up automated refresh schedule
+  – Validate metadata accuracy
+
+• **Phase 3 – Pipeline Integration (2 days)**
+  – Integrate Dagster workflow metadata
+  – Map asset dependencies to data lineage
+  – Connect quality metrics to tables
+  – Test bi-directional updates
+
+• **Phase 4 – Evaluation (1 day)**
+  – Document key learnings and limitations
+  – Assess performance impact
+  – Gather user feedback
+  – Make recommendations for production deployment
+
+### Success Criteria
+• **Technical Success:**
+  – Successfully ingest metadata from all three layers (RAW, ANALYTICS, SERVE)
+  – Accurate data lineage visualization
+  – Working search and discovery interface
+  – Reliable metadata refresh process
+  – Performance overhead < 5% on pipeline runs
+
+• **Business Success:**
+  – Reduced time to find relevant data assets
+  – Improved understanding of data relationships
+  – Better visibility into data quality
+  – Clear path to production implementation
+
+### Technical Notes
+• Start with read-only integration to minimize risk
+• Use OpenMetadata's REST API for custom integrations
+• Consider implementing custom extractors for LLM metadata
+• Monitor performance impact of metadata collection
+• Plan for eventual migration to production-grade deployment
+• Test integration with existing security model
 
 
 

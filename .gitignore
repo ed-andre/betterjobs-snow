@@ -171,3 +171,5 @@ greenhouse_company_urls.csv
 
 
 /pipeline/sample_data
+/openmetadata/docker-volume
+/openmetadata/.env
