@@ -203,7 +203,7 @@ pip install -e .
 
 ### Step 3: Environment Configuration
 
-1. **Rename the environment template .env.exampleunder `pipeline/dagster_betterjobs` to .env**:
+1. **Rename the environment template .env.example under `pipeline/dagster_betterjobs` to .env**:
 
 
 2. **Edit the .env file** with your credentials:

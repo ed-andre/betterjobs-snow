@@ -55,12 +55,12 @@ This guide will help you set up OpenMetadata locally using Docker and PostgreSQL
 
 ### Stop Services
 ```bash
-docker compose -f docker-compose-postgres.yml stop
+docker compose -f docker-compose.yml stop
 ```
 
 ### Start Services
 ```bash
-docker compose -f docker-compose-postgres.yml start
+docker compose -f docker-compose.yml start
 ```
 
 ### Cleanup
