@@ -48,11 +48,9 @@ stage_layer:
 
   # Standardization rules tables (may reference normalized tables)
   - stage_experience_standardization_rules.sql
-  - stage_skill_standardization_rules.sql
   - stage_keyword_standardization_rules.sql
   - stage_keyword_type_mapping.sql
-  - stage_skill_family_mapping.sql
-  - stage_skill_category_patterns.sql
+
 
   # Bridge/junction tables (reference jobs_unified + normalized tables)
   # These MUST come after their referenced tables

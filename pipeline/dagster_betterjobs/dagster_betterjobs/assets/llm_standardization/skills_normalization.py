@@ -481,7 +481,6 @@ def stage_skills_normalized(context: AssetExecutionContext, snowflake: Snowflake
 
         # Get table names dynamically using schema-as-code
         skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
-        rules_table = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
         unified_jobs_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
         llm_enriched_table = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", snowflake, context)
 
@@ -738,7 +737,6 @@ def stage_job_skills_bridge(context: AssetExecutionContext, snowflake: Snowflake
         # Get required table names dynamically
         skills_view = ensure_object_exists("views/stage_skills_raw_extraction.sql", snowflake, context)
         skills_normalized_table = ensure_object_exists("tables/stage_skills_normalized.sql", snowflake, context)
-        rules_table = ensure_object_exists("tables/stage_skill_standardization_rules.sql", snowflake, context)
         jobs_llm_table = ensure_object_exists("tables/stage_jobs_llm_enriched.sql", snowflake, context)
         jobs_unified_table = ensure_object_exists("tables/stage_jobs_unified.sql", snowflake, context)
 
