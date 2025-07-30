@@ -15,6 +15,9 @@ Usage:
 """
 
 import os
+import re
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 from dagster import AssetExecutionContext, get_dagster_logger
@@ -287,3 +290,120 @@ def get_schema_layer_from_object_name(object_name: str) -> str:
         return "unknown"
     except:
         return "unknown"
+
+
+def ensure_temp_object_exists(
+    base_name: str,
+    sql_file_path: str,
+    snowflake: SnowflakeResource,
+    context: AssetExecutionContext,
+    session_specific: bool = True,
+    existing_connection = None
+) -> str:
+    """
+    Create a uniquely named temporary object based on a SQL template file.
+
+    This function addresses race conditions where multiple concurrent runs would
+    share the same temporary table name, causing failures when one run drops
+    the table while another is still using it.
+
+    Args:
+        base_name: Base name for the temporary object (e.g., "temp_company_urls")
+        sql_file_path: Path to SQL template file relative to pipeline/sql/objects/
+        snowflake: SnowflakeResource instance
+        context: Dagster execution context
+        session_specific: If True, creates session-temporary table; if False, creates regular table
+        existing_connection: Optional existing Snowflake connection to use (required for TEMPORARY tables)
+
+    Returns:
+        Fully qualified unique temporary table name
+
+    Example:
+        >>> temp_table = ensure_temp_object_exists(
+        ...     "temp_company_urls",
+        ...     "tables/raw_master_company_urls_temp_s3.sql",
+        ...     snowflake,
+        ...     context,
+        ...     existing_connection=conn
+        ... )
+        >>> print(temp_table)
+        "BETTERJOBS_DB.RAW.temp_company_urls_20250706_142230_a1b2c3d4"
+    """
+
+    # Generate unique suffix using timestamp + UUID (similar to BUG-021 fix)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    unique_id = str(uuid.uuid4()).replace('-', '')[:8]  # 8 chars for readability
+    unique_table_name = f"{base_name}_{timestamp}_{unique_id}"
+
+    context.log.info(f"🔧 TEMP-OBJECT: Creating unique temporary table: {unique_table_name}")
+
+    # Read the SQL template file using absolute path (same approach as ensure_object_exists)
+    project_root = Path(__file__).parent.parent.parent.parent.parent
+    sql_file_full_path = project_root / "pipeline" / "sql" / "objects" / sql_file_path
+
+    if not sql_file_full_path.exists():
+        raise FileNotFoundError(f"SQL template file not found: {sql_file_full_path}")
+
+    with open(sql_file_full_path, 'r') as f:
+        sql_template = f.read()
+
+    # Parse the original table name from the SQL template
+    # Extract: CREATE TABLE IF NOT EXISTS BETTERJOBS_DB.RAW.MASTER_COMPANY_URLS_TEMP_S3
+    table_name_pattern = r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([^\s(]+)"
+    match = re.search(table_name_pattern, sql_template, re.IGNORECASE)
+
+    if not match:
+        raise ValueError(f"Could not extract table name from SQL template: {sql_file_full_path}")
+
+    original_fqn = match.group(1)
+
+    # Extract database and schema from original FQN
+    parts = original_fqn.split('.')
+    if len(parts) != 3:
+        raise ValueError(f"Invalid fully qualified table name in template: {original_fqn}")
+
+    database, schema, _ = parts
+    unique_fqn = f"{database}.{schema}.{unique_table_name}"
+
+    # Create modified SQL with unique table name
+    if session_specific:
+        # Create as TEMPORARY table (automatically dropped when session ends)
+        modified_sql = re.sub(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[^\s(]+",
+            f"CREATE OR REPLACE TEMPORARY TABLE {unique_fqn}",
+            sql_template,
+            flags=re.IGNORECASE
+        )
+    else:
+        # Create as regular table with unique name
+        modified_sql = re.sub(
+            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[^\s(]+",
+            f"CREATE OR REPLACE TABLE {unique_fqn}",
+            sql_template,
+            flags=re.IGNORECASE
+        )
+
+    # Execute the modified SQL to create the temporary table
+    # For TEMPORARY tables, we must use the existing connection to ensure session consistency
+    if session_specific and not existing_connection:
+        raise ValueError("existing_connection is required when session_specific=True for TEMPORARY tables")
+
+    try:
+        if existing_connection:
+            # Use the provided connection (required for TEMPORARY tables)
+            cursor = existing_connection.cursor()
+            cursor.execute(modified_sql)
+            cursor.close()
+        else:
+            # Create new connection (only for regular tables)
+            with snowflake.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(modified_sql)
+
+        context.log.info(f"🔧 TEMP-OBJECT: Successfully created {unique_fqn}")
+
+    except Exception as e:
+        context.log.error(f"Failed to create temporary table {unique_fqn}: {str(e)}")
+        raise Exception(f"Temporary table creation failed: {str(e)}")
+
+    return unique_fqn

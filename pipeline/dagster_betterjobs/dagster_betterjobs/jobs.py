@@ -29,7 +29,7 @@ alpha_partitions = company_alpha_partitions
 # job for infrastructure_setup group
 infrastructure_setup_job = define_asset_job(
     name="infrastructure_setup_job",
-    selection=AssetSelection.groups("infrastructure_setup"),
+    selection=AssetSelection.groups("0_infrastructure_setup"),
     description="Job that sets up the infrastructure for the pipeline",
 )
 

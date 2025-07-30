@@ -10,7 +10,7 @@ from dagster import asset, AssetExecutionContext, Config, MetadataValue
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 from ..transformations.uid_generation import generate_company_platform_id
-from ..utils.schema_utils import ensure_object_exists
+from ..utils.schema_utils import ensure_object_exists, ensure_temp_object_exists
 
 
 def generate_company_id(company_name: str, platform: str) -> str:
@@ -377,13 +377,24 @@ def process_s3_csv_files(
     stage_name: str,
     table_name: str,
     context: AssetExecutionContext
-) -> List[Dict]:
-    """Process CSV files from S3 using Snowflake stages."""
+) -> Tuple[List[Dict], Dict]:
+    """
+    Process CSV files from S3 using Snowflake stages.
+
+    Returns:
+        Tuple[List[Dict], Dict]: (file_metadata_list, processing_stats)
+        processing_stats contains: files_attempted, files_failed, files_succeeded
+    """
     file_metadata_list = []
+    processing_stats = {
+        "files_attempted": 0,
+        "files_failed": 0,
+        "files_succeeded": 0
+    }
 
     if not s3_uri:
         context.log.warning("S3_URI not provided, skipping S3 processing")
-        return file_metadata_list
+        return file_metadata_list, processing_stats
 
     cursor = conn.cursor()
     try:
@@ -437,14 +448,22 @@ def process_s3_csv_files(
                 context.log.info(f"Processing new S3 file: {file_name}")
 
             if needs_processing:
+                # BUG-022: Track file processing attempt
+                processing_stats["files_attempted"] += 1
                 try:
-                    # 🔧 SCHEMA-AS-CODE: Create temp table using canonical SQL definition
-                    temp_table_fqn = ensure_object_exists("tables/raw_master_company_urls_temp_s3.sql", context.resources.snowflake, context)
+                    # 🔧 TEMP-OBJECT: Create unique temp table to avoid race conditions (BUG-022 fix)
+                    temp_table_fqn = ensure_temp_object_exists(
+                        "temp_master_company_urls_s3",
+                        "tables/raw_master_company_urls_temp_s3.sql",
+                        context.resources.snowflake,
+                        context,
+                        session_specific=True,  # Automatically dropped when session ends
+                        existing_connection=conn  # Use same connection for TEMPORARY table visibility
+                    )
                     temp_table = temp_table_fqn.split('.')[-1]  # Extract table name for backward compatibility
 
-                    # Clear temp table for fresh processing
-                    cursor.execute(f"TRUNCATE TABLE {temp_table}")
-                    context.log.info(f"🔧 SCHEMA-AS-CODE: Using temp table {temp_table_fqn}")
+                    # No need to TRUNCATE - temp table is freshly created and unique
+                    context.log.info(f"🔧 TEMP-OBJECT: Using unique temp table {temp_table_fqn}")
 
                     # COPY command for CSV without company_id column
                     # CSV structure: company_name,company_industry,platform,ats_url,career_url,url_verified,date_added,last_updated
@@ -568,6 +587,8 @@ def process_s3_csv_files(
                     cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
 
                 except Exception as e:
+                    # BUG-022: Track file processing failure
+                    processing_stats["files_failed"] += 1
                     context.log.error(f"Error processing S3 file {file_name}: {str(e)}")
                     # Clean up on error
                     try:
@@ -580,7 +601,10 @@ def process_s3_csv_files(
     finally:
         cursor.close()
 
-    return file_metadata_list
+    # BUG-022: Calculate successful files and return processing stats
+    processing_stats["files_succeeded"] = processing_stats["files_attempted"] - processing_stats["files_failed"]
+
+    return file_metadata_list, processing_stats
 
 
 class SnowflakeMasterCompanyUrlsConfig(Config):
@@ -693,7 +717,15 @@ def snowflake_master_company_urls(
         "skipped_files": 0,
         "errors": 0,
         "duplicates_found": 0,
-        "records_deduplicated": 0
+        "records_deduplicated": 0,
+        # BUG-022: Add tracking for success/failure determination
+        "files_attempted": 0,
+        "files_failed": 0,
+        "files_succeeded": 0,
+        "s3_files_attempted": 0,
+        "s3_files_failed": 0,
+        "local_files_attempted": 0,
+        "local_files_failed": 0
     }
 
     all_file_metadata = []
@@ -702,10 +734,16 @@ def snowflake_master_company_urls(
     if config.enable_s3_processing and s3_uri:
         context.log.info("=== STEP 1: Processing S3 files ===")
         try:
-            s3_metadata = process_s3_csv_files(conn, s3_uri, stage_name, table_name, context)
+            s3_metadata, s3_processing_stats = process_s3_csv_files(conn, s3_uri, stage_name, table_name, context)
             all_file_metadata.extend(s3_metadata)
             stats["s3_files"] = len(s3_metadata)
-            context.log.info(f"✓ Successfully processed {len(s3_metadata)} S3 files")
+            # BUG-022: Track S3 processing success/failure
+            stats["s3_files_attempted"] = s3_processing_stats.get("files_attempted", 0)
+            stats["s3_files_failed"] = s3_processing_stats.get("files_failed", 0)
+            stats["files_attempted"] += stats["s3_files_attempted"]
+            stats["files_failed"] += stats["s3_files_failed"]
+            stats["files_succeeded"] += (stats["s3_files_attempted"] - stats["s3_files_failed"])
+            context.log.info(f"✓ Successfully processed {len(s3_metadata)}/{stats['s3_files_attempted']} S3 files")
         except Exception as e:
             context.log.error(f"✗ Error processing S3 files: {str(e)}")
             context.log.warning("💡 If S3 stage is missing, run 'infrastructure_setup' asset to create S3 infrastructure")
@@ -979,6 +1017,15 @@ def snowflake_master_company_urls(
         "data_variations_found": MetadataValue.int(stats["data_variations_found"]),
         "data_variation_records_resolved": MetadataValue.int(stats["data_variation_records_resolved"]),
         "errors": MetadataValue.int(stats["errors"]),
+        # BUG-022: Add success/failure tracking metadata
+        "files_attempted": MetadataValue.int(stats["files_attempted"]),
+        "files_succeeded": MetadataValue.int(stats["files_succeeded"]),
+        "files_failed": MetadataValue.int(stats["files_failed"]),
+        "s3_files_attempted": MetadataValue.int(stats["s3_files_attempted"]),
+        "s3_files_failed": MetadataValue.int(stats["s3_files_failed"]),
+        "success_rate": MetadataValue.float(
+            (stats["files_succeeded"] / stats["files_attempted"] * 100) if stats["files_attempted"] > 0 else 100.0
+        ),
         "snowflake_table": MetadataValue.text(f"BETTERJOBS_DB.RAW.{table_name}"),
         "s3_enabled": MetadataValue.bool(config.enable_s3_processing and bool(s3_uri)),
         "local_enabled": MetadataValue.bool(config.enable_local_processing and bool(local_folder)),
@@ -1000,8 +1047,60 @@ def snowflake_master_company_urls(
         "hash_collisions_found": stats["hash_collisions_found"],
         "hash_collision_records_removed": stats["hash_collision_records_removed"],
         "errors": stats["errors"],
+        # BUG-022: Add success/failure tracking to summary
+        "files_attempted": stats["files_attempted"],
+        "files_succeeded": stats["files_succeeded"],
+        "files_failed": stats["files_failed"],
+        "s3_files_attempted": stats["s3_files_attempted"],
+        "s3_files_failed": stats["s3_files_failed"],
+        "success_rate": (stats["files_succeeded"] / stats["files_attempted"] * 100) if stats["files_attempted"] > 0 else 100.0,
         "processed_at": datetime.now()
     }])
+
+    # BUG-022: Check for complete failure scenarios and fail the asset if appropriate
+    context.log.info("=== BUG-022: Asset Success/Failure Analysis ===")
+    context.log.info(f"Files attempted to process: {stats['files_attempted']}")
+    context.log.info(f"Files successfully processed: {stats['files_succeeded']}")
+    context.log.info(f"Files failed to process: {stats['files_failed']}")
+    context.log.info(f"Records added this run: {stats['records_added']}")
+
+    # Determine failure conditions
+    complete_failure = False
+    failure_reasons = []
+
+    # Check if any files were attempted to be processed
+    if stats['files_attempted'] == 0:
+        # No files found to process - this could be normal (no new files)
+        context.log.info("✓ No files found for processing - this may be normal if no new/changed files exist")
+    elif stats['files_attempted'] > 0:
+        # Files were found and attempted to be processed
+        if stats['files_succeeded'] == 0 and stats['files_failed'] > 0:
+            # All attempted files failed - this is a complete failure
+            complete_failure = True
+            failure_reasons.append(f"All {stats['files_failed']} attempted files failed to process")
+        elif stats['files_failed'] > 0:
+            # Partial failure - some files succeeded, some failed
+            success_rate = (stats['files_succeeded'] / stats['files_attempted']) * 100
+            context.log.warning(f"⚠️ Partial failure: {stats['files_failed']}/{stats['files_attempted']} files failed (success rate: {success_rate:.1f}%)")
+        else:
+            # All files succeeded
+            context.log.info(f"✅ All {stats['files_succeeded']} files processed successfully")
+
+    # Check if no records were added despite file processing attempts
+    if stats['files_attempted'] > 0 and stats['records_added'] == 0:
+        complete_failure = True
+        failure_reasons.append("No records were added despite attempting to process files")
+
+    # Fail the asset if complete failure detected
+    if complete_failure:
+        failure_message = f"Asset failed: {'; '.join(failure_reasons)}"
+        context.log.error(f"❌ {failure_message}")
+        context.log.error("Asset execution will be marked as FAILED")
+        conn.close()
+        raise Exception(failure_message)
+
+    context.log.info("✅ Asset completed successfully - at least some data was processed or no processing was needed")
+    context.log.info("===============================================")
 
     conn.close()
     return summary_df

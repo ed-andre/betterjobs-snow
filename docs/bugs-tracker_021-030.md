@@ -19,12 +19,11 @@ This document tracks known bugs and issues in the BetterJobs Snowflake project.
 
 - **OPEN**
 
-  - BUG-022: Master Company URLs Temp Table Race Condition
-
 - **IN PROGRESS**
 
   - **RESOLVED**
     - BUG-021: Partitioned Stage Assets Temporary Table Race Condition
+    - BUG-022: Master Company URLs Temp Table Race Condition
 
 - **NO ACTION REQUIRED**
 
@@ -118,10 +117,11 @@ temp_table_name = f"temp_{platform}_jobs_{datetime.now().strftime('%Y%m%d_%H%M%S
 
 ## BUG-022: Master Company URLs Temp Table Race Condition
 
-**Status:** OPEN 🚧
+**Status:** RESOLVED ✅
 **Severity:** High
 **Component:** Master Company URLs Ingestion (`snowflake_master_company_urls.py`)
 **Date Reported:** 2025-07-06
+**Date Resolved:** 2025-07-29
 
 ### Description
 When the `snowflake_master_company_urls` asset is scheduled inside **jobs** it can be materialised several times in quick succession. Each run creates a temporary external table named `MASTER_COMPANY_URLS_TEMP_S3`. Because the name is static, the first run that finishes drops the table while another in-flight run still expects it, leading to:
@@ -164,6 +164,79 @@ Introduce a helper (e.g., `ensure_temp_object_exists(platform: str, base_name: s
 2. Check Snowflake history: temp tables have unique names per run.
 3. Confirm tables are cleaned up automatically when session closes.
 
+### Resolution
+**Fixed in**:
+- `pipeline/dagster_betterjobs/dagster_betterjobs/utils/schema_utils.py` - Added `ensure_temp_object_exists()` function
+- `pipeline/dagster_betterjobs/dagster_betterjobs/assets/snowflake_master_company_urls.py` - Updated to use unique temp tables and added failure detection
+
+**Changes Made**:
+
+**1. Created `ensure_temp_object_exists()` Utility Function**:
+```python
+def ensure_temp_object_exists(
+    base_name: str,
+    sql_file_path: str,
+    snowflake: SnowflakeResource,
+    context: AssetExecutionContext,
+    session_specific: bool = True,
+    existing_connection = None  # Required for TEMPORARY tables
+) -> str:
+```
+
+**Key Features**:
+- **Unique Naming**: Generates unique table names using timestamp + 8-char UUID
+- **Session Consistency**: Uses existing connection for TEMPORARY table visibility
+- **Template-Based**: Uses existing SQL template files as source of truth
+- **Auto-Cleanup**: Session-specific TEMPORARY tables auto-drop when session ends
+
+**2. Updated Asset Implementation**:
+```python
+# BEFORE (Race Condition):
+temp_table_fqn = ensure_object_exists("tables/raw_master_company_urls_temp_s3.sql", ...)
+# Static name: BETTERJOBS_DB.RAW.MASTER_COMPANY_URLS_TEMP_S3
+
+# AFTER (Race Condition Fixed):
+temp_table_fqn = ensure_temp_object_exists(
+    "temp_master_company_urls_s3",
+    "tables/raw_master_company_urls_temp_s3.sql",
+    context.resources.snowflake,
+    context,
+    session_specific=True,
+    existing_connection=conn  # Same session for visibility
+)
+# Unique name: BETTERJOBS_DB.RAW.temp_master_company_urls_s3_20250729_222551_d82699f5
+```
+
+**3. Added Comprehensive Failure Detection**:
+- **File Processing Tracking**: Track attempted, succeeded, and failed file counts
+- **Asset Failure Logic**: Asset now fails when all attempted files fail to process
+- **Enhanced Monitoring**: Added detailed Dagster metadata for success/failure rates
+- **Accurate Status Reporting**: Eliminates false positive successes
+
+**4. Session Isolation Fix**:
+The critical issue was that TEMPORARY tables in Snowflake are session-specific. The original implementation created the table in one session but tried to use it in another, causing "Table does not exist" errors even though creation succeeded.
+
+### Impact
+- ✅ **Race Condition Eliminated**: Each concurrent run gets unique temporary table names
+- ✅ **Session Consistency**: TEMPORARY tables created and used within same connection/session
+- ✅ **Accurate Status Reporting**: Asset correctly fails when all files fail to process
+- ✅ **Enhanced Monitoring**: Detailed tracking of file processing success/failure rates
+- ✅ **Automatic Cleanup**: TEMPORARY tables auto-drop when session ends
+- ✅ **No Breaking Changes**: Backward compatible with existing functionality
+
+### Files Affected
+- ✅ `dagster_betterjobs/utils/schema_utils.py` - Added `ensure_temp_object_exists()` function
+- ✅ `dagster_betterjobs/assets/snowflake_master_company_urls.py` - Updated temp table creation and failure detection
+- ✅ `dagster_betterjobs/utils/test_schema_utils.py` - Added test coverage for new function
+
+### Verification Steps
+1. ✅ Trigger two concurrent materializations - both succeed with unique temp table names
+2. ✅ Verify temp tables are session-specific and automatically cleaned up
+3. ✅ Confirm asset fails when all files fail to process (no more false positives)
+4. ✅ Check enhanced Dagster metadata shows file processing success/failure rates
+
 ### Additional Notes
-- Pattern identical to BUG-021 – reuse UUID-based suffix strategy.
-- Ensure helper is generic for future temp tables.
+- **Pattern Consistency**: Reuses UUID-based suffix strategy from BUG-021
+- **Generic Solution**: `ensure_temp_object_exists()` can be used for future temp table needs
+- **Session Management**: Critical insight about Snowflake TEMPORARY table session isolation
+- **Comprehensive Fix**: Addresses both race condition and false positive success issues

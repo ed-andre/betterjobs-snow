@@ -41,7 +41,7 @@ b. Set the SNOWFLAKE_S3_ROLE_ARN in the .env file to the ARN of the IAM role you
 
 ### Step 3: Get Snowflake Integration Details
 
-In Snowflake, run the following query to get the integration details:
+In Snowflake, run the following query to get the integration details. Note that Step 3: Run infrastructure_setup Asset from SNOWFLAKE_SETUP.md must be completed first.
 
 ```sql
 DESC STORAGE INTEGRATION betterjobs_s3_integration;
