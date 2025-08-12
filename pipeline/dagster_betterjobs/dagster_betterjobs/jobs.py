@@ -587,3 +587,12 @@ advanced_legal_jobs_search_job = define_asset_job(
     )
 )
 
+# SERVE JOBS
+## JOB
+serve_layer_job = define_asset_job(
+    name="serve_layer_job",
+    selection=AssetSelection.groups("4_serve_layer"),
+    description="Job for the serve denormalized layer",
+)
+
+
