@@ -603,7 +603,9 @@ class RawCompanyProfilesConfig(Config):
 @asset(
     group_name="1_raw_ingestion_extraction",
     kinds={"python", "sql", "snowflake"},
-    required_resource_keys={"snowflake"}
+    required_resource_keys={"snowflake"},
+    owners=["ed@example.com"],
+    description="Ingest master company profiles CSV from S3 into RAW layer"
 )
 def raw_company_profiles(
     context: AssetExecutionContext,
