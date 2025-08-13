@@ -21,7 +21,7 @@ logs/
 profiles.yml
 
 # Dagster
-.dagster/
+
 tmp/
 out/
 .tmp*
@@ -120,8 +120,11 @@ Thumbs.db
 
 # Dagster specific
 dagster_home/
-dagster.yaml
 .telemetry
+/pipeline/.dagster/history
+/pipeline/.dagster/schedules
+/pipeline/.dagster/storage
+/pipeline/.dagster/.logs_queue
 betterjobs-gkey.json
 .gcp
 encode_credentials.py
@@ -173,3 +176,6 @@ greenhouse_company_urls.csv
 /pipeline/sample_data
 /openmetadata/docker-volume
 /openmetadata/.env
+
+
+pipeline/.dagster/.nux/nux.yaml

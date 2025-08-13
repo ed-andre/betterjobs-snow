@@ -1,0 +1,67 @@
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 25
+
+#  automatic monitoring of run health and performance
+run_monitoring:
+  enabled: true
+  poll_interval_seconds: 60
+  start_timeout_seconds: 180
+  cancel_timeout_seconds: 180
+
+#  automatic retries of failed runs
+run_retries:
+  enabled: true
+  max_retries: 3
+  retry_on_asset_or_op_failure: true
+
+#  storage for run history, logs, and metadata
+storage:
+  sqlite:
+    base_dir: ./storage
+
+#  storage for compute logs
+compute_logs:
+  module: dagster.core.storage.local_compute_log_manager
+  class: LocalComputeLogManager
+  config:
+    base_dir: ./logs
+
+#  disable telemetry
+telemetry:
+  enabled: false
+
+#  disable New User Experience Onboarding notification
+nux:
+  enabled: false
+
+#  use threads for sensor processing
+sensors:
+  use_threads: true
+  num_workers: 8
+
+#  use threads for schedule processing
+schedules:
+  use_threads: true
+  num_workers: 8
+
+#  use threads for backfill processing
+backfills:
+  use_threads: true
+  num_workers: 10
+
+#  retention policy for schedules, sensors, and backfills
+retention:
+  schedule:
+    purge_after_days: 90
+  sensor:
+    purge_after_days:
+      skipped: 7
+      failure: 30
+      success: -1  # Keep indefinitely
+
+#  timeout for local code servers
+code_servers:
+  local_startup_timeout: 360
