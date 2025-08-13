@@ -1,6 +1,6 @@
 import pandas as pd
-from typing import Dict, Optional
-from dagster import asset, AssetExecutionContext, Config, MetadataValue
+from typing import Dict, Optional, Iterator
+from dagster import asset, multi_asset_check, AssetCheckSpec, AssetExecutionContext, Config, MetadataValue, AssetCheckResult
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 from ..transformations.text_cleaning import clean_company_name, normalize_whitespace
@@ -381,3 +381,67 @@ def stage_company_profiles(
         raise
     finally:
         conn.close()
+
+@multi_asset_check(
+    # mapping checks
+    specs=[
+        AssetCheckSpec(name="company_id_uniqueness",
+                       asset=stage_company_profiles,
+                       description="Check if company_id is unique",
+                       ),
+        AssetCheckSpec(name="company_name_uniqueness",
+                       asset=stage_company_profiles,
+                       description="Check if company_name is unique",
+                       ),
+        AssetCheckSpec(name="company_name_standardized_has_no_nulls",
+                       asset=stage_company_profiles,
+                       description="Check if company_name_standardized has no nulls",
+                       ),
+    ]
+)
+def stage_company_profiles_checks(context: AssetExecutionContext, stage_company_profiles: pd.DataFrame) -> Iterator[AssetCheckResult]:
+    """
+    Asset checks for STAGE.company_profiles table.
+    """
+    if stage_company_profiles.empty:
+        context.log.warning("No company profiles data found")
+        yield AssetCheckResult(
+            check_name="company_id_uniqueness",
+            passed=False,
+            description="No data available for validation"
+        )
+        yield AssetCheckResult(
+            check_name="company_name_uniqueness",
+            passed=False,
+            description="No data available for validation"
+        )
+        yield AssetCheckResult(
+            check_name="company_name_standardized_has_no_nulls",
+            passed=False,
+            description="No data available for validation"
+        )
+        return
+
+    # Check if company_id is unique
+    company_id_unique = stage_company_profiles['COMPANY_ID'].is_unique
+    yield AssetCheckResult(
+        check_name="company_id_uniqueness",
+        passed=company_id_unique,
+        description="Company ID should be unique" if company_id_unique else f"Found {stage_company_profiles['COMPANY_ID'].duplicated().sum()} duplicate company IDs"
+    )
+
+    # Check if company_name is unique
+    company_name_unique = stage_company_profiles['COMPANY_NAME_STANDARDIZED'].is_unique
+    yield AssetCheckResult(
+        check_name="company_name_uniqueness",
+        passed=company_name_unique,
+        description="Company name should be unique" if company_name_unique else f"Found {stage_company_profiles['COMPANY_NAME_STANDARDIZED'].duplicated().sum()} duplicate company names"
+    )
+
+    # Check if company_name_standardized has no nulls
+    has_no_nulls = stage_company_profiles['COMPANY_NAME_STANDARDIZED'].notna().all()
+    yield AssetCheckResult(
+        check_name="company_name_standardized_has_no_nulls",
+        passed=has_no_nulls,
+        description="Company name standardized should not have null values" if has_no_nulls else f"Found {stage_company_profiles['COMPANY_NAME_STANDARDIZED'].isna().sum()} null company names"
+    )
