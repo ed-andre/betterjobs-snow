@@ -1,4 +1,5 @@
 import pandas as pd
+import re
 from typing import Dict, Optional, Iterator
 from dagster import asset, multi_asset_check, AssetCheckSpec, AssetExecutionContext, AssetCheckExecutionContext, Config, MetadataValue, AssetCheckResult
 import snowflake.connector
@@ -251,10 +252,13 @@ def stage_company_profiles(
         # Preserve profile_id for lineage, generate company_id for consistency across pipeline
         df['profile_id_preserved'] = df['profile_id']  # Preserve original profile ID for lineage
 
+        # DUPLICATE FIX: Standardize company name FIRST, then generate ID from standardized name
+        # This ensures "Igloo Products Corp" and "Igloo Products Corp." get the same company_id
+        df['company_name_standardized'] = df['company_name'].apply(clean_company_name)
+
         # Use platform from MASTER_COMPANY_URLS join, fallback to 'COMPANY_PROFILES' if null
         df['platform_for_id'] = df['platform'].fillna('COMPANY_PROFILES')
-        df['company_id'] = df.apply(lambda row: generate_company_id(row['company_name'], row['platform_for_id']), axis=1)
-        df['company_name_standardized'] = df['company_name'].apply(clean_company_name)
+        df['company_id'] = df.apply(lambda row: generate_company_id(row['company_name_standardized'], row['platform_for_id']), axis=1)
         df['company_industry_standardized'] = df['company_industry'].apply(standardize_industry)
         df['company_size_category'] = df['employee_count_range'].apply(categorize_company_size)
         df['headquarters_location'] = df['city'].apply(lambda x: normalize_whitespace(x) if x else "")
@@ -313,11 +317,75 @@ def stage_company_profiles(
                 (stage_df['COMPANY_NAME_STANDARDIZED'] != '')
             ]
 
-        # Check for duplicates (convert numpy type immediately)
+        # Check for duplicates and apply intelligent deduplication
         duplicates = int(stage_df.duplicated(subset=['COMPANY_ID']).sum())
         if duplicates > 0:
-            context.log.warning(f"Found {duplicates} duplicate company_id records, keeping first occurrence")
-            stage_df = stage_df.drop_duplicates(subset=['COMPANY_ID'], keep='first')
+            context.log.warning(f"Found {duplicates} duplicate company_id records, applying intelligent merge strategy")
+
+            # Intelligent deduplication strategy for business-critical columns
+            def merge_duplicate_records(group):
+                """Merge duplicate records by selecting best values for each column."""
+                if len(group) == 1:
+                    return group.iloc[0]
+
+                # Priority logic for employee_count_range (most specific/recent)
+                # 1. Prefer non-null values
+                # 2. Prefer more specific ranges (higher employee counts often more accurate)
+                # 3. Prefer records with more complete data overall
+
+                # Score each record for data completeness
+                def score_record(row):
+                    score = 0
+                    # Non-null employee count
+                    if pd.notna(row['EMPLOYEE_COUNT_RANGE']) and row['EMPLOYEE_COUNT_RANGE'] != '':
+                        score += 10
+                    # Non-null headquarters location
+                    if pd.notna(row['HEADQUARTERS_LOCATION']) and row['HEADQUARTERS_LOCATION'] != '':
+                        score += 5
+                    # Non-null industry
+                    if pd.notna(row['COMPANY_INDUSTRY_STANDARDIZED']) and row['COMPANY_INDUSTRY_STANDARDIZED'] != '':
+                        score += 3
+                    # Extract numeric value from employee range for specificity scoring
+                    if pd.notna(row['EMPLOYEE_COUNT_RANGE']):
+                        import re
+                        numbers = re.findall(r'\d+', str(row['EMPLOYEE_COUNT_RANGE']))
+                        if numbers:
+                            # Higher employee counts often indicate more established/accurate data
+                            score += min(int(numbers[0]) / 1000, 5)  # Cap at 5 points
+                    return score
+
+                # Score all records in the group
+                group_with_scores = group.copy()
+                group_with_scores['_score'] = group_with_scores.apply(score_record, axis=1)
+
+                # Sort by score (highest first) and take the best record as base
+                best_record = group_with_scores.sort_values('_score', ascending=False).iloc[0].copy()
+
+                # For employee_count_range, prefer the most specific/complete value
+                employee_ranges = group['EMPLOYEE_COUNT_RANGE'].dropna()
+                employee_ranges = employee_ranges[employee_ranges != '']
+                if not employee_ranges.empty:
+                    # Use the employee range from the highest-scored record with data
+                    ranges_with_scores = []
+                    for _, row in group_with_scores.iterrows():
+                        if pd.notna(row['EMPLOYEE_COUNT_RANGE']) and row['EMPLOYEE_COUNT_RANGE'] != '':
+                            ranges_with_scores.append((row['EMPLOYEE_COUNT_RANGE'], row['_score']))
+
+                    if ranges_with_scores:
+                        # Sort by score and take the best
+                        best_range = sorted(ranges_with_scores, key=lambda x: x[1], reverse=True)[0][0]
+                        best_record['EMPLOYEE_COUNT_RANGE'] = best_range
+
+                # Remove scoring column
+                best_record = best_record.drop('_score')
+                return best_record
+
+            # Apply intelligent merge
+            stage_df = stage_df.groupby('COMPANY_ID').apply(merge_duplicate_records).reset_index(drop=True)
+
+            final_duplicates = int(stage_df.duplicated(subset=['COMPANY_ID']).sum())
+            context.log.info(f"Intelligent deduplication completed. Remaining duplicates: {final_duplicates}")
+            context.log.info(f"Records after deduplication: {len(stage_df)}")
 
         context.log.info(f"Final dataset ready: {len(stage_df)} company profiles")
 
