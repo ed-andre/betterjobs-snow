@@ -613,6 +613,7 @@ class SnowflakeMasterCompanyUrlsConfig(Config):
     enable_s3_processing: bool = True
     enable_local_processing: bool = True
     deduplicate_on_load: bool = True
+    local_folder: Optional[str] = os.getenv("COMPANY_URLS_INPUT_FOLDER")
 
 
 @asset(
@@ -634,7 +635,7 @@ def snowflake_master_company_urls(
     on-demand using canonical SQL definition files. No hard infrastructure dependencies required.
 
     This asset ingests CSV files from both S3 bucket (via S3_URI) and local folder
-    (via MAIN_INPUT_FOLDER) with incremental processing to detect new/changed files.
+    (via COMPANY_URLS_INPUT_FOLDER) with incremental processing to detect new/changed files.
 
     CSV files should NOT contain company_id column - it will be generated automatically
     using a hash-based approach from company_name.
@@ -651,11 +652,11 @@ def snowflake_master_company_urls(
     """
     # Get environment variables
     s3_uri = os.getenv("S3_URI")
-    local_folder = os.getenv("MAIN_INPUT_FOLDER")
+    local_folder = config.local_folder
 
     # Validate that at least one data source is configured
     if not s3_uri and not local_folder:
-        raise ValueError("At least one data source must be configured: S3_URI or MAIN_INPUT_FOLDER")
+        raise ValueError("At least one data source must be configured: S3_URI or COMPANY_URLS_INPUT_FOLDER")
 
     # Get Snowflake connection
     conn = context.resources.snowflake.get_connection()
@@ -766,7 +767,7 @@ def snowflake_master_company_urls(
             context.log.error(f"✗ Error processing local files: {str(e)}")
             stats["errors"] += 1
     elif config.enable_local_processing and not local_folder:
-        context.log.info("Local processing enabled but MAIN_INPUT_FOLDER not configured - skipping local processing")
+        context.log.info("Local processing enabled but COMPANY_URLS_INPUT_FOLDER not configured - skipping local processing")
     else:
         context.log.info("Local processing disabled")
 

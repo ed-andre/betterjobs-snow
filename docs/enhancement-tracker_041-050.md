@@ -1,4 +1,4 @@
-# Enhancement Tracker 031-040
+# Enhancement Tracker 041-050
 
 This document tracks planned enhancements and architectural improvements for the BetterJobs Snowflake project.
 
@@ -23,6 +23,7 @@ This document tracks planned enhancements and architectural improvements for the
 
     - ENHANCEMENT-044: Add Category and Subcategory Job Counts to Serve Layer
     - ENHANCEMENT-045: Implement OpenMetadata Integration POC
+    - ENHANCEMENT-046: Reorganize Raw Layer Input Data Structure and Asset Configuration
 
 - **IN PROGRESS**
 
@@ -281,7 +282,7 @@ While we now have job counts for individual skills in `SERVE.SKILL_JOB_COUNTS`, 
 ### Problem Statement
 As this data project grows, it needs better tools for data discovery, lineage tracking, and governance. While it has decent documentation and SQL-based metadata, it lacks:
 - Automated data discovery and documentation
-- Visual data lineage 
+- Visual data lineage
 - Centralized data quality metrics and monitoring
 - Standardized data governance practices
 - Self-service data discovery for analysts
@@ -358,6 +359,98 @@ OpenMetadata could provide these capabilities through its modern data catalog pl
 • Plan for eventual migration to production-grade deployment
 • Test integration with existing security model
 
+---
+
+## ENHANCEMENT-046: Reorganize Raw Layer Input Data Structure and Asset Configuration
+
+**Status:** Open
+**Priority:** High
+**Component:** Raw Layer – `raw_company_profiles` and `snowflake_master_company_urls` assets, input data organization
+**Date Planned:** 2025-08-13
+**Estimated Effort:** 2-3 days
+
+### Problem Statement
+There is a design gap in the project with how local CSV files are being ingested for `raw_company_profiles` and `snowflake_master_company_urls` assets. Currently, both CSV files under `input/main/` have different headers and serve different purposes, but there's no clear separation or dedicated processing logic:
+
+1. `example_company_data.csv` has URL-related headers (company_name, platform, ats_url, career_url, etc.) indicating it should be processed by `snowflake_master_company_urls`
+2. `master_company_profiles.csv` has profile-related headers (company_name, company_industry, employee_count_range, city) indicating it should be processed by `raw_company_profiles`
+3. `snowflake_master_company_urls` asset currently processes local files but expects URL schema
+4. `raw_company_profiles` asset only processes S3 files and lacks local file processing capability
+5. Both assets use overlapping environment variable configuration, creating confusion
+
+This creates unclear data contracts, potential data quality issues, and maintenance difficulties.
+
+### Solution Overview
+1. **Directory Structure Reorganization:**
+   • Create dedicated subdirectories for each data type:
+     - `input/main/company_url_data/` – for URL-related CSV files processed by `snowflake_master_company_urls`
+     - `input/main/profile_data/` – for profile-related CSV files processed by `raw_company_profiles`
+   • Move existing files to appropriate subdirectories
+
+2. **Environment Variable Enhancement:**
+   • Add `COMPANY_URLS_INPUT_FOLDER` – dedicated path for URL data ingestion
+   • Add `COMPANY_PROFILES_INPUT_FOLDER` – dedicated path for profile data ingestion
+   • Maintain `MAIN_INPUT_FOLDER` as fallback for backward compatibility
+
+3. **Asset Configuration Updates:**
+   • Enhance `raw_company_profiles` asset to support local file processing using `COMPANY_PROFILES_INPUT_FOLDER`
+   • Update `snowflake_master_company_urls` asset to use `COMPANY_URLS_INPUT_FOLDER` for local processing
+   • Add clear schema validation for each asset's expected CSV structure
+
+4. **Data Contract Enforcement:**
+   • URL data schema: `company_name`, `company_industry`, `platform`, `ats_url`, `career_url`, `url_verified`, `date_added`, `last_updated`
+   • Profile data schema: `company_name`, `company_industry`, `employee_count_range`, `city`
+
+### Implementation Plan
+• **Phase 1 – Directory Structure (Day 1)**
+  – Create `company_url_data/` and `profile_data/` subdirectories
+  – Move `example_company_data.csv` to `company_url_data/`
+  – Move `master_company_profiles.csv` to `profile_data/`
+  – Update any documentation referencing file locations
+
+• **Phase 2 – Environment Configuration (Day 1)**
+  – Document new environment variables: `COMPANY_URLS_INPUT_FOLDER`, `COMPANY_PROFILES_INPUT_FOLDER`
+  – Update asset configuration classes to use new environment variables
+  – Implement fallback logic for backward compatibility (Not necessary since this is a personal project with no production deployment)
+
+• **Phase 3 – Asset Enhancement (Day 2)**
+  – Add local file processing capability to `raw_company_profiles` asset
+  – Modify existing local processing logic in `snowflake_master_company_urls` to use dedicated folder
+  – Implement schema validation for both assets to ensure correct CSV structure
+  – Add comprehensive error handling and logging
+
+• **Phase 4 – Testing & Validation (Day 2-3)**
+  – Test both assets with new directory structure
+  – Validate schema enforcement works correctly
+  – Ensure backward compatibility with existing S3 processing
+  – Update documentation and examples
+  – Test error scenarios (missing folders, invalid schemas)
+
+### Success Criteria
+• Clear separation of concerns: each asset processes only its designated data type
+• `raw_company_profiles` successfully processes local CSV files from `profile_data/` directory
+• `snowflake_master_company_urls` processes local CSV files from `company_url_data/` directory
+• Schema validation prevents incorrect data from being processed by wrong asset
+• Backward compatibility maintained for S3 processing and existing functionality
+• No performance degradation in either asset
+• Clear error messages when files are in wrong locations or have invalid schemas
+
+### Technical Notes
+• Implement robust schema validation using pandas column checking before processing
+• Add detailed logging to track which files are processed by which assets
+• Consider adding file naming conventions to further clarify data ownership
+• Update both asset docstrings to clearly document expected CSV schemas
+• Maintain existing incremental processing and file tracking capabilities
+• Use defensive programming practices to handle edge cases (empty folders, permission issues)
+
+### Business Justification
+This enhancement addresses a fundamental architectural design gap that could lead to:
+- Data quality issues from files being processed by wrong assets
+- Maintenance confusion and debugging difficulties
+- Unclear data ownership and contracts
+- Potential data corruption or loss
+
+By implementing clear separation of concerns, the project will have better maintainability, clearer data contracts, and reduced risk of operational issues.
 
 
 

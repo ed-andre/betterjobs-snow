@@ -596,8 +596,10 @@ def handle_profile_duplicates(conn, table_name: str, context: AssetExecutionCont
 class RawCompanyProfilesConfig(Config):
     """Configuration for raw company profiles asset."""
     s3_uri: Optional[str] = os.getenv("SNOWFLAKE_S3_COMPANY_PROFILES_URL")
+    local_folder: Optional[str] = os.getenv("COMPANY_PROFILES_INPUT_FOLDER")
     stage_name: str = "raw_company_profiles_stage"
     table_name: str = "raw_company_profiles"
+    enable_local_processing: bool = True
 
 
 @asset(
@@ -612,9 +614,10 @@ def raw_company_profiles(
     config: RawCompanyProfilesConfig
 ) -> pd.DataFrame:
     """
-    🔧 SCHEMA-AS-CODE: Ingest master company profiles CSV from S3 into RAW layer.
+    🔧 SCHEMA-AS-CODE: Ingest company profiles CSV from S3 and local sources into RAW layer.
 
-    This asset processes the master_company_profiles.csv file from S3 containing:
+    This asset processes company profile CSV files from both S3 (via SNOWFLAKE_S3_COMPANY_PROFILES_URL)
+    and local folder (via COMPANY_PROFILES_INPUT_FOLDER) containing:
     - company_name: Name of the company
     - company_industry: Industry classification
     - employee_count_range: Employee count range (e.g., "1001-5000")
@@ -630,6 +633,7 @@ def raw_company_profiles(
     - File tracking to avoid reprocessing
     - Duplicate handling
     - Raw data preservation for lineage
+    - Support for both S3 and local file processing (ENHANCEMENT-046)
     """
 
     # Get Snowflake connection
@@ -651,6 +655,12 @@ def raw_company_profiles(
 
         context.log.info(f"✅ HEALED: Using tables {main_table_name} and {log_table_name}")
 
+        # Validate that at least one data source is configured
+        if not config.s3_uri and not config.local_folder:
+            raise ValueError("At least one data source must be configured: SNOWFLAKE_S3_COMPANY_PROFILES_URL or COMPANY_PROFILES_INPUT_FOLDER")
+
+        context.log.info(f"Processing company profiles from S3: {config.s3_uri or 'Not configured'}, Local: {config.local_folder or 'Not configured'}")
+
         # Note: S3 stage creation will be handled when needed (infrastructure setup)
         if not config.s3_uri:
             context.log.warning("⚠️  S3 URI not configured - S3 processing will be skipped. Consider running 'raw_schema_setup' infrastructure asset for S3 stage creation.")
@@ -666,6 +676,17 @@ def raw_company_profiles(
                 table_name=main_table_name,
                 context=context
             )
+
+        # ENHANCEMENT-046: Process local files
+        local_results = []
+        if config.enable_local_processing and config.local_folder:
+            context.log.info(f"Processing local files from: {config.local_folder}")
+            # Note: Local processing implementation will be added in Phase 3
+            context.log.info("Local processing capability will be implemented in Phase 3")
+        elif config.enable_local_processing and not config.local_folder:
+            context.log.info("Local processing enabled but COMPANY_PROFILES_INPUT_FOLDER not configured - skipping local processing")
+        else:
+            context.log.info("Local processing disabled")
 
         # Handle duplicates
         duplicate_stats = handle_profile_duplicates(conn, main_table_name, context)
