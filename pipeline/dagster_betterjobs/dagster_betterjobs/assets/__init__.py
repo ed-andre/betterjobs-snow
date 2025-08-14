@@ -17,7 +17,7 @@ from dagster_betterjobs.assets.stage_jobs_smartrecruiters import stage_jobs_smar
 from dagster_betterjobs.assets.stage_jobs_unified import stage_jobs_unified
 
 # PHASE-1.5: Company profiles transformation
-from dagster_betterjobs.assets.stage_company_profiles import stage_company_profiles
+from dagster_betterjobs.assets.stage_company_profiles import stage_company_profiles, stage_company_profiles_checks
 
 
 # ENHANCEMENT-010: Platform-specific LLM enrichment assets for parallel processing
@@ -161,6 +161,7 @@ __all__ = [
     "stage_jobs_unified",
     # Company profiles transformation
     "stage_company_profiles",
+    "stage_company_profiles_checks",
     # Platform-specific LLM enrichment assets for parallel processing
     "stage_jobs_llm_enriched_bamboohr",
     "stage_jobs_llm_enriched_greenhouse",

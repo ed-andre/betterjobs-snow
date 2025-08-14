@@ -1,6 +1,6 @@
 import pandas as pd
 from typing import Dict, Optional, Iterator
-from dagster import asset, multi_asset_check, AssetCheckSpec, AssetExecutionContext, Config, MetadataValue, AssetCheckResult
+from dagster import asset, multi_asset_check, AssetCheckSpec, AssetExecutionContext, AssetCheckExecutionContext, Config, MetadataValue, AssetCheckResult
 import snowflake.connector
 from snowflake.connector.pandas_tools import write_pandas
 from ..transformations.text_cleaning import clean_company_name, normalize_whitespace
@@ -399,7 +399,7 @@ def stage_company_profiles(
                        ),
     ]
 )
-def stage_company_profiles_checks(context: AssetExecutionContext, stage_company_profiles: pd.DataFrame) -> Iterator[AssetCheckResult]:
+def stage_company_profiles_checks(context: AssetCheckExecutionContext, stage_company_profiles: pd.DataFrame) -> Iterator[AssetCheckResult]:
     """
     Asset checks for STAGE.company_profiles table.
     """
@@ -423,25 +423,28 @@ def stage_company_profiles_checks(context: AssetExecutionContext, stage_company_
         return
 
     # Check if company_id is unique
-    company_id_unique = stage_company_profiles['COMPANY_ID'].is_unique
+    company_id_unique = bool(stage_company_profiles['COMPANY_ID'].is_unique)
+    duplicate_count = int(stage_company_profiles['COMPANY_ID'].duplicated().sum())
     yield AssetCheckResult(
         check_name="company_id_uniqueness",
         passed=company_id_unique,
-        description="Company ID should be unique" if company_id_unique else f"Found {stage_company_profiles['COMPANY_ID'].duplicated().sum()} duplicate company IDs"
+        description="Company ID should be unique" if company_id_unique else f"Found {duplicate_count} duplicate company IDs"
     )
 
     # Check if company_name is unique
-    company_name_unique = stage_company_profiles['COMPANY_NAME_STANDARDIZED'].is_unique
+    company_name_unique = bool(stage_company_profiles['COMPANY_NAME_STANDARDIZED'].is_unique)
+    name_duplicate_count = int(stage_company_profiles['COMPANY_NAME_STANDARDIZED'].duplicated().sum())
     yield AssetCheckResult(
         check_name="company_name_uniqueness",
         passed=company_name_unique,
-        description="Company name should be unique" if company_name_unique else f"Found {stage_company_profiles['COMPANY_NAME_STANDARDIZED'].duplicated().sum()} duplicate company names"
+        description="Company name should be unique" if company_name_unique else f"Found {name_duplicate_count} duplicate company names"
     )
 
     # Check if company_name_standardized has no nulls
-    has_no_nulls = stage_company_profiles['COMPANY_NAME_STANDARDIZED'].notna().all()
+    has_no_nulls = bool(stage_company_profiles['COMPANY_NAME_STANDARDIZED'].notna().all())
+    null_count = int(stage_company_profiles['COMPANY_NAME_STANDARDIZED'].isna().sum())
     yield AssetCheckResult(
         check_name="company_name_standardized_has_no_nulls",
         passed=has_no_nulls,
-        description="Company name standardized should not have null values" if has_no_nulls else f"Found {stage_company_profiles['COMPANY_NAME_STANDARDIZED'].isna().sum()} null company names"
+        description="Company name standardized should not have null values" if has_no_nulls else f"Found {null_count} null company names"
     )

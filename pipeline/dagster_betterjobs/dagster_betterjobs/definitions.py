@@ -1,6 +1,7 @@
 from dagster import (
     Definitions,
     load_assets_from_modules,
+    load_asset_checks_from_modules,
     EnvVar,
     resource
 )
@@ -93,6 +94,9 @@ def bigquery_client_resource(context):
 # Load assets from modules
 all_assets = load_assets_from_modules([assets])
 
+# Load asset checks from modules
+all_asset_checks = load_asset_checks_from_modules([assets])
+
 # Resolve database path based on execution directory
 current_dir = Path(os.getcwd())
 if current_dir.name == "dagster_betterjobs" and "pipeline" in str(current_dir):
@@ -162,6 +166,7 @@ print("MAIN_INPUT_FOLDER present:", bool(os.getenv("MAIN_INPUT_FOLDER")))
 # Define Dagster application
 defs = Definitions(
     assets=all_assets,
+    asset_checks=all_asset_checks,
     resources=resources,
     jobs=[
         data_engineering_job,
@@ -196,3 +201,5 @@ defs = Definitions(
         adhoc_company_urls_sensor,
     ],
 )
+
+
