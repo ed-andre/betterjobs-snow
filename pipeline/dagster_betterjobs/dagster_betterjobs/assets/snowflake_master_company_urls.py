@@ -471,7 +471,7 @@ def process_s3_csv_files(
                     COPY INTO {temp_table} (
                         company_name, company_industry, platform,
                         ats_url, career_url, url_verified, date_added, last_updated,
-                        source_file, file_hash
+                        source_file, file_hash, ingested_at
                     )
                     FROM (
                         SELECT
@@ -484,7 +484,8 @@ def process_s3_csv_files(
                             $7 as date_added,
                             $8 as last_updated,
                             '{actual_filename}' as source_file,
-                            '{file_hash}' as file_hash
+                            '{file_hash}' as file_hash,
+                            CURRENT_TIMESTAMP as ingested_at
                         FROM @{stage_name}/{stage_file_path}
                     )
                     FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1 FIELD_OPTIONALLY_ENCLOSED_BY = '"' ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE)
@@ -536,7 +537,8 @@ def process_s3_csv_files(
                                 TRY_TO_TIMESTAMP(date_added) as date_added,
                                 TRY_TO_TIMESTAMP(last_updated) as last_updated,
                                 source_file,
-                                file_hash
+                                file_hash,
+                                ingested_at
                             FROM {temp_table}
                             WHERE company_name IS NOT NULL
                             AND LENGTH(TRIM(company_name)) > 0
@@ -554,16 +556,17 @@ def process_s3_csv_files(
                             date_added = COALESCE(source.date_added, target.date_added),
                             last_updated = COALESCE(source.last_updated, CURRENT_TIMESTAMP),
                             source_file = source.source_file,
-                            file_hash = source.file_hash
+                            file_hash = source.file_hash,
+                            ingested_at = source.ingested_at
                         WHEN NOT MATCHED THEN INSERT (
                             company_id, company_name, company_industry, platform,
                             ats_url, career_url, url_verified, date_added, last_updated,
-                            source_file, file_hash
+                            source_file, file_hash, ingested_at
                         ) VALUES (
                             source.company_id, source.company_name, source.company_industry,
                             source.platform, source.ats_url, source.career_url,
                             source.url_verified, source.date_added, source.last_updated,
-                            source.source_file, source.file_hash
+                            source.source_file, source.file_hash, source.ingested_at
                         )
                         """
                         cursor.execute(merge_sql)
@@ -700,10 +703,12 @@ def snowflake_master_company_urls(
             context.log.warning(
                 f"Count mismatch detected: {table_name} has {current_table_count} rows but {log_table_name} tracks {processed_records_count}. Triggering full refresh."
             )
-            # Invalidate watermarking by clearing the processing log so every source file is re-evaluated
+            # Full refresh: Clear both main table and processing log to ensure clean state
+            context.log.info("Performing full refresh - truncating both main table and processing log")
+            cursor.execute(f"TRUNCATE TABLE {table_name}")
             cursor.execute(f"TRUNCATE TABLE {log_table_name}")
             conn.commit()
-            context.log.info("Processing log truncated; all source files will be considered new in this run.")
+            context.log.info("Full refresh completed: both main table and processing log truncated; all source files will be reprocessed from scratch.")
     except Exception as e:
         context.log.error(f"Error during consistency check: {str(e)}")
     finally:
