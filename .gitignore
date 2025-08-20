@@ -179,3 +179,4 @@ greenhouse_company_urls.csv
 
 
 pipeline/.dagster/.nux/nux.yaml
+/openmetadata/backup_db

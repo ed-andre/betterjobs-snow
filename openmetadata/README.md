@@ -95,6 +95,73 @@ If you encounter permission errors with volumes on Windows WSL2, add the followi
 options = "metadata"
 ```
 
+## Database Backup and Restoration
+
+### Creating a Backup
+
+Before upgrading OpenMetadata or making major changes, it's recommended to backup the PostgreSQL database:
+
+1. **Navigate to the OpenMetadata directory and create backup folder**
+   ```bash
+   cd openmetadata
+   mkdir -p backup_db
+   ```
+
+   ```powershell
+   # For Windows PowerShell:
+   cd openmetadata
+   New-Item -ItemType Directory -Force -Path backup_db
+   ```
+
+2. **Create a timestamped backup**
+   ```bash
+   # Generate backup filename with current timestamp
+   BACKUP_FILE="backup_db/backup_$(date +%Y%m%d%H%M).sql"
+
+   # For Windows PowerShell:
+   # $BACKUP_FILE = "backup_db/backup_$(Get-Date -Format 'yyyyMMddHHmm').sql"
+
+   # Create the backup
+   docker exec -e PGPASSWORD=openmetadata_password openmetadata_ingestion pg_dump -U openmetadata_user -h postgresql -d openmetadata_db > $BACKUP_FILE
+   ```
+
+3. **Verify backup was created**
+   ```bash
+   ls -la backup_db/backup_*.sql
+
+   # For Windows PowerShell:
+   # dir backup_db/backup_*.sql
+   ```
+
+### Restoring from Backup (if needed)
+
+If you need to restore from a backup:
+
+1. **Create a restore database**
+   ```bash
+   docker exec -e PGPASSWORD=openmetadata_password openmetadata_postgresql psql -U postgres -c "CREATE DATABASE restore;"
+   docker exec -e PGPASSWORD=openmetadata_password openmetadata_postgresql psql -U postgres -c "ALTER DATABASE restore OWNER TO openmetadata_user;"
+   ```
+
+2. **Restore from backup**
+   ```bash
+   # Use the specific backup file from backup_db folder
+   docker exec -e PGPASSWORD=openmetadata_password -i openmetadata_ingestion psql -U openmetadata_user -h postgresql -d restore < backup_db/backup_YYYYMMDDHHMM.sql
+   ```
+
+3. **Update environment and restart**
+   ```bash
+   export OM_DATABASE=restore
+   docker compose down
+   docker compose up -d
+   ```
+
+### ⚠️ Security Notice
+- **Always delete backup files after use** to avoid storing sensitive metadata locally
+- **Never commit backup files to version control** - add `backup_db/` to your `.gitignore`
+- Backup files contain sensitive database information including connection strings and metadata
+- The `backup_db` folder structure makes it easy to exclude all backups with a single gitignore entry
+
 ## Next Steps
 1. After successful installation, visit http://localhost:8585 to start exploring OpenMetadata
 2. Configure metadata ingestion from your data sources
